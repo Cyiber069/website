@@ -88,7 +88,7 @@ export function register(r: Router): void {
       kb: { docs: kbDocs, tokens: kbTokens },
       recovery: {
         enabled: settings.recovery.enabled,
-        template_ready: settings.recovery.template.approved && settings.recovery.template.text.trim().length > 0,
+        template_ready: settings.recovery.template.approved && settings.recovery.template.text.trim().length > 0 && settings.recovery.consent_confirmed,
         next_run_at: nextLondonHour(now, settings.recovery.send_hour_london),
         last_run: lastRun,
       },
@@ -263,7 +263,7 @@ export function register(r: Router): void {
     if (!isSettingsGroup(group)) throw new HttpError(404, 'unknown_group');
     const patch = await c.body<Record<string, unknown>>(64_000);
     // The recovery message is changed through /api/recovery so approval is always deliberate.
-    if (group === 'recovery') delete patch.template;
+    if (group === 'recovery') { delete patch.template; delete patch.consent_confirmed; }
     const next = await patchSettings(c.db, group, patch as Partial<Settings[typeof group]>);
     return json({ ok: true, [group]: next });
   });

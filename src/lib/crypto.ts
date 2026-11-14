@@ -48,8 +48,8 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Workers cap PBKDF2 at 100,000 iterations. */
-export const PBKDF2_ITERATIONS = 100_000;
+/** Kept low enough to fit the free plan's CPU budget per request; login is also rate limited. */
+export const PBKDF2_ITERATIONS = 40_000;
 
 export async function hashPassword(password: string, saltB64?: string, iterations = PBKDF2_ITERATIONS): Promise<{ hash: string; salt: string; iterations: number }> {
   const salt = saltB64 ? b64urlDecode(saltB64) : crypto.getRandomValues(new Uint8Array(16));

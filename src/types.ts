@@ -65,18 +65,27 @@ export interface PacingSettings {
 export interface RecoverySettings {
   enabled: boolean;
   send_hour_london: number;
-  /** Last hour (Europe/London) a queued recovery message may still be sent that day. */
-  deadline_hour_london: number;
+  /** Nothing is sent later than this many minutes after the start hour (Europe/London). */
+  window_minutes: number;
   min_age_minutes: number;
   max_age_hours: number;
+  /** First-contact messages are what gets WhatsApp numbers restricted, so this stays small. */
   daily_cap: number;
+  /** Never message the same number again within this many days. */
   cooldown_days: number;
+  /** all: everyone who left a phone number. opted_in: only people who accepted marketing at checkout. */
   consent_mode: 'all' | 'opted_in';
+  /** The owner has explicitly chosen consent_mode. The live run does not send until this is true. */
+  consent_confirmed: boolean;
   /** ISO country codes. Empty means every country. */
   countries: string[];
   spacing_seconds: [number, number];
   /** Reword each message slightly so no two are identical. */
   personalize: boolean;
+  /** false: the first message has no link, the checkout link goes out when they reply. */
+  include_link: boolean;
+  /** Append a short "reply stop" line to every first message. */
+  opt_out_line: boolean;
   template: { text: string; approved: boolean; updated_at: number | null };
 }
 

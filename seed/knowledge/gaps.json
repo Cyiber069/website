@@ -1,0 +1,202 @@
+[
+  {
+    "question": "What is the correct change of mind return window: 14 days (Refund policy), 30 days (FAQ page and the Warranty tab on kit pages) or no change of mind returns at all (home page FAQ)?",
+    "why_it_matters": "Returns are the most common after-sale question and the store gives three different answers. The agent could promise a refund you will not honour, or refuse one you owe.",
+    "category": "policies"
+  },
+  {
+    "question": "For a UK customer, how many days from order to doorstep for each of these: (a) 2000W and 3000W kits and bundles with 27.5 or 29 inch wheels, (b) the same with 26 inch wheels, (c) 250W, 500W, 750W, 1000W and 1500W kits and bundles, (d) 5000W kits and bundles, (e) a battery bought on its own, (f) accessories?",
+    "why_it_matters": "'When will it arrive' is the top pre-sale question. The store says 2-3 days, about 3 working days, 1 to 2 weeks, 2 to 3 weeks, 15-20 days and 50-60 days in different places for the same products.",
+    "category": "policies"
+  },
+  {
+    "question": "In a bundle, do the battery and the kit arrive in separate parcels? When does each one arrive for a UK order? One banner says 'Battery Shipping: 3 working days (UK only)' and the product pages say 'Battery ships within 1 to 2 weeks for UK customers'.",
+    "why_it_matters": "Customers who receive only one box will message to say the order is incomplete. The agent needs to know whether that is normal.",
+    "category": "policies"
+  },
+  {
+    "question": "What are the correct delivery times and prices for each region outside the UK: Ireland, Northern Ireland, EU, USA, Canada, Switzerland, Australia and the rest of the world? In particular: is Australia Air £15 and 3-5 days (checkout) or £30 and 10 to 15 days (Shipping and Delivery page), and is International Standard free (checkout) or £25 (page)?",
+    "why_it_matters": "International buyers ask for cost and time before ordering. The checkout rates, the Shipping policy and the Shipping and Delivery page disagree.",
+    "category": "policies"
+  },
+  {
+    "question": "For orders to the EU, Ireland, USA, Canada and Australia: does the customer pay import duty and VAT on delivery, roughly how much on a typical bundle, and who collects it (the courier)? Is any destination shipped with duties already paid?",
+    "why_it_matters": "The policy says duties are extra but gives no figure, and 'FREE EU Express' reads as all-inclusive. Surprise customs bills cause refused parcels and chargebacks.",
+    "category": "policies"
+  },
+  {
+    "question": "Which countries can you ship batteries to, and which countries only receive the kit without a battery? If a bundle has to ship without its battery, what happens to the price?",
+    "why_it_matters": "The site says 'some international orders ship without a battery' but does not say which. The agent cannot tell an overseas buyer whether a bundle will arrive complete.",
+    "category": "policies"
+  },
+  {
+    "question": "Can a kit above 250W be made road legal with a 250W sticker or a speed limiter? The FAQ tab on product pages and the home page FAQ suggest yes, the UK Road Legal Guide and Legal notice say no. What exactly should the agent tell customers?",
+    "why_it_matters": "This is a legal question with real consequences (seized bikes, prosecution). The agent must give one consistent answer.",
+    "category": "policies"
+  },
+  {
+    "question": "Does the ACX 250W Road Legal Bundle come with a throttle? If yes, is it limited to walk assist (3.7mph)? What is the capacity (Ah) of its 36V battery, and is its battery warranty 12 or 24 months?",
+    "why_it_matters": "It is the only road legal product, so buyers will ask detailed questions. The product page lists a throttle, the description does not, and the warranty is stated two ways.",
+    "category": "products"
+  },
+  {
+    "question": "What is the realistic top speed of each kit and bundle: 250W, 500W, 750W, 1000W, 1500W, 2000W, 3000W and 5000W (and does it change with battery voltage)?",
+    "why_it_matters": "Speed is the main reason people choose one kit over another. The store only gives figures for 1500W, 3000W and 5000W.",
+    "category": "products"
+  },
+  {
+    "question": "What range should a customer expect from each bundle with the 20ah, 25ah and 30ah battery, and from the 250W bundle? Please give a realistic mileage range for each.",
+    "why_it_matters": "Range decides which battery size people buy. The store only says a 20ah battery gives 40 to 60 miles as a rough guide, with nothing per kit.",
+    "category": "products"
+  },
+  {
+    "question": "How long does each battery take to charge from empty (36V, 48V, 52V, 60V and 72V at 20ah, 25ah and 30ah)? What charger is supplied (amps and plug type: UK, EU, US or AU), and can customers buy a spare or faster charger?",
+    "why_it_matters": "Charging time is not stated anywhere on the site and is asked before almost every battery purchase.",
+    "category": "products"
+  },
+  {
+    "question": "What are the size and weight of each battery (48V, 52V, 60V, 72V and the 36V pack, at each capacity)? Only the 72V pack size (445 x 265 x 90mm) is given. Which battery bag size (small or large) fits which battery, and is the bag £35 or £45?",
+    "why_it_matters": "Customers must check the battery fits their frame before buying, and the site tells them to. The bag price is shown two ways on the same page.",
+    "category": "products"
+  },
+  {
+    "question": "Which battery should a customer buy for each kit, and which kits can use the 60V battery? Can a 72V battery be used with the 500W, 750W, 1000W, 1500W and 2000W bundles (their pages offer a 'spare 72V 20Ah battery')?",
+    "why_it_matters": "A wrong voltage can damage the controller or simply not work. No kit lists 60V as compatible, and a 72V spare is offered on 48V and 52V bundles.",
+    "category": "products"
+  },
+  {
+    "question": "Can the kits be fitted to a bike with an 8, 9, 10, 11 or 12 speed cassette? The pages say 'Freewheel: screw on, up to 7 speed'. What should those customers do?",
+    "why_it_matters": "Most modern mountain bikes have 8 speed or more. This is the most likely reason a kit will not fit.",
+    "category": "products"
+  },
+  {
+    "question": "Which bikes will the kits NOT fit? Please confirm for: thru axle or boost (142mm or 148mm) frames, carbon frames, full suspension frames, fat bikes, 700c or 28 inch road and hybrid bikes, 20 and 24 inch wheels, coaster brake bikes.",
+    "why_it_matters": "'Will it fit my bike' is asked before nearly every sale. The store only gives dropout width (135mm, or 150mm for 5000W) and three wheel sizes.",
+    "category": "products"
+  },
+  {
+    "question": "Do the supplied brake levers with motor cut-off work with hydraulic disc brakes? If not, what do you supply or recommend instead?",
+    "why_it_matters": "Many bikes have hydraulic brakes and the supplied levers are normally cable type. Customers find out during fitting and ask for help.",
+    "category": "products"
+  },
+  {
+    "question": "Does the motor wheel arrive with a tyre, inner tube, freewheel and disc rotor fitted, or does the customer move these over from the old wheel? What rim width and tyre sizes does it take?",
+    "why_it_matters": "Customers need to know what else to buy before the kit arrives. The store does not say.",
+    "category": "products"
+  },
+  {
+    "question": "Are all kits rear wheel only? Is there a front wheel option for any kit?",
+    "why_it_matters": "Some bikes (hub gears, belt drive, unusual frames) cannot take a rear hub motor and customers ask for a front wheel kit.",
+    "category": "products"
+  },
+  {
+    "question": "What is the difference between the SW900 and UKC1 displays, and why does the UKC1 cost more on some options?",
+    "why_it_matters": "Every kit and bundle makes the customer choose a display at checkout with no explanation.",
+    "category": "products"
+  },
+  {
+    "question": "There are two different products both called 'ACX 1500w kit': one at £270 and one at £520. What is the difference, and which should the agent recommend?",
+    "why_it_matters": "The agent cannot tell which one a customer means and cannot explain a £250 price gap.",
+    "category": "products"
+  },
+  {
+    "question": "Is there a fitting video or PDF manual the agent can send to customers (please give the link)? Do you offer a fitting service or recommend any fitters or bike shops?",
+    "why_it_matters": "Fitting questions are the bulk of after-sale support. The site only says a quick-start fitting guide is in the box.",
+    "category": "faq"
+  },
+  {
+    "question": "What is the step by step returns process: the return address, which courier customers should use for a kit and for a battery, who pays return postage from outside the UK, and how much is deducted if the item has been handled or fitted?",
+    "why_it_matters": "The policy says to wait for a return address but the agent has none to give. Without the process, every return must be passed to a human.",
+    "category": "policies"
+  },
+  {
+    "question": "How long does a customer have to report damage or missing parts: 48 hours (Terms of service), 3 days (FAQ page and Shipping and Delivery page) or 'within a few days' (Refund policy)?",
+    "why_it_matters": "The agent needs one deadline to tell customers, and needs to know what happens if they miss it.",
+    "category": "policies"
+  },
+  {
+    "question": "What warranty do accessories have (forks, seats, lights, displays, throttle, handle bars)? For a warranty claim from outside the UK, who pays to post the faulty part back and to send the replacement?",
+    "why_it_matters": "The 12 month warranty text only names kits, bundles and batteries.",
+    "category": "policies"
+  },
+  {
+    "question": "Can a customer change the wheel size, display or battery, change the address, or cancel after ordering? Until what point, and how?",
+    "why_it_matters": "Order changes are time critical and very common in the first hour after purchase. The store says nothing about them.",
+    "category": "policies"
+  },
+  {
+    "question": "When a customer asks 'where is my order', what should the agent do: send the tracking page link, look the order up, or pass it to you? Which couriers do you use for UK and for international orders, and after how many days without movement should the agent escalate?",
+    "why_it_matters": "Order status is the most frequent support message. The site says tracking can go quiet for days on international routes and gives two different escalation times (5 working days, or 30 days).",
+    "category": "faq"
+  },
+  {
+    "question": "How should the agent hand a conversation to a human? Which channel, what hours, and what response time can it promise (the product pages say WhatsApp replies 'in minutes', the policies say email within 24 hours)? Is there a phone number customers can call?",
+    "why_it_matters": "Customers who ask for a person need a clear, honest answer. No phone number is published.",
+    "category": "general"
+  },
+  {
+    "question": "Which payment plans are available and where: is Klarna offered in every country you ship to, what is the minimum and maximum order, is Shop Pay Instalments 3 payments (home page) or 4 payments (product pages), and do you accept PayPal?",
+    "why_it_matters": "Instalments are advertised on every product page, so customers ask whether they qualify. The footer shows a PayPal icon but the FAQ does not list PayPal.",
+    "category": "faq"
+  },
+  {
+    "question": "Is the Black Friday sale live? What are the discount, the code (if any) and the start and end dates? Are there any other discount codes the agent may offer (for example for newsletter sign-up)?",
+    "why_it_matters": "A pop-up announces the sale without any detail, so customers will ask the agent for the code.",
+    "category": "general"
+  },
+  {
+    "question": "How does the agent know whether an item is in stock right now? Shopify does not track stock for any product and every variant shows as available. Which items are actually held in the UK today?",
+    "why_it_matters": "Product pages promise 'UK stock' and 3 working day delivery. If the item is not on the shelf the agent will make a promise you cannot keep.",
+    "category": "products"
+  },
+  {
+    "question": "Is delivery to Northern Ireland really £25 (40-70 days) or £130 express while the rest of the UK is free? What about the Scottish Highlands and Islands, the Channel Islands and the Isle of Man?",
+    "why_it_matters": "The site says 'FREE UK delivery' everywhere, so Northern Ireland customers will be surprised at checkout and ask why.",
+    "category": "policies"
+  },
+  {
+    "question": "Do you ship to South Africa, Portugal, Saudi Arabia, Czechia, Hungary, Bulgaria, Latvia, Malta, Albania, Serbia and Montenegro? They are in the country selector on the site but have no shipping rate at checkout.",
+    "why_it_matters": "Customers in those countries can browse prices in their currency but cannot check out, and will message to ask why.",
+    "category": "policies"
+  },
+  {
+    "question": "For USA customers: do the 2000W and 3000W kits and bundles ship from a USA warehouse in 2-3 days, and is the battery included? What plug does the charger have?",
+    "why_it_matters": "The checkout offers 'FREE USA Shipping (2-3 days)' on those products, but the product pages only talk about the UK warehouse.",
+    "category": "policies"
+  },
+  {
+    "question": "What battery safety certificates do you hold besides the UN38.3 report for the 72V 20Ah pack? Are the other packs tested, are the batteries and chargers UKCA or CE marked, and what protection does the BMS have?",
+    "why_it_matters": "E-bike battery fires are a well known worry in the UK. Customers, landlords and insurers ask for proof.",
+    "category": "products"
+  },
+  {
+    "question": "How waterproof are the kits and batteries (is there an IP rating)? Can they be ridden in heavy rain and stored outside?",
+    "why_it_matters": "The site says 'sealed against rain and spray' but the warranty excludes water damage. Customers need a clear line.",
+    "category": "products"
+  },
+  {
+    "question": "What does each kit and each battery weigh, and is there a maximum rider weight?",
+    "why_it_matters": "Weight is asked by commuters and by customers working out shipping or whether their frame can cope. No weights are published.",
+    "category": "products"
+  },
+  {
+    "question": "Can customers buy spare parts (controller, charger, display, throttle, brake levers, PAS sensor, motor wheel only)? What do they cost and how do they order them?",
+    "why_it_matters": "The site promises 'Spares & upgrades available' but only a few parts are listed for sale.",
+    "category": "products"
+  },
+  {
+    "question": "When should a customer add the £60 'Express shipping upgrade' product to the basket instead of choosing an express rate at checkout? Does it apply to UK orders?",
+    "why_it_matters": "There are two ways to pay for express shipping with different prices (£60 product, £80 to £130 checkout rates). Customers may pay twice.",
+    "category": "policies"
+  },
+  {
+    "question": "Is the Halloween Rider Pack still on offer? Its description says the offer ended on 31 October but it is still for sale at £60.",
+    "why_it_matters": "The agent needs to know whether to sell it or tell customers it has ended.",
+    "category": "products"
+  },
+  {
+    "question": "What are the registered business name, company number, VAT number and business address of ACX Ebikes? Can customers get a VAT invoice?",
+    "why_it_matters": "Trade buyers, customs agents and cautious customers ask who they are buying from. The About page gives no address.",
+    "category": "general"
+  }
+]

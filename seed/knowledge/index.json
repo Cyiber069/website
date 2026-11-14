@@ -1,0 +1,34 @@
+[
+  {
+    "id": "store-facts",
+    "title": "ACX Ebikes store facts",
+    "file": "store-facts.md",
+    "category": "general",
+    "source_url": "https://acxebikes.com/",
+    "pinned": true
+  },
+  {
+    "id": "products",
+    "title": "ACX Ebikes product catalogue",
+    "file": "products.md",
+    "category": "products",
+    "source_url": "https://acxebikes.com/collections/all",
+    "pinned": false
+  },
+  {
+    "id": "policies",
+    "title": "ACX Ebikes shop policies",
+    "file": "policies.md",
+    "category": "policies",
+    "source_url": "https://acxebikes.com/policies/refund-policy",
+    "pinned": false
+  },
+  {
+    "id": "pages",
+    "title": "ACX Ebikes pages, FAQs and site content",
+    "file": "pages.md",
+    "category": "faq",
+    "source_url": "https://acxebikes.com/pages/frequently-asked-questions",
+    "pinned": false
+  }
+]

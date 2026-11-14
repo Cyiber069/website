@@ -6,7 +6,7 @@
   "description": "ACX Agent: customer service agent backend (Cloudflare Worker) + dashboard + Chrome extension",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler d1 migrations apply acx-agent --remote && wrangler deploy",
+    "deploy": "wrangler deploy",
     "db:local": "wrangler d1 migrations apply acx-agent --local",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

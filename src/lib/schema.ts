@@ -1,0 +1,32 @@
+// The Worker creates and upgrades its own tables, so deploying is only ever "wrangler deploy".
+// Add a new numbered file in migrations/ and list it here; applied ones are never edited.
+import m0001 from '../../migrations/0001_init.sql';
+
+const MIGRATIONS: [string, string][] = [['0001_init', m0001]];
+
+let ready: Promise<void> | null = null;
+
+function statements(sql: string): string[] {
+  return sql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').split(/;\s*(?:\n|$)/).map((s) => s.trim()).filter(Boolean);
+}
+
+async function migrate(db: D1Database): Promise<void> {
+  await db.prepare('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)').run();
+  const done = new Set(((await db.prepare('SELECT name FROM schema_migrations').all<{ name: string }>()).results ?? []).map((r) => r.name));
+  // Databases set up with "wrangler d1 migrations apply" already have the tables.
+  if (!done.has('0001_init')) {
+    const has = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'settings'").first();
+    if (has) { await db.prepare('INSERT OR IGNORE INTO schema_migrations (name, applied_at) VALUES (?, ?)').bind('0001_init', Date.now()).run(); done.add('0001_init'); }
+  }
+  for (const [name, sql] of MIGRATIONS) {
+    if (done.has(name)) continue;
+    const list = statements(sql).map((s) => db.prepare(s));
+    list.push(db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').bind(name, Date.now()));
+    await db.batch(list);
+  }
+}
+
+export function ensureSchema(db: D1Database): Promise<void> {
+  if (!ready) ready = migrate(db).catch((err) => { ready = null; throw err; });
+  return ready;
+}

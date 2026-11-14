@@ -20,5 +20,6 @@
     }
   ],
   "vars": { "ACX_TEST_MODE": "1" },
+  "rules": [{ "type": "Text", "globs": ["**/*.sql", "**/*.md"], "fallthrough": true }],
   "triggers": { "crons": ["* * * * *"] }
 }

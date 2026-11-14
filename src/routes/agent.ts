@@ -1,5 +1,7 @@
 // Endpoints used by the Chrome extension (bearer device token).
-import basePack from '../../extension/selectors.json';
+import gmailPack from '../../extension/selectors/gmail.json';
+import tiktokPack from '../../extension/selectors/tiktok.json';
+import whatsappPack from '../../extension/selectors/whatsapp.json';
 import type { Channel, DeviceRow, Settings } from '../types';
 import { CHANNELS } from '../types';
 import { randomToken, sha256Hex } from '../lib/crypto';
@@ -40,12 +42,17 @@ function deepMerge(base: unknown, over: unknown): unknown {
   return out;
 }
 
-/** The selector pack shipped in the repo with any fixes saved from the dashboard layered on top. */
+const BASE_PACK: Record<Channel, Pack> = { whatsapp: whatsappPack as Pack, gmail: gmailPack as Pack, tiktok: tiktokPack as Pack };
+const BASE_VERSION = CHANNELS.map((c) => String(BASE_PACK[c].version ?? 0)).join('-');
+
+/**
+ * Selector packs shipped in the repo (extension/selectors/<channel>.json) with any fixes saved from
+ * the dashboard layered on top. Shape: { whatsapp: {...}, gmail: {...}, tiktok: {...} }.
+ */
 export async function selectorPack(db: D1Database): Promise<{ version: string; pack: Pack }> {
   const override = await getState<{ rev: number; pack: Pack } | null>(db, 'selectors_override', null);
-  const base = basePack as Pack;
-  const pack = (override ? deepMerge(base, override.pack) : base) as Pack;
-  return { version: `${base.version ?? 0}.${override?.rev ?? 0}`, pack };
+  const pack = (override ? deepMerge(BASE_PACK, override.pack) : BASE_PACK) as Pack;
+  return { version: `${BASE_VERSION}.${override?.rev ?? 0}`, pack };
 }
 
 function clientConfig(settings: Settings, selectorsVersion: string, origin: string) {

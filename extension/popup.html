@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ACX Agent</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<header>
+  <div class="mark" aria-hidden="true"><span></span></div>
+  <div class="title">
+    <strong>ACX Agent</strong>
+    <small id="sub">Starting</small>
+  </div>
+  <span id="pill" class="pill">...</span>
+</header>
+
+<section id="pair-view" hidden>
+  <p class="lead">Connect this laptop to your dashboard.</p>
+  <ol class="steps">
+    <li>Open your ACX Agent dashboard</li>
+    <li>Go to <b>Connections</b> and press <b>Pair this laptop</b></li>
+    <li>Paste the pairing line here</li>
+  </ol>
+  <label class="field">
+    <span>Pairing line</span>
+    <input id="pairing" type="text" autocomplete="off" spellcheck="false" placeholder="https://your-site.workers.dev#ABCD-EFGH">
+  </label>
+  <label class="field">
+    <span>Name for this laptop</span>
+    <input id="device-name" type="text" maxlength="40" value="My laptop">
+  </label>
+  <button id="pair-btn" class="primary">Connect</button>
+  <p id="pair-error" class="error" role="alert" hidden></p>
+</section>
+
+<section id="main-view" hidden>
+  <ul id="channels" class="channels"></ul>
+  <p id="server-error" class="error" role="alert" hidden></p>
+  <div class="row">
+    <button id="pause-btn" class="primary">Pause</button>
+    <button id="dash-btn">Open dashboard</button>
+  </div>
+  <details>
+    <summary>More</summary>
+    <label class="check">
+      <input id="auto-open" type="checkbox">
+      <span>Open WhatsApp, Gmail and TikTok tabs automatically</span>
+    </label>
+    <label class="check">
+      <input id="trusted" type="checkbox">
+      <span>Stronger typing mode <small>(use if replies fail to type; Chrome shows a debugging banner)</small></span>
+    </label>
+    <div class="row">
+      <button id="test-btn">Run a check</button>
+      <button id="unpair-btn" class="danger">Disconnect</button>
+    </div>
+    <pre id="test-out" hidden></pre>
+  </details>
+</section>
+<script type="module" src="popup.js"></script>
+</body>
+</html>

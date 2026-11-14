@@ -41,5 +41,5 @@ export function estimateTokens(text: string): number {
 
 export function clip(text: string, max: number): string {
   const t = text.replace(/\s+/g, ' ').trim();
-  return t.length <= max ? t : t.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+  return t.length <= max ? t : t.slice(0, Math.max(0, max - 1)).trimEnd() + '\u2026';
 }

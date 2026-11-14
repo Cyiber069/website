@@ -154,8 +154,44 @@ Error codes: `thread_not_found`, `composer_missing`, `send_not_confirmed`, `not_
 `GET /api/devices`, `POST /api/devices/pair-code`, `DELETE /api/devices/:id`, `GET /api/health`,
 `GET /api/selectors`, `PUT /api/selectors {override}`.
 
-Other areas (knowledge, voice + playground, recovery, connections, push, Shopify webhooks) are
-documented at the top of their route files.
+### Knowledge (`owner`, `src/routes/kb.ts`)
+
+* `GET /api/kb` -> `{ docs: [{ id, title, category, source, filename, bytes, enabled, pinned, token_estimate, updated_at, preview }], totals: { docs, tokens }, gaps: [{ question, why_it_matters, category }] }`
+* `GET /api/kb/:id` -> `{ doc }` including `content`
+* `POST /api/kb/upload` multipart form (`file`, optional `category`) -> `{ doc }`. Errors `unsupported_type`, `too_large` (10 MB), `empty_text`
+* `POST /api/kb/note { title, content, category?, pinned? }` -> `{ doc }`
+* `PATCH /api/kb/:id { title?, content?, category?, enabled?, pinned? }` -> `{ doc }`; `DELETE /api/kb/:id`
+* `POST /api/kb/sync-store` -> `{ ok, added, updated }` (public catalogue and policies of the store)
+* `POST /api/kb/gaps/answer { question, answer }` -> `{ doc }` (saves the answer as knowledge, removes the gap); `POST /api/kb/gaps/dismiss { question }`
+
+Categories: `products policies shipping faq learned general`. Sources: `upload note store learned seed`.
+
+### Voice (`owner`, `src/routes/voice.ts`)
+
+* Style settings are the `voice` settings group (`PUT /api/settings/voice`).
+* `POST /api/playground { messages: [{ direction: 'in'|'out', body }], channel? }` ->
+  `{ decision: { action, parts, confidence, escalate, tone, flags, note }, kb_refs: [{ id, title }], ms, provider, model }`. Nothing is stored or sent.
+
+### Recovery (`owner`, `src/routes/recovery.ts`)
+
+* `GET /api/recovery` -> `{ settings, shopify: { connected, mode }, next_run_at, template: { text, approved, updated_at }, variables: [..], eligible: [{ id, first_name, phone_masked, country, total, currency, items, age_hours, preview_text }], skipped: [{ id, first_name, reason }], runs: [..], stats: { messaged_30d, replied_30d, recovered_30d } }`
+* `POST /api/recovery/teach { rough }` -> `{ suggestion }` (not saved)
+* `PUT /api/recovery/template { text, approved, consent_mode? }` saves the message. `approved: true` with a `consent_mode` also sets `consent_confirmed`.
+* `POST /api/recovery/run { dry_run }` -> `{ run }`; `POST /api/recovery/refresh` pulls checkouts now; `POST /api/recovery/checkouts/:id/skip`
+* Other options through `PUT /api/settings/recovery`.
+
+Template variables: `{first_name}` `{product}` `{total}` `{checkout_link}` `{shop}`.
+
+### Connections and push (`owner`, `src/routes/connections.ts`)
+
+* `GET /api/connections` -> `{ brain: { provider, model, effort, claude_key: { saved, hint }, workers_ai: { available, model }, models: [{ id, label, note }] }, shopify: { mode, domain, myshopify_domain, api: { saved, hint }, webhook: { url, secret_saved, last_received_at } }, push: { public_key, subscriptions }, alerts }`
+* `PUT /api/connections/brain { anthropic_api_key?, provider?, model?, effort? }`; `POST /api/connections/brain/test` -> `{ ok, provider, model, ms, sample, error? }`
+* `PUT /api/connections/shopify { myshopify_domain?, client_id?, client_secret?, admin_token?, webhook_secret? }`; `POST /api/connections/shopify/test` -> `{ ok, shop_name?, checkouts?, error? }`; `DELETE /api/connections/shopify`
+* `POST /api/push/subscribe { endpoint, keys: { p256dh, auth } }`; `POST /api/push/unsubscribe { endpoint }`; `POST /api/push/test`
+
+### Shopify webhooks (`public`, `src/routes/hooks.ts`)
+
+* `POST /api/hooks/shopify` verified with `X-Shopify-Hmac-Sha256`. Topics: checkout create / update, order create.
 
 ## 6. The inbound pipeline (`src/pipeline/inbound.ts`)
 

@@ -2,11 +2,6 @@
 // Tests rely on these exact triggers, so change them together with test/.
 import type { Decision, DecideInput, PolishInput, PolishResult, ToneProfile } from '../types';
 
-export const MOCK_TONE: ToneProfile = {
-  register: 'casual', mood: 'neutral', greeting: '', address_terms: [], elongation: 0, emoji_rate: 0,
-  lowercase: true, punctuation: 'light', avg_chars: 40, language: 'en', slang: [],
-};
-
 export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   const last = [...input.history].reverse().find((m) => m.direction === 'in');
   const text = (last?.body ?? '').toLowerCase();
@@ -30,7 +25,7 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   if (text.includes('lowconf')) return { ...base, confidence: 0.3, parts: ['i think it is about 3 days but not sure'] };
   if (text.includes('ignore-me')) return { ...base, action: 'ignore', note: 'mock ignore' };
   if (text.includes('two-parts')) return { ...base, parts: ['hey', 'mock second part'] };
-  if (text.includes('dashes')) return { ...base, parts: ['Sure — delivery is 2-4 days, and it is free - no worries!'] };
+  if (text.includes('dashes')) return { ...base, parts: ['Sure \u2014 delivery is 2-4 days, and it is free - no worries!'] };
   return { ...base, parts: [`mock reply to: ${(last?.body ?? '').slice(0, 60)}`] };
 }
 

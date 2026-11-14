@@ -1,6 +1,7 @@
 import { runCron } from './cron';
 import { assertSameOrigin, deviceFromRequest, hasOwnerSession } from './lib/auth';
 import { HttpError, json, readJson, type Ctx } from './lib/http';
+import { ensureSchema } from './lib/schema';
 import { buildRouter } from './routes';
 import type { Env } from './types';
 
@@ -40,6 +41,7 @@ export default {
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     let res: Response;
     try {
+      await ensureSchema(env.DB);
       res = await handleApi(req, env, exec, url);
     } catch (err) {
       if (err instanceof HttpError) {
@@ -55,6 +57,6 @@ export default {
   },
 
   async scheduled(_event: ScheduledController, env: Env, exec: ExecutionContext): Promise<void> {
-    exec.waitUntil(runCron(env));
+    exec.waitUntil(ensureSchema(env.DB).then(() => runCron(env)));
   },
 } satisfies ExportedHandler<Env>;
