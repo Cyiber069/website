@@ -39,6 +39,8 @@ export interface MirrorPlan {
   slang_ok: string[];
   char_budget: number;
   end_with_full_stop: boolean;
+  /** Complaint, refund, safety or legal topic: mirroring is off whatever the mood. */
+  serious: boolean;
 }
 
 type MoodKey = 'angry' | 'frustrated' | 'confused' | 'positive';
@@ -284,31 +286,37 @@ const SERIOUS = /\b(?:refund(?:s|ed)?|money back|return(?:s|ing|ed)?|send (?:it|
 export function isSeriousTopic(text: string): boolean { return SERIOUS.test(String(text || '').toLowerCase()); }
 
 // What the reply may do with a profile. Pure function, used to fill the <tone> block of the prompt and the sanitizer options.
-export function mirrorPlan(tone: ToneProfile, voice: Partial<Pick<VoiceSettings, 'mirror_level' | 'max_chars' | 'emojis'>> = {}): MirrorPlan {
+export function mirrorPlan(tone: ToneProfile, voice: Partial<Pick<VoiceSettings, 'mirror_level' | 'max_chars' | 'emojis'>> = {}, serious = false): MirrorPlan {
   const level = voice.mirror_level || 'match';
   const upset = tone.mood === 'angry' || tone.mood === 'frustrated';
   const formal = tone.register === 'formal';
-  const off = level === 'off' || upset || formal;
+  const off = level === 'off' || upset || formal || serious;      // serious = isSeriousTopic(last customer messages)
   const SAFE_ADDR = ['bro', 'bruv', 'mate', 'man', 'pal', 'bud', 'buddy', 'lad', 'boss', 'chief', 'dude', 'guys', 'g', 'fam', 'bruh', 'my man', 'my guy'];
   const address = off ? '' : (tone.address_terms.find((a) => SAFE_ADDR.includes(a)) || '');
-  const greetMap: Record<string, string> = { yo: 'yo', oi: 'hey', ay: 'hey', sup: 'hey', wagwan: 'yo', alright: 'alright', hiya: 'hiya', hey: 'hey', hi: 'hi', hello: 'hello', dear: 'Hello', salam: 'hi', 'ey up': 'hiya' };
+  const greetMap: Record<string, string> = { yo: 'hey', oi: 'hey', ay: 'hey', sup: 'hey', wagwan: 'hey', alright: 'alright', hiya: 'hiya', hey: 'hey', hi: 'hi', hello: 'hello', dear: 'Hello', salam: 'hi', 'ey up': 'hiya' };
   let greeting = tone.greeting ? (greetMap[tone.greeting] ?? (tone.greeting.startsWith('good ') ? tone.greeting.replace(/^g/, 'G') : 'hi')) : '';
   if (upset && greeting) greeting = 'hi';
   if (formal && greeting && !/^(Good|Hello)/.test(greeting)) greeting = 'Hello';
   const stretch = off || level !== 'match' || !tone.elongation ? 0 : 1;
-  const budget = Math.max(60, Math.min(voice.max_chars || 260, Math.round((tone.avg_chars || 40) * 1.5 + 60)));
+  const cap = voice.max_chars || 260;
+  const budget = Math.max(80, Math.min(cap, Math.round((tone.avg_chars || 40) * 2 + 80)));   // about twice the customer's own length plus room for one fact
   return {
     greeting,                                         // say this once, only in the first reply of a conversation
     address,                                          // at most once per reply, '' means use none
     stretch_words: stretch,                           // how many words may carry ONE extra letter (broo, heyy)
     lowercase: !off && level === 'match' && tone.lowercase && (tone.register === 'hype' || tone.register === 'casual'),
     emoji_max: off || voice.emojis === 'never' ? 0 : voice.emojis === 'sometimes' ? 1 : Math.min(2, Math.ceil(tone.emoji_rate || 0)),
-    exclamations_max: upset || formal ? 0 : tone.register === 'hype' ? 2 : 1,
+    exclamations_max: upset || formal || serious ? 0 : tone.register === 'hype' ? 2 : 1,
     slang_ok: off ? [] : tone.slang.filter((s) => ['sick', 'mint', 'sound', 'sorted', 'buzzing', 'proper', 'decent', 'quid', 'cheers', 'nah', 'yeah', 'defo', 'rapid', 'beast', 'insane', 'mental', 'wheelie', 'surron'].includes(s)),
-    char_budget: upset ? Math.max(budget, 160) : budget,
+    char_budget: upset || serious ? Math.min(cap, Math.max(budget, 200)) : budget,   // an upset customer or a safety answer needs room for the facts
     end_with_full_stop: formal,
+    serious,
   };
 }
+
+// Deterministic backstops for two model flags (guards G2 and G3 in research/voice.md section D.3).
+export const BOT_QUESTION = /\b(?:(?:are|r) (?:you|u|we) (?:a |an )?(?:real|human|person|bot|robot|ai|machine|chat ?bot)\b|is (?:this|that|it) (?:a |an )?(?:bot|robot|ai|automated|real person|human|person|chat ?gpt|chat ?bot)\b|(?:am i|i am|i'm|im) (?:talking|speaking|chatting) (?:to|with) (?:a |an )?(?:bot|robot|ai|human|person|real|machine|computer)|(?:u|you) (?:a |an )?(?:bot|robot|ai|real|human)\b|(?:bot|robot|ai|chatgpt|human|real person)\s*\?|automated (?:reply|response|message|bot|system)|(?:talk|speak) to (?:a |an )?(?:human|person|real person|someone real))/i;
+export const OPT_OUT = /^\s*(?:stop|unsubscribe|opt ?out|remove me|no more)\s*[.!]*\s*$|\b(?:stop (?:messaging|texting|contacting|emailing|spamming|sending)|(?:do not|don'?t|dont) (?:message|text|contact|email) me|leave me alone|take me off|remove me from)\b/i;
 
 /** How the customer writes, from the last few text messages they sent. */
 export function profileTone(history: readonly ToneMessage[]): ToneProfile {

@@ -1,1 +1,97 @@
-{ "version": 1 }
+{
+  "version": 1,
+  "verified_against": "TikTok webapp-desktop build read on 2026-11-14 (chunks 49937 IM React SDK, 64027 legacy, 85075, editor). Not yet checked on the owner's logged in account: run the popup check.",
+  "urls": {
+    "inbox": "https://www.tiktok.com/messages?lang=en",
+    "inbox_business": "https://www.tiktok.com/messages?allow_label=true&lang=en&scene=business",
+    "logged_out_path": "^/login",
+    "one_to_one_id": "^0:1:\\d+:\\d+$"
+  },
+  "typing": { "order": ["paste"] },
+  "page": {
+    "loading": ["[data-e2e=\"dm-vmok-loading-skeleton\"]"],
+    "captcha": ["#captcha-verify-container", "#captcha_container", ".captcha_verify_container", ".captcha-verify-container", "[id*=\"captcha-verify\"]", "[class*=\"captcha_verify\"]", "iframe[src*=\"captcha\"]"],
+    "dialog": ["[role=\"dialog\"]", "[class*=\"TUXModal\"]", "[data-e2e=\"login-modal\"]"],
+    "toast": ["[role=\"alert\"]", "[role=\"status\"]", "[class*=\"Toast\"]", "[class*=\"toast\"]", "[class*=\"DivNotice\"]"],
+    "app_data": ["#__UNIVERSAL_DATA_FOR_REHYDRATION__"]
+  },
+  "conversation": {
+    "list": ["[data-e2e=\"dm-new-conversation-list\"]", "[class*=\"DivConversationListContainer\"]"],
+    "row": ["[data-conversation-id]"],
+    "item": ["[data-e2e=\"dm-new-conversation-item\"]", "[data-conv-id]", "[data-e2e=\"chat-list-item\"]", "[class*=\"DivItemWrapper\"][id^=\"more-action-icon-\"]"],
+    "nickname": ["[data-e2e=\"dm-new-conversation-nickname\"]", "[class*=\"PInfoNickname\"]"],
+    "unread": ["[data-e2e=\"dm-new-conversation-unread\"]", "[class*=\"SpanNewMessage\"]"],
+    "muted": ["[data-e2e=\"dm-new-conversation-mute-icon\"]"],
+    "header": ["[data-e2e=\"dm-new-conversation-header\"]"]
+  },
+  "requests": {
+    "entry": ["[data-stranger-entry]", "[class*=\"DivRequestGroup\"]", "[role=\"button\"][aria-label=\"Message requests\"]"],
+    "back": ["[class*=\"ConversationRequestHeader\"] [role=\"button\"]", "[role=\"button\"][aria-label=\"Back\"]"],
+    "box": ["[data-e2e=\"dm-new-stranger-accept\"]", "[class*=\"DivStrangerBox\"]"],
+    "block_button": ["[data-e2e=\"dm-new-stranger-block\"]"]
+  },
+  "chat": {
+    "box": ["[data-e2e=\"dm-new-chatbox\"]", "[class*=\"DivChatBox\"]"],
+    "nickname": ["[data-e2e=\"dm-new-chat-nickname\"]", "[data-e2e=\"chat-nickname\"]", "[class*=\"DivChatHeader\"] [class*=\"PNickname\"]"],
+    "unique_id": [
+      "[data-e2e=\"chat-uniqueid\"]",
+      "[class*=\"PUniqueId\"]",
+      { "s": "[class*=\"DivChatHeader\"] a[href^=\"/@\"]", "attr": "href" },
+      { "s": "[data-e2e=\"dm-new-chatbox\"] header a[href^=\"/@\"]", "attr": "href" }
+    ],
+    "bottom": ["[data-e2e=\"dm-new-chat-bottom\"]", "[class*=\"DivChatBottom\"]"]
+  },
+  "message": {
+    "list": ["[data-e2e=\"dm-new-message-list\"]", "[data-e2e=\"dm-new-chatbox\"] [role=\"log\"]", "[role=\"log\"][aria-live=\"polite\"]"],
+    "item": ["[data-e2e=\"dm-new-chat-item\"]", "[class*=\"DivChatItemWrapper\"]:not([data-e2e=\"chat-item\"])"],
+    "system": ["[data-e2e=\"chat-item\"]"],
+    "direction": ["[data-area=\"Actions\"]", "[class*=\"DivMessageHorizontalContainer\"]"],
+    "text": ["[data-e2e=\"dm-new-message-text\"]"],
+    "fallback_text": ["[class*=\"DivTextContainer\"]"],
+    "client_id_row": ["[data-index]"],
+    "server_id": [{ "s": "[id^=\"more-action-icon-msg-\"]", "attr": "id" }],
+    "failed": ["[data-e2e=\"dm-warning\"] > *", "[class*=\"StyledIconFail\"]"],
+    "notice": ["[data-e2e=\"dm-message-notification\"]", "[class*=\"DivErrorTip\"]"],
+    "author": [{ "s": "a[href^=\"/@\"]", "attr": "href" }],
+    "shared_video": ["[data-e2e=\"dm-new-shared-video\"]"],
+    "shared_live": ["[data-e2e=\"dm-new-shared-live\"]"],
+    "image": ["[data-e2e=\"dm-new-image-card\"]"],
+    "video": ["[data-e2e=\"dm-new-video-card\"]"],
+    "sticker": ["[class*=\"StickerImage\"]", "[class*=\"DivStickerContainer\"]"],
+    "emoji": ["[data-official-emoji=\"true\"]", "[data-e2e=\"dm-official-emoji-img\"]"]
+  },
+  "composer": {
+    "editor": [
+      "[data-e2e=\"dm-new-input-editor\"] [contenteditable=\"true\"]",
+      "[data-e2e=\"message-input-area\"] [contenteditable=\"true\"]",
+      "[data-e2e=\"dm-new-chat-bottom\"] .public-DraftEditor-content",
+      ".public-DraftEditor-content[contenteditable=\"true\"][role=\"textbox\"]",
+      "div[contenteditable=\"true\"][role=\"textbox\"][aria-label=\"Send a message...\"]"
+    ],
+    "placeholder": [".public-DraftEditorPlaceholder-root"],
+    "send": ["[data-e2e=\"dm-new-send-btn\"]", "[data-e2e=\"message-send\"]", "[class*=\"StyledSendButton\"]", "[data-e2e=\"dm-new-chat-bottom\"] [role=\"button\"][aria-label=\"Send\"]"]
+  },
+  "state": {
+    "request_pending": ["[data-e2e=\"dm-new-request-tip\"]"],
+    "blocked_box": ["[data-e2e=\"dm-new-blocked-box\"]"],
+    "peer_unavailable": ["[data-e2e=\"dm-new-dm-unavailable\"]", "[data-e2e=\"dm-new-account-unavailable\"]"]
+  },
+  "text": {
+    "accept": "^accept$",
+    "too_fast": ["sending messages too fast", "take a rest", "too many messages", "slow down"],
+    "dm_suspended": ["temporarily prevented from sending", "can.?t send (or receive )?(direct )?messages", "(messaging|direct messages?) (is|are|has been|have been) (suspended|restricted|disabled|turned off)"],
+    "limit_reached": "chat messages limit reached",
+    "privacy_blocked": ["privacy settings", "only friends can send messages"],
+    "policy_violation": ["violated our community guidelines"],
+    "request_pending": ["accepts your message request", "only send up to"],
+    "captcha": ["drag the slider", "fit the puzzle", "verify to continue", "rotate the", "select \\d+ objects"],
+    "logged_out": ["log in to tiktok", "log in or sign up", "use qr code"],
+    "time": "^\\d{1,2}:\\d{2}( ?[ap]m)?$|^\\d{1,2}[/.]\\d{1,2}([/.]\\d{2,4})?$|^yesterday$|^(mon|tue|wed|thu|fri|sat|sun)[a-z]*$|^\\d+ ?[smhdw]( ago)?$|^just now$"
+  },
+  "limits": {
+    "max_chars": 6000,
+    "too_fast_pause_minutes": 30,
+    "list_scroll_steps": 12,
+    "request_rows_without_badges": 3
+  }
+}

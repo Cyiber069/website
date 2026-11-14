@@ -1,1 +1,181 @@
-{ "version": 1 }
+{
+  "version": 1,
+  "notes": "Gmail selector pack. Seeded from InboxSDK GMAIL_SELECTORS (@inboxsdk/core 2.2.35, 13 Nov 2026), gmail.js 1.1.16, FlowCrypt, Mailvelope and Briskine. Lists are tried first to last. Entries are selector strings or {s, attr, closest}. Keys ending in Class are class names. Everything under text and classify is a regular expression source (case insensitive). Not yet run against a live account: use Run a check in the popup.",
+
+  "typing": {
+    "order": ["exec", "range", "trusted"]
+  },
+
+  "timing": {
+    "afterSendMs": 7000,
+    "waitVisibleMs": 20000,
+    "waitHiddenMs": 70000
+  },
+
+  "account": {
+    "aliases": []
+  },
+
+  "auth": {
+    "signIn": [
+      "input#identifierId",
+      "input[type=email][name=identifier]",
+      "form[action*=\"accounts.google.com\"]",
+      "a[href*=\"accounts.google.com/ServiceLogin\"]",
+      "a[href*=\"accounts.google.com/signin\"]",
+      "a[href*=\"accounts.google.com/AccountChooser\"]"
+    ]
+  },
+
+  "app": {
+    "main": ["div[role=main]"],
+    "threadList": ["[gh=tl]"],
+    "loading": ["#loading"],
+    "composeButton": ["[gh=cm]", ".T-I.T-I-KE.L3"],
+    "accountButton": [{ "s": "a[aria-label*=\"@\"]", "attr": "aria-label" }],
+    "refreshButton": ["div[act=\"20\"]", "div.T-I.nu"]
+  },
+
+  "feed": {
+    "primary": "https://mail.google.com/mail/u/{index}/feed/atom/%5Esq_ig_i_personal",
+    "inbox": "https://mail.google.com/mail/u/{index}/feed/atom"
+  },
+
+  "routes": {
+    "home": "https://mail.google.com/mail/u/{index}/#inbox",
+    "inbox": "#inbox",
+    "searchUnreadPrimary": "#search/in%3Ainbox%20is%3Aunread%20category%3Aprimary",
+    "thread": "#inbox/{hexThreadId}",
+    "threadAnyLabel": "#all/{hexThreadId}",
+    "composeUrl": "https://mail.google.com/mail/u/{index}/?to={to}&su={su}&body={body}&tf=cm",
+    "composeUrlLegacy": "https://mail.google.com/mail/u/{index}/?view=cm&fs=1&to={to}&su={su}&body={body}"
+  },
+
+  "list": {
+    "row": ["tr.zA", "tr:has(span[data-thread-id])"],
+    "ignoreRowClasses": ["bundle", "inboxsdk__ignore_row"],
+    "unreadClass": "zE",
+    "readClass": "yO",
+    "selected": ["div[role=checkbox][aria-checked=true]"],
+    "selectedClass": "x7",
+    "threadIdEl": ["[data-legacy-thread-id]", "span[data-thread-id]"],
+    "sender": ["td div.yW [email]", "[email]"],
+    "messageCount": ["td div.yW .bx0"],
+    "draftMarker": ["td div.yW .boq"],
+    "subject": ["td.a4W div.xS div.xT div.y6 > span[id]", ".bog", "span[data-legacy-thread-id]"],
+    "snippet": [".y2"],
+    "date": [{ "s": "td.xW > span[title]", "attr": "title" }, { "s": "td.xW span[title]", "attr": "title" }],
+    "attachment": ["td.yf.xY img", "img[alt=\"Has attachment\"]"],
+    "empty": [".TC"]
+  },
+
+  "thread": {
+    "container": ["[role=main] .g.id table.Bs > tr", "[role=main] .g.id .a98.iY"],
+    "idEl": ["h2[data-legacy-thread-id]", "[role=main] [data-legacy-thread-id]:not(tr *)"],
+    "subject": [".ha h2", "h2.hP", "h2[data-legacy-thread-id]", "h2[data-thread-perm-id]"],
+    "messageList": ["[role=list]"],
+    "listItems": ["[role=list] > [role=listitem]"],
+    "expandAllIcon": ["img.gx"],
+    "collapsedMessage": [".kv", ".kQ", ".kx"],
+    "hiddenNotice": [".adv"],
+    "expandedClass": "h7",
+    "collapsedClass": "kv"
+  },
+
+  "message": {
+    "root": ["div.adn[data-legacy-message-id]", "[data-legacy-message-id]"],
+    "anyMessage": ["div.adn[data-message-id]", "[data-message-id]", "[data-legacy-message-id]"],
+    "sender": ["td.gF span[email]", "span[email].gD", "h3.iw span[email]"],
+    "recipients": [".hb span[email]", "span[email].g2"],
+    "date": [{ "s": ".ads .gK .g3", "attr": "title" }, { "s": "span.g3", "attr": "title" }, { "s": "span[role=gridcell][title]", "attr": "title" }],
+    "body": ["div.ii.gt div.a3s", "div.a3s", "div.ii.gt", ".adP"],
+    "attachmentCards": ["[download_url]", ".aQH > span"],
+    "unsubscribeCandidates": ["[role=link]", "a", "span"],
+    "replyContainer": [".ip"],
+    "replyOpenClass": "adB",
+    "strip": [
+      ".gmail_quote", "blockquote", ".gmail_extra", ".gmail_attr", "div.adL", "div.yj6qo", ".ajR", ".adm",
+      ".gmail_signature", ".gmail_signature_prefix", "[data-smartmail=\"gmail_signature\"]",
+      "#divRplyFwdMsg", "#appendonsend", "div.OutlookMessageHeader"
+    ]
+  },
+
+  "reply": {
+    "bar": [".amn"],
+    "replyLink": ["span.ams.bkH", "span.bkH[role=link]"],
+    "replyAllLink": ["span.ams.bkI"],
+    "headerButton": ["div[role=button].aaq", "div[role=button].bsQ", "[role=button][aria-label=\"Reply\"]", "button[aria-label=\"Reply\"]"],
+    "textFallback": ["[role=link]"],
+    "inlineComposeRoot": [".ip.adB .M9", ".M9"]
+  },
+
+  "compose": {
+    "root": [".M9", "div.AD"],
+    "windowRoot": ["div.AD [role=dialog]", "div[role=dialog]"],
+    "body": [
+      ".Ap [g_editable=true]",
+      "[role=textbox][aria-multiline=true]",
+      "div[contenteditable=true][role=textbox]",
+      "div[aria-label=\"Message Body\"]",
+      "div[contenteditable=true]:not([id=subject])"
+    ],
+    "subject": ["input[name=subjectbox]"],
+    "toRow": ["div.anm[name=\"to\"]", "[name=to]"],
+    "recipientChips": [{ "s": "[role=option][data-hovercard-id]", "attr": "data-hovercard-id" }, { "s": "[data-hovercard-id]", "attr": "data-hovercard-id" }],
+    "recipientInput": ["input[role=combobox][aria-autocomplete=list]", "[aria-label=\"To recipients\"]", "[name=to] input"],
+    "send": [
+      ".IZ .Up div > div[role=button]:not(.Uo):not([aria-haspopup=true])",
+      "div.T-I.T-I-atl[role=button]:not([aria-haspopup=true])",
+      "[role=button][aria-label^=\"Send\"]",
+      "[role=button][data-tooltip^=\"Send\"]"
+    ],
+    "discard": [".gU .oh", "[role=button][aria-label^=\"Discard\"]"],
+    "showTrimmed": [".ajR"],
+    "draftIdInput": ["input[name=\"draft\"]"],
+    "signature": [".gmail_signature", "[data-smartmail=\"gmail_signature\"]"],
+    "strip": [".gmail_signature", ".gmail_signature_prefix", "[data-smartmail=\"gmail_signature\"]", ".gmail_quote", "blockquote", ".gmail_extra"],
+    "standaloneBodyClasses": ["xE", "xp"]
+  },
+
+  "toolbar": {
+    "threadToolbar": ["[gh=mtb]"],
+    "backButton": [".lS"],
+    "archive": ["[gh=mtb] div[act=\"7\"]", "[gh=mtb] [aria-label=\"Archive\"]", "[gh=mtb] [title=\"Archive\"]"],
+    "markUnread": ["[gh=mtb] div[act=\"2\"]", "[gh=mtb] [aria-label=\"Mark as unread\"]"]
+  },
+
+  "toast": {
+    "container": ["div.b8[role=\"alert\"]", "div.b8.UC"],
+    "notice": [".vh:not(.inboxsdk__butterbar)", ".vh"],
+    "activeClass": "bAp"
+  },
+
+  "settings": {
+    "splitPane": ["div[role=main] .aia", "div.aia"]
+  },
+
+  "text": {
+    "sent": ["message sent", "your message has been sent"],
+    "sending": ["sending"],
+    "sendError": ["not sent", "couldn.t send", "error occurred", "try again", "please specify at least one recipient"],
+    "replyLabel": ["^reply$"],
+    "unsubscribeLabel": ["^unsubscribe$"],
+    "signIn": ["^sign in\\b", "^gmail$", "google accounts"],
+    "quoteHeader": [
+      "^on .{5,200} wrote:$",
+      "^-{2,} ?original message ?-{2,}",
+      "^-{2,} ?forwarded message ?-{2,}",
+      "^_{12,}$"
+    ],
+    "signatureLine": ["^-- ?$", "^sent from my (iphone|ipad|android|galaxy|samsung|huawei|phone)", "^get outlook for", "^sent from (yahoo|outlook|mail for)"]
+  },
+
+  "classify": {
+    "automatedSender": "^(no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|mailer[-_.]?daemon|postmaster|bounces?|notifications?|notify|alerts?|newsletter|news|marketing|promo(tions)?|updates?|billing|receipts?|invoices?|shipping|tracking|security|digest)([-+._][^@]*)?@",
+    "autoReplySubject": "^(auto(matic)?[- ]?reply|out of (the )?office|autoreply|undeliverable|delivery status notification|mail delivery (failed|subsystem)|returned mail|failure notice)",
+    "bulkBody": "unsubscribe|manage (your )?preferences|view (this email )?in (your )?browser|do not reply to this (e-?mail|message)|this is an automated",
+    "bulkBodyMinLinks": 4,
+    "denySenders": [],
+    "allowSenders": []
+  }
+}

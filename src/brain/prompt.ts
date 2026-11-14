@@ -24,7 +24,7 @@ export interface BuiltPrompt {
   user: string;
 }
 
-export const ESCALATE_CATEGORIES = ['unknown', 'order', 'delivery', 'returns', 'complaint', 'technical', 'legal', 'payment', 'bot_question', 'media', 'other'] as const;
+export const ESCALATE_CATEGORIES = ['unknown', 'order', 'delivery', 'returns', 'complaint', 'technical', 'safety', 'legal', 'payment', 'discount', 'human_request', 'bot_question', 'media', 'other'] as const;
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', nl: 'Dutch', pt: 'Portuguese', pl: 'Polish', ro: 'Romanian', tr: 'Turkish',
@@ -270,6 +270,14 @@ export function buildDecidePrompt(p: DecidePromptInput): BuiltPrompt {
   return { system, user: user.join('\n\n') };
 }
 
+/**
+ * The user message for the one allowed regeneration: the same request, the first answer, and what to
+ * fix. The system blocks are reused unchanged, so the cached prefix still applies.
+ */
+export function buildRetryUser(user: string, firstAnswer: unknown, problems: string[], maxChars: number): string {
+  return `${user}\n\n<your_first_answer>\n${JSON.stringify(firstAnswer)}\n</your_first_answer>\n\nThat answer cannot be sent as it is. Give the same decision again and rewrite parts only. Keep every fact and every number exactly. Problems: ${problems.join('; ')}. Limit: ${maxChars} characters in total.`;
+}
+
 // ---- checking what came back ----------------------------------------------------------------------
 
 export type RawDecision = Pick<Decision, 'action' | 'parts' | 'confidence' | 'escalate' | 'flags' | 'kb_refs' | 'note'> & { language: string };
@@ -368,14 +376,21 @@ export function buildPolishPrompt(p: { settings: Settings; input: PolishInput; t
 
 // ---- small shared checks --------------------------------------------------------------------------
 
-/** Numbers in a text, without thousands separators, so "1,299" and "1299" compare equal. */
+/** Numbers in a text, without thousands separators or empty decimals, so "1,299.00", "1,299" and "1299" compare equal. */
 export function numbersIn(text: string): string[] {
-  return (text.match(/\d+(?:[.,]\d+)*/g) ?? []).map((n) => n.replace(/,(?=\d{3}\b)/g, '').replace(/[.,]$/, ''));
+  return (text.match(/\d+(?:[.,]\d+)*/g) ?? []).map((n) => n.replace(/,(?=\d{3}(?!\d))/g, '').replace(/[.,]$/, '').replace(/\.0+$/, ''));
 }
+
+// Store text often spells small numbers out ("twelve months"). A reply that writes "12 months" did not invent anything.
+const NUMBER_WORDS: Record<string, string> = {
+  ten: '10', eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15', sixteen: '16', seventeen: '17', eighteen: '18', nineteen: '19',
+  twenty: '20', thirty: '30', forty: '40', fifty: '50', sixty: '60', seventy: '70', eighty: '80', ninety: '90', hundred: '100', thousand: '1000',
+};
 
 /** Numbers that appear in `text` but nowhere in `sources`. Single digits are ignored (they are everywhere). */
 export function unsupportedNumbers(text: string, sources: string): string[] {
   const pool = new Set(numbersIn(sources));
+  for (const w of sources.toLowerCase().match(/\b[a-z]+\b/g) ?? []) if (NUMBER_WORDS[w]) pool.add(NUMBER_WORDS[w]!);
   return [...new Set(numbersIn(text).filter((n) => n.length > 1 && !pool.has(n)))];
 }
 
@@ -384,7 +399,16 @@ const CLAIMS_HUMAN = /\bi\s*(?:'m|am|m)\s+(?:a\s+|an\s+)?(?:real\s+|actual\s+|ge
 
 export const claimsHuman = (text: string): boolean => CLAIMS_HUMAN.test(text.replace(/’/g, "'"));
 
-// Requests to stop being contacted. Kept strict: "stop" inside a normal sentence ("does it stop quickly") is not one.
-const OPT_OUT = /^\s*(?:please\s+)?(?:stop|unsubscribe|opt ?out|remove me)\s*(?:please|pls|now|thanks)?\s*[.!]*\s*$|\b(?:stop (?:messaging|texting|contacting|emailing|whatsapping|spamming) me|(?:do not|don'?t|dont) (?:message|text|contact|email) me(?: again| any ?more)?|leave me alone|remove me from (?:your|this|the) (?:list|database)|take me off (?:your|this|the) list|unsubscribe me|not interested,? (?:please )?stop)\b/i;
+// Requests to stop being contacted (guard G3 of the voice report). Kept strict: "stop" inside a normal
+// sentence ("does it stop quickly") is not one.
+const OPT_OUT = /^\s*(?:please\s+)?(?:stop|unsubscribe|opt ?out|remove me|no more)\s*(?:please|pls|now|thanks)?\s*[.!]*\s*$|\b(?:stop (?:messaging|texting|contacting|emailing|whatsapping|spamming|sending) me|(?:do not|don'?t|dont) (?:message|text|contact|email) me(?: again| any ?more)?|leave me alone|remove me from (?:your|this|the) (?:list|database)|take me off (?:your|this|the) list|unsubscribe me|not interested,? (?:please )?stop)\b/i;
 
 export const looksLikeOptOut = (text: string): boolean => OPT_OUT.test(text.replace(/’/g, "'"));
+
+// The customer asks whether a machine is answering, or asks for a person (guard G2 of the voice report).
+const BOT_QUESTION = /\b(?:are|r) (?:you|u|we) (?:a |an )?(?:real|human|person|bot|robot|ai|machine|chat ?bot)\b|\bis (?:this|that|it) (?:a |an )?(?:bot|robot|ai|automated|real person|human|chat ?gpt|chat ?bot)\b|\b(?:am i|i am|i'm|im) (?:talking|speaking|chatting) (?:to|with) (?:a |an )?(?:bot|robot|ai|human|person|real|machine|computer)\b|\b(?:bot|robot|ai|chatgpt|human|real person)\s*\?|\bautomated (?:reply|response|message|bot|system)\b|\b(?:talk|speak) to (?:a |an )?(?:human|person|real person|someone real)\b/i;
+
+export const looksLikeBotQuestion = (text: string): boolean => BOT_QUESTION.test(text.replace(/’/g, "'"));
+
+/** A reply to "are you a bot" is honest when it names what is answering. */
+export const admitsAssistant = (text: string): boolean => /\b(?:ai|assistant|bot|automated)\b/i.test(text);

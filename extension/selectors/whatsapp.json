@@ -1,1 +1,128 @@
-{ "version": 1 }
+{
+  "version": 1,
+  "_meta": {
+    "pack": "whatsapp-web",
+    "built": "2026-11-14",
+    "note": "Each key is an ordered list of fallbacks: first match wins. Entries are a CSS selector string or {s, attr, closest}. Keys under text and icons are regular expression sources (case insensitive) and are the only language dependent part."
+  },
+  "typing": { "order": ["paste", "exec", "beforeinput"] },
+  "state": {
+    "loadingScreen": ["[data-testid=\"wa-web-loading-screen\"]", "#app progress"],
+    "qr": ["[data-testid=\"link-device-qr-code\"] canvas", "canvas[aria-label=\"Scan this QR code to link a device!\"]", "[data-testid^=\"link_device_\"]"],
+    "loggedIn": ["[data-testid=\"chat-list\"]", "#pane-side [role=\"grid\"]", "#pane-side"],
+    "noChatOpen": ["section[data-testid=\"intro-panel\"]"],
+    "modalDialog": ["div[role=\"dialog\"][aria-modal=\"true\"]", "div[data-animate-modal-popup=\"true\"]"],
+    "anyDialog": ["div[role=\"dialog\"]", "div[data-animate-modal-popup=\"true\"]", "div[data-animate-modal-body=\"true\"]"],
+    "dialogClose": ["[aria-label=\"Close\"]", "[aria-label=\"Cerrar\"]", { "s": "[data-icon=\"x\"]", "closest": "button,[role=\"button\"]" }],
+    "dialogButton": ["button", "[role=\"button\"]", "[data-testid=\"popup-controls-ok\"]"],
+    "banner": ["#side span[data-testid=\"chat-butterbar\"]"]
+  },
+  "chatList": {
+    "scroller": ["#pane-side"],
+    "grid": ["#pane-side [role=\"grid\"]", "[data-testid=\"chat-list\"]", "[aria-label=\"Chat list\"][role=\"grid\"]"],
+    "row": ["div[role=\"row\"]", "[data-testid^=\"list-item-\"]"],
+    "rowActivator": [":scope > [role=\"gridcell\"] > [tabindex][aria-selected]", ":scope > [role=\"gridcell\"] > [tabindex]", "[data-testid=\"cell-frame-container\"]"],
+    "rowSelected": ["[aria-selected=\"true\"]"],
+    "rowTitle": [{ "s": "[data-testid=\"cell-frame-title\"] [title]", "attr": "title" }, { "s": "span[title]", "attr": "title" }],
+    "rowTime": ["[data-testid=\"cell-frame-primary-detail\"]"],
+    "rowPreview": ["[data-testid=\"cell-frame-secondary\"]"],
+    "rowLastMine": ["[data-testid=\"last-msg-status\"]"],
+    "unreadBadge": ["[data-testid=\"icon-unread-count\"]", "[data-testid=\"icon-unread\"]", "span[aria-label*=\"unread\" i]", "span[aria-label*=\"no leído\" i]", "span[aria-label*=\"no leídos\" i]"],
+    "searchInput": ["#side input[type=\"text\"][role=\"textbox\"]", "#side [data-testid=\"chat-list-search-container\"] input", "#side div[contenteditable=\"true\"][data-tab=\"3\"]"],
+    "filterTab": ["#side button[role=\"tab\"]"],
+    "filterAll": ["#all-filter", "#side button[role=\"tab\"]:first-of-type"]
+  },
+  "conversation": {
+    "main": ["#main"],
+    "headerTitle": ["#main header [data-testid=\"conversation-info-header-chat-title\"]", "#main header [data-testid=\"chat-title\"]", "#main header span[dir=\"auto\"]", "#main header span[title]"],
+    "messagesPanel": ["#main [data-testid=\"conversation-panel-messages\"]", "#main [data-testid=\"conversation-panel-body\"]", "#main [role=\"application\"]", "#main"],
+    "messageRow": ["div[data-testid^=\"conv-msg-\"]", ".focusable-list-item", "div[role=\"row\"]"],
+    "messageId": [{ "s": "[data-id]", "attr": "data-id" }],
+    "tailOut": ["[data-testid=\"tail-out\"]"],
+    "tailIn": ["[data-testid=\"tail-in\"]"],
+    "classOut": [".message-out"],
+    "classIn": [".message-in"],
+    "youLabel": ["[aria-label=\"You:\"]", "[aria-label=\"Tú:\"]"],
+    "prePlainText": [{ "s": ".copyable-text[data-pre-plain-text]", "attr": "data-pre-plain-text" }, { "s": "[data-pre-plain-text]", "attr": "data-pre-plain-text" }],
+    "text": ["[data-testid=\"selectable-text\"]", "span.selectable-text.copyable-text > span", "span.selectable-text.copyable-text:not([title])", ".copyable-text[data-pre-plain-text] span[dir=\"ltr\"], .copyable-text[data-pre-plain-text] span[dir=\"rtl\"]"],
+    "caption": ["[data-testid~=\"image-caption\"]", "[data-testid~=\"video-caption\"]", "[data-testid~=\"document-caption\"]", "[data-testid~=\"album-caption\"]", "[data-testid=\"caption\"]"],
+    "readMore": ["[data-testid=\"caption-read-more-button\"]"],
+    "quoted": ["[data-testid=\"quoted-message\"], [aria-label=\"Quoted message\"], [aria-label=\"Mensaje citado\"]"],
+    "msgMeta": ["[data-testid=\"msg-meta\"]"],
+    "kindSticker": ["[data-testid=\"sticker-container\"]"],
+    "kindVoice": ["[data-testid=\"ptt-status\"]", "[data-icon=\"ptt-status\"]", "button[aria-label*=\"voice\" i]", "button[aria-label*=\"voz\" i]", "[role=\"slider\"][aria-valuetext]"],
+    "kindDocument": ["[data-testid=\"document-thumb\"]", "span[data-icon*=\"document\"]", "[data-testid*=\"document\"]"],
+    "kindVideo": ["video", "[data-testid*=\"video\"]"],
+    "kindImage": ["[aria-label=\"Open picture\"]", "[aria-label=\"Abrir imagen\"]", "img[src^=\"blob:\"]", "[data-testid*=\"image\"]", "[data-testid=\"media-album\"]"],
+    "kindAudio": ["audio", "[data-testid*=\"audio\"]", "span[data-icon=\"audio-download\"]"],
+    "kindOther": ["[data-testid*=\"location\"]", "[data-testid*=\"contact\"]", "[data-testid*=\"poll\"]"]
+  },
+  "composer": {
+    "footer": ["#main footer"],
+    "input": ["#main footer div[contenteditable=\"true\"][role=\"textbox\"]", "#main footer div[data-lexical-editor=\"true\"]", "#main footer div[contenteditable=\"true\"][data-tab=\"10\"]", "#main .lexical-rich-text-input div[contenteditable=\"true\"]", "#main footer div[contenteditable=\"true\"]"],
+    "sendButton": [
+      "#main footer button[aria-label=\"Send\"]",
+      "#main footer [role=\"button\"][aria-label=\"Send\"]",
+      "#main footer [aria-label*=\"Enviar\"]",
+      { "s": "#main footer [data-icon=\"wds-ic-send-filled\"]", "closest": "button,[role=\"button\"]" },
+      { "s": "#main footer [data-icon=\"send\"]", "closest": "button,[role=\"button\"]" },
+      "#main footer [data-testid=\"compose-btn-send\"]"
+    ]
+  },
+  "text": {
+    "unreadAria": "unread|no le[ií]d|non lu|ungelesen|n[aã]o lida|non lett|ongelezen|belum dibaca",
+    "mutedAria": "muted chat|chat silenciado|chat dibisukan",
+    "composerLabelChat": ["^Type a message to (?!group )(.+)$", "^Escribir un mensaje para (?!el grupo )(.+)$"],
+    "composerLabelGroup": ["^Type a message to group (.+)$", "^Escribir un mensaje para el grupo (.+)$"],
+    "statusPending": "pending|pendiente",
+    "statusSent": "\\bsent\\b|enviado",
+    "statusDelivered": "delivered|entregado",
+    "statusRead": "\\bread\\b|le[ií]do",
+    "invalidNumber": "invalid|inv[aá]lid|no es v[aá]lido|no est[aá] en whatsapp|isn.t on whatsapp",
+    "useHere": "use here|usar aqu[ií]|open in another window|abierto en otra ventana",
+    "restricted": "restricted|can.t start new chats|can.t send messages|spam|restringid",
+    "phoneTitle": "^\\+?[\\d\\s().-]{7,}$"
+  },
+  "icons": {
+    "pending": "msg-time",
+    "sent": "msg-check|ic-check",
+    "delivered": "msg-dblcheck|ic-dblcheck|ic-done-all",
+    "read": "msg-dblcheck-ack|ic-read",
+    "voice": "keyboard-voice|ptt",
+    "document": "document",
+    "defaultGroup": "default-group|default-community",
+    "muted": "notifications-off|mute"
+  },
+  "dataId": {
+    "compound": "^(true|false)_([^_]+@[^_]+)_([^_]+)(?:_(.+))?$",
+    "bare": "^[0-9A-Za-z]{16,}$",
+    "personServers": ["c.us", "lid"],
+    "groupServers": ["g.us", "newsletter", "broadcast"]
+  },
+  "idb": {
+    "db": "model-storage",
+    "messageStore": "message",
+    "contactStore": "contact",
+    "contactPhoneField": "phoneNumber",
+    "maxKeys": 20000
+  },
+  "bridge": {
+    "enabled": true,
+    "modules": {
+      "collections": "WAWebCollections",
+      "widFactory": "WAWebWidFactory",
+      "contactApi": "WAWebApiContact",
+      "lidUtils": "WAWebLidMigrationUtils",
+      "socket": "WAWebSocketModel",
+      "stream": "WAWebStreamModel"
+    },
+    "statesLogin": ["UNPAIRED", "UNPAIRED_IDLE", "QR"],
+    "statesStop": ["CONFLICT", "TOS_BLOCK", "SMB_TOS_BLOCK", "PROXYBLOCK", "DEPRECATED_VERSION"],
+    "msgTypesText": ["chat"],
+    "msgTypeKinds": { "image": "image", "album": "image", "video": "video", "ptt": "voice", "audio": "voice", "document": "document", "sticker": "sticker" }
+  },
+  "urls": {
+    "home": "https://web.whatsapp.com/",
+    "sendToPhone": "https://web.whatsapp.com/send/?phone={digits}&text&type=phone_number&app_absent=0"
+  }
+}

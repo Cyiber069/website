@@ -1,16 +1,26 @@
 // decide(): read a conversation and say what happens next. The model proposes, this file disposes:
 // whatever comes back is validated, checked against the owner's rules and passed through the
 // sanitizer before the pipeline sees it.
-import type { Decision, DecideInput, Env, ToneProfile } from '../types';
+import type { Decision, DecideInput, Env, LlmUsage, ToneProfile } from '../types';
 import { buildKnowledgeContext, type KnowledgeContext } from '../kb';
 import { getSettings } from '../lib/settings';
 import { LlmError, callJson, chooseProvider, knowledgeBudget } from './llm';
 import { mockDecide } from './mock';
-import { DECISION_SCHEMA, buildDecidePrompt, renderConversation, validateDecision, type RawDecision } from './prompt';
+import { DECISION_SCHEMA, buildDecidePrompt, buildRetryUser, renderConversation, validateDecision, type RawDecision } from './prompt';
 import { enforceDecision, hasWords, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
+import { lengthLimits } from './style';
 import { analyzeTone, mirrorPlan } from './tone';
 
 const NO_KNOWLEDGE: KnowledgeContext = { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
+
+/** Two calls for one decision are reported as one: tokens and time added up. */
+function addUsage(a: LlmUsage | null, b: LlmUsage | null): LlmUsage | null {
+  if (!a || !b) return a ?? b;
+  return {
+    provider: b.provider, model: b.model, input_tokens: a.input_tokens + b.input_tokens, output_tokens: a.output_tokens + b.output_tokens,
+    cache_read_tokens: a.cache_read_tokens + b.cache_read_tokens, cache_write_tokens: a.cache_write_tokens + b.cache_write_tokens, ms: a.ms + b.ms,
+  };
+}
 
 function toDecision(d: RawDecision, tone: ToneProfile, usage: Decision['usage']): Decision {
   return { action: d.action, parts: d.parts, confidence: d.confidence, escalate: d.escalate, tone, flags: d.flags, kb_refs: d.kb_refs, note: d.note, usage };
@@ -54,24 +64,47 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
     return toDecision(done, tone, null);
   }
 
-    const toneNotes = promptToneNotes(analysis.notes, tone);
+  const toneNotes = promptToneNotes(analysis.notes, tone);
   if (seriousTopic(input.history)) toneNotes.push('serious topic (money back, a complaint, safety or the law): plain and direct, normal capitals, no slang, no emoji, no stretched letters');
   const prompt = buildDecidePrompt({ settings, input, tone, plan, toneNotes, knowledge });
-  let raw: RawDecision;
+  const allowedRefs = knowledge.docs.map((d) => d.id);
+  const purpose = input.mode === 'playground' ? 'playground' : 'decide';
   let usage: Decision['usage'] = null;
   try {
-    const res = await callJson(env, { purpose: input.mode === 'playground' ? 'playground' : 'decide', system: prompt.system, user: prompt.user, schema: DECISION_SCHEMA, choice });
+    const res = await callJson(env, { purpose, system: prompt.system, user: prompt.user, schema: DECISION_SCHEMA, choice });
     usage = res.usage;
-    raw = validateDecision(res.data, knowledge.docs.map((d) => d.id), lastText);
+    const raw = validateDecision(res.data, allowedRefs, lastText);
+    // First pass: fix what code can fix, and collect what only the model can (machine sounding
+    // wording, a missing honest answer to "are you a bot", text that had to be cut).
+    const first = enforceDecision(raw, { ...ctx, final: false });
+    if (!first.retry.length) return toDecision(enforceDecision(raw, ctx), tone, usage);
+
+    // One regeneration, never more. If it fails or is no better, the first answer goes through the
+    // final pass, where every remaining problem is repaired in code or handed to the owner.
+    let second: RawDecision | null = null;
+    try {
+      const limit = lengthLimits(settings.voice, input.channel).max_chars;
+      const again = await callJson(env, { purpose: `${purpose}_retry`, system: prompt.system, user: buildRetryUser(prompt.user, res.data, first.retry, limit), schema: DECISION_SCHEMA, choice });
+      usage = addUsage(usage, again.usage);
+      const rewritten = validateDecision(again.data, allowedRefs, lastText);
+      // Only the wording is taken from the second answer. The decision itself stands.
+      if (rewritten.parts.length) second = { ...raw, parts: rewritten.parts, language: rewritten.language };
+    } catch (err) {
+      if (!(err instanceof LlmError)) throw err;
+      console.error('regeneration failed, keeping the first answer:', err.code);
+    }
+    const done = enforceDecision(second ?? raw, ctx);
+    if (second) done.note = `${done.note} (rewritten once: ${first.retry.join('; ').slice(0, 160)})`.trim();
+    return toDecision(done, tone, usage);
   } catch (err) {
     // A safety refusal is not an outage: hand the conversation to the owner. Everything else is
     // thrown so the pipeline logs it and tries again later.
     if (!(err instanceof LlmError) || err.code !== 'refusal') throw err;
-    raw = {
+    const raw: RawDecision = {
       action: 'escalate', parts: [holdingLine(tone.language)], confidence: 0.9, language: tone.language,
       escalate: { question: lastText.slice(0, 1000) || 'The customer needs an answer from you', reason: 'The AI declined to answer this message', category: 'other' },
       flags: { opt_out: false, asked_if_bot: false, needs_human: true }, kb_refs: [], note: 'The AI declined to answer, passed to the owner',
     };
+    return toDecision(enforceDecision(raw, ctx), tone, usage);
   }
-  return toDecision(enforceDecision(raw, ctx), tone, usage);
 }

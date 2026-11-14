@@ -78,7 +78,7 @@ export default {
               ${m.escalated ? html`<span class="tag tag--wait">Goes to Urgent</span>` : m.ignored ? '' : html`<span class="tag tag--live">Sends on its own</span>`}
               ${m.flags?.asked_if_bot ? html`<span class="tag">Asked if it is a bot</span>` : ''}${m.flags?.opt_out ? html`<span class="tag tag--down">Asked to stop</span>` : ''}
             </div>
-            ${m.refs?.length ? html`<p class="meta">Used from Knowledge: ${m.refs.map((r, i) => html`${i ? ', ' : ''}<a href="#/knowledge/${r.id}">${r.title}</a>`)}</p>` : m.escalated || m.ignored ? '' : html`<p class="meta">Did not need anything from Knowledge.</p>`}
+            ${m.refs?.length ? html`<p class="meta">Used from Knowledge: ${m.refs.slice(0, 3).map((r, k) => html`${k ? ', ' : ''}<a href="#/knowledge/${r.id}">${r.title.length > 48 ? r.title.slice(0, 46) + '...' : r.title}</a>`)}${m.refs.length > 3 ? ` and ${m.refs.length - 3} more` : ''}</p>` : m.escalated || m.ignored ? '' : html`<p class="meta">Did not need anything from Knowledge.</p>`}
           </div>`)}
         ${thinking ? html`<div class="msg msg--agent"><span class="msg__by">Agent</span><div class="bubble"><span class="typing" role="img" aria-label="Thinking"><i></i><i></i><i></i></span></div></div>` : ''}`);
       threadEl.scrollTop = threadEl.scrollHeight;

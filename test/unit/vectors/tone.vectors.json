@@ -31,15 +31,16 @@
    },
    "notes": [],
    "plan": {
-    "greeting": "yo",
+    "greeting": "hey",
     "address": "bro",
     "stretch_words": 1,
     "lowercase": true,
     "emoji_max": 1,
     "exclamations_max": 2,
     "slang_ok": [],
-    "char_budget": 92,
-    "end_with_full_stop": false
+    "char_budget": 122,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -85,8 +86,9 @@
     "slang_ok": [
      "cheers"
     ],
-    "char_budget": 98,
-    "end_with_full_stop": false
+    "char_budget": 130,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -119,8 +121,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 122,
-    "end_with_full_stop": false
+    "char_budget": 162,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -156,7 +159,8 @@
     "exclamations_max": 0,
     "slang_ok": [],
     "char_budget": 260,
-    "end_with_full_stop": true
+    "end_with_full_stop": true,
+    "serious": false
    }
   },
   {
@@ -189,8 +193,9 @@
     "emoji_max": 0,
     "exclamations_max": 0,
     "slang_ok": [],
-    "char_budget": 227,
-    "end_with_full_stop": false
+    "char_budget": 260,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -231,8 +236,9 @@
     "emoji_max": 0,
     "exclamations_max": 0,
     "slang_ok": [],
-    "char_budget": 160,
-    "end_with_full_stop": false
+    "char_budget": 200,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -265,8 +271,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 215,
-    "end_with_full_stop": false
+    "char_budget": 260,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -301,8 +308,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 69,
-    "end_with_full_stop": false
+    "char_budget": 92,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -338,7 +346,8 @@
     "exclamations_max": 0,
     "slang_ok": [],
     "char_budget": 260,
-    "end_with_full_stop": true
+    "end_with_full_stop": true,
+    "serious": false
    }
   },
   {
@@ -373,8 +382,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 203,
-    "end_with_full_stop": false
+    "char_budget": 260,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -409,8 +419,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 162,
-    "end_with_full_stop": false
+    "char_budget": 216,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -459,8 +470,9 @@
      "sick",
      "cheers"
     ],
-    "char_budget": 113,
-    "end_with_full_stop": false
+    "char_budget": 150,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -495,8 +507,9 @@
     "emoji_max": 2,
     "exclamations_max": 2,
     "slang_ok": [],
-    "char_budget": 117,
-    "end_with_full_stop": false
+    "char_budget": 156,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -529,8 +542,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 155,
-    "end_with_full_stop": false
+    "char_budget": 206,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -565,8 +579,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 96,
-    "end_with_full_stop": false
+    "char_budget": 128,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -601,8 +616,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 66,
-    "end_with_full_stop": false
+    "char_budget": 88,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -637,8 +653,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 93,
-    "end_with_full_stop": false
+    "char_budget": 124,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -678,15 +695,16 @@
    },
    "notes": [],
    "plan": {
-    "greeting": "yo",
+    "greeting": "hey",
     "address": "bruv",
     "stretch_words": 0,
     "lowercase": true,
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 108,
-    "end_with_full_stop": false
+    "char_budget": 144,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -719,8 +737,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 140,
-    "end_with_full_stop": false
+    "char_budget": 186,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -753,8 +772,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 159,
-    "end_with_full_stop": false
+    "char_budget": 212,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -787,8 +807,9 @@
     "emoji_max": 0,
     "exclamations_max": 0,
     "slang_ok": [],
-    "char_budget": 160,
-    "end_with_full_stop": false
+    "char_budget": 204,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -821,8 +842,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 120,
-    "end_with_full_stop": false
+    "char_budget": 160,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -857,8 +879,9 @@
     "emoji_max": 1,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 63,
-    "end_with_full_stop": false
+    "char_budget": 84,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -895,8 +918,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 116,
-    "end_with_full_stop": false
+    "char_budget": 154,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -931,8 +955,9 @@
     "emoji_max": 0,
     "exclamations_max": 0,
     "slang_ok": [],
-    "char_budget": 160,
-    "end_with_full_stop": false
+    "char_budget": 200,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -967,8 +992,9 @@
     "emoji_max": 0,
     "exclamations_max": 0,
     "slang_ok": [],
-    "char_budget": 160,
-    "end_with_full_stop": false
+    "char_budget": 200,
+    "end_with_full_stop": false,
+    "serious": false
    }
   },
   {
@@ -1003,8 +1029,9 @@
     "emoji_max": 0,
     "exclamations_max": 1,
     "slang_ok": [],
-    "char_budget": 122,
-    "end_with_full_stop": false
+    "char_budget": 162,
+    "end_with_full_stop": false,
+    "serious": false
    }
   }
  ]

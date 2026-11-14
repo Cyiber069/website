@@ -158,6 +158,7 @@ export default {
     function holdSent(item, result) {
       sent.set(item.id, { item: { ...item, _sent: result }, until: Date.now() + SENT_HOLD_MS });
       gone.add(item.id);
+      if (view.contains(document.activeElement)) document.activeElement.blur();   // so the card may be swapped for its sent state
       transition(paint);
       setTimeout(() => { if (view.isConnected) transition(paint); }, SENT_HOLD_MS + 200);
       ctx.refreshOverview();

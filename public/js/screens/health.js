@@ -27,7 +27,7 @@ export default {
   title: 'Health',
   focus: true,
   mount(view, ctx) {
-    let data = null, error = null;
+    let data = null, error = null, lastSig = '';
     setHTML(view, skeletonCards(3));
 
     function paint() {
@@ -85,8 +85,8 @@ export default {
     async function load() {
       try { data = await get('/api/health'); error = null; }
       catch (err) { if (err.name === 'AuthError') return; if (!data) error = err; else return; }
-      const open = [...view.querySelectorAll('details[open]')].length > 0;
-      if (!open || !data) paint(); else if (!view.querySelector('.hero')) paint();
+      const sig = JSON.stringify([{ ...data, now: 0, devices: (data.devices || []).map((d) => [d.id, d.online, d.status]) }, ctx.overview?.channels, Math.floor(Date.now() / 60000)]);
+      if (sig !== lastSig) { lastSig = sig; paint(); }
     }
     view.addEventListener('click', (e) => { if (e.target.closest('[data-action="retry"]')) load(); });
     load();

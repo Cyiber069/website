@@ -57,7 +57,7 @@ export default {
               <span class="eyebrow">Next run at ${londonClock(data.next_run_at)} UK time</span>
               <p class="hero__state num" id="count" aria-live="off">${countdown(data.next_run_at - Date.now())}</p>
               <p class="hero__sub">${live
-                ? `It will message up to ${plural(Math.min(eligible.length, s.daily_cap || eligible.length), 'person', 'people')} for real.`
+                ? (eligible.length ? `It will message up to ${plural(Math.min(eligible.length, s.daily_cap || eligible.length), 'person', 'people')} for real.` : 'Ready to send for real, but nobody is on the list yet.')
                 : `It will be a practice run only${data.blocked_by ? `, because ${data.blocked_by}` : ''}. Nothing is sent.`}</p>
             </div>
             <span class="pill ${live ? 'pill--live' : 'pill--wait'}"><span class="dot ${live ? 'dot--live' : 'dot--wait'}" aria-hidden="true"></span>${live ? 'Ready to send' : 'Practice only'}</span>

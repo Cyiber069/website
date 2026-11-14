@@ -37,11 +37,12 @@ function mountList(view, ctx) {
   let error = null;
   let filter = '';
   let q = '';
+  let limit = 20;
+  let gapLimit = 2;
   const uploads = [];
 
   setHTML(view, html`
     <p class="muted lead" id="kb-lead">Everything the agent is allowed to say comes from here. If it is not here, it asks you.</p>
-    <section id="gaps" hidden></section>
     <section class="stack" aria-label="Add knowledge">
       <label class="drop" id="drop" tabindex="-1">
         ${icon('i-upload', 'drop__icon')}
@@ -65,6 +66,7 @@ function mountList(view, ctx) {
         <div class="wrap"><button type="submit" class="btn btn--primary">Save note</button><button type="button" class="btn btn--ghost" data-action="note-close">Cancel</button></div>
       </form>
     </section>
+    <section id="gaps" hidden></section>
     <section class="card" aria-labelledby="docs-h">
       <div class="card__head"><h2 class="eyebrow" id="docs-h">What the agent knows</h2><span class="meta num" id="totals"></span></div>
       <div class="inbox__filters">
@@ -72,6 +74,7 @@ function mountList(view, ctx) {
         <div class="chips" role="group" aria-label="Filter by type"><button type="button" class="chip" data-cat="" aria-pressed="true">All</button>${CATEGORIES.map(([v, t]) => html`<button type="button" class="chip" data-cat="${v}" aria-pressed="false">${t}</button>`)}</div>
       </div>
       <ul class="docs" id="docs">${[0, 1, 2].map(() => html`<li class="doc"><span class="doc__main"><span class="skel skel--title" style="--w:40%"></span><span class="skel" style="--w:70%"></span></span></li>`)}</ul>
+      <button type="button" class="btn btn--ghost btn--block" id="docs-more" data-action="more" hidden>Show more</button>
     </section>`);
 
   const docsEl = $('#docs', view);
@@ -86,8 +89,10 @@ function mountList(view, ctx) {
     const gapsEl = $('#gaps', view);
     gapsEl.hidden = gaps.length === 0;
     if (gaps.length) {
-      if (!$('#gap-list', gapsEl)) setHTML(gapsEl, html`<div class="sechead"><h2 class="eyebrow">Teach me</h2><p class="meta">Things customers ask that the agent cannot answer yet. One box each.</p></div><div class="ulist" id="gap-list"></div>`);
-      syncList($('#gap-list', gapsEl), gaps.slice(0, 6).map((g, i) => ({ ...g, i })), { key: (g) => g.question, render: (g) => gapCard(g, g.i), sig: (g) => g.question });
+      if (!$('#gap-list', gapsEl)) setHTML(gapsEl, html`<div class="sechead"><h2 class="eyebrow">Teach me</h2><p class="meta">Things customers ask that the agent cannot answer yet. One box each.</p></div><div class="ulist" id="gap-list"></div><button type="button" class="btn btn--ghost btn--block" id="gaps-more" data-action="gaps-more" hidden>Show more</button>`);
+      syncList($('#gap-list', gapsEl), gaps.slice(0, gapLimit).map((g, i) => ({ ...g, i })), { key: (g) => g.question, render: (g) => gapCard(g, g.i), sig: (g) => g.question });
+      const gm = $('#gaps-more', gapsEl); gm.hidden = gaps.length <= gapLimit; gm.textContent = `Show ${gaps.length - gapLimit} more ${gaps.length - gapLimit === 1 ? 'question' : 'questions'}`;
+      $('.sechead .meta', gapsEl).textContent = `${gaps.length} ${gaps.length === 1 ? 'thing' : 'things'} customers ask that the agent cannot answer yet. One box each.`;
     }
     const needle = q.toLowerCase();
     const shown = data.docs.filter((d) => (!filter || d.category === filter) && (!needle || `${d.title} ${d.preview}`.toLowerCase().includes(needle)));
@@ -99,8 +104,11 @@ function mountList(view, ctx) {
       setHTML(docsEl, html`<li class="feed__empty"><p class="voice muted">Nothing matches. Try another word or pick All.</p></li>`);
     } else {
       if (docsEl.querySelector('.skel, .empty, .notice, .feed__empty')) { docsEl.innerHTML = ''; delete docsEl.dataset.synced; }
-      syncList(docsEl, shown, { key: (d) => d.id, render: docRow });
+      syncList(docsEl, shown.slice(0, limit), { key: (d) => d.id, render: docRow });
     }
+    const more = $('#docs-more', view);
+    more.hidden = shown.length <= limit;
+    more.textContent = `Show more (${shown.length - limit} left)`;
   }
 
   async function load() {
@@ -110,7 +118,7 @@ function mountList(view, ctx) {
   }
 
   function paintUploads() {
-    setHTML($('#uploads', view), uploads.map((u) => html`<li class="file">${icon(u.state === 'done' ? 'i-check' : u.state === 'failed' ? 'i-x' : 'i-upload', `file__icon file__icon--${u.state}`)}<span class="file__name">${u.name}</span><span class="meta">${u.state === 'done' ? 'Added' : u.state === 'failed' ? '' : 'Reading'}</span>${u.state === 'failed' ? html`<span class="file__err">${u.error}</span>` : html`<span class="file__bar"><i style="--p:${u.state === 'done' ? 1 : 0.6}"></i></span>`}</li>`));
+    setHTML($('#uploads', view), html`${uploads.map((u) => html`<li class="file">${icon(u.state === 'done' ? 'i-check' : u.state === 'failed' ? 'i-x' : 'i-upload', `file__icon file__icon--${u.state}`)}<span class="file__name">${u.name}</span><span class="meta">${u.state === 'done' ? 'Added' : u.state === 'failed' ? '' : 'Reading'}</span>${u.state === 'failed' ? html`<span class="file__err">${u.error}</span>` : html`<span class="file__bar"><i style="--p:${u.state === 'done' ? 1 : 0.6}"></i></span>`}</li>`)}`);
   }
 
   async function uploadFiles(files) {
@@ -151,7 +159,7 @@ function mountList(view, ctx) {
   const stop = (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); };
   window.addEventListener('dragover', stop); window.addEventListener('drop', stop);
 
-  view.addEventListener('input', (e) => { if (e.target.id === 'kb-q') { q = e.target.value.trim(); paint(); } });
+  view.addEventListener('input', (e) => { if (e.target.id === 'kb-q') { q = e.target.value.trim(); limit = 20; paint(); } });
   view.addEventListener('change', async (e) => {
     const t = e.target.closest('[data-toggle="enabled"]');
     if (!t) return;
@@ -196,11 +204,13 @@ function mountList(view, ctx) {
   });
   view.addEventListener('click', async (e) => {
     const chip = e.target.closest('[data-cat]');
-    if (chip) { filter = chip.dataset.cat; for (const b of view.querySelectorAll('[data-cat]')) b.setAttribute('aria-pressed', String(b === chip)); return paint(); }
+    if (chip) { filter = chip.dataset.cat; limit = 20; for (const b of view.querySelectorAll('[data-cat]')) b.setAttribute('aria-pressed', String(b === chip)); return paint(); }
     const b = e.target.closest('[data-action]');
     if (!b) return;
     const { action, id } = b.dataset;
     if (action === 'retry') return load();
+    if (action === 'more') { limit += 30; return paint(); }
+    if (action === 'gaps-more') { gapLimit += 4; return paint(); }
     if (action === 'note-open') { const f = $('#note-form', view); f.hidden = false; f.elements.title.focus(); f.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
     if (action === 'note-close') { $('#note-form', view).hidden = true; return; }
     if (action === 'sync') {

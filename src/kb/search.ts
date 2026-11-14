@@ -71,7 +71,7 @@ export interface KnowledgeContext {
 }
 
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
-const attr = (text: string): string => text.replace(/["<>\n]/g, ' ').trim();
+const attr = (text: string): string => text.replace(/ > /g, ' / ').replace(/["<>\n]/g, ' ').trim();
 
 function renderDoc(d: KbDocRow): string {
   return `<doc id="${d.id}" title="${attr(d.title)}" category="${d.category}" source="${d.source}" updated="${day(d.updated_at)}">\n${d.content}\n</doc>`;

@@ -215,7 +215,7 @@ export function register(r: Router): void {
     const pending = await all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE conversation_id = ? AND status IN ('pending', 'leased', 'review') ORDER BY created_at ASC`, conv.id);
     return json({
       conversation: {
-        id: conv.id, channel: conv.channel, customer: contact.display_name || conv.title || 'Customer', subject: conv.subject,
+        id: conv.id, contact_id: contact.id, channel: conv.channel, customer: contact.display_name || conv.title || 'Customer', subject: conv.subject,
         status: conv.status, paused_until: conv.paused_until && conv.paused_until > c.now ? conv.paused_until : null, pause_reason: conv.pause_reason,
         phone: contact.phone, email: contact.email, handle: contact.handle, opted_out: Boolean(contact.opted_out),
         tone: parseJson(contact.tone_profile, {}),

@@ -1,0 +1,65 @@
+<!doctype html>
+<!-- Mock of the Gmail web app for the extension end to end test. Structure, classes and attributes
+     follow the research notes (InboxSDK selector registry, gmail.js, 2026 userscripts). Served under
+     https://mail.google.com/mail/u/0/ by the test, see server.mjs. No real Google code or data. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gmail</title>
+<style>
+  body { font: 14px/1.4 Arial, sans-serif; margin: 0; color: #202124; }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: #f6f8fc; }
+  header input { flex: 1; padding: 6px; }
+  .view { padding: 8px 12px; }
+  table { border-collapse: collapse; width: 100%; }
+  tr.zA { cursor: pointer; border-bottom: 1px solid #eee; }
+  tr.zA td { padding: 6px 8px; white-space: nowrap; }
+  tr.zE { font-weight: 700; background: #fff; }
+  tr.yO { background: #f2f6fc; }
+  .y2 { color: #5f6368; font-weight: 400; }
+  .adn, .kv { border: 1px solid #ddd; border-radius: 8px; margin: 8px 0; padding: 8px; }
+  .kv { color: #5f6368; cursor: pointer; }
+  .gmail_quote { color: #777; border-left: 2px solid #ccc; padding-left: 8px; margin-top: 8px; }
+  .amn { margin: 12px 0; display: flex; gap: 8px; }
+  .ams, [role=button] { border: 1px solid #747775; border-radius: 16px; padding: 4px 14px; cursor: pointer; display: inline-block; }
+  .M9 { border: 1px solid #aaa; border-radius: 8px; padding: 8px; margin-top: 8px; }
+  .Ap [contenteditable] { min-height: 90px; outline: none; }
+  .T-I-atl { background: #0b57d0; color: #fff; border-color: #0b57d0; }
+  .b8 { position: fixed; left: 16px; bottom: 16px; }
+  .vh { background: #202124; color: #fff; padding: 10px 14px; border-radius: 4px; }
+  [gh=mtb] { display: flex; gap: 6px; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<!-- Gmail keeps hidden editable decoys outside the compose form. An adapter must not pick this one. -->
+<div style="display:none"><div contenteditable="true" role="textbox" aria-label="Message Body" id="decoy"></div></div>
+
+<header>
+  <form role="search" onsubmit="return false"><input aria-label="Search mail" placeholder="Search mail"></form>
+  <a id="account" href="#inbox" aria-label="Google Account: ACX Support (support@acxebikes.example)">A</a>
+</header>
+
+<div id="loading" style="padding:40px">Loading Gmail…</div>
+
+<div id="views" hidden>
+  <div id="view-list" class="view">
+    <div gh="tm"><div act="20" role="button" class="T-I nu" data-tooltip="Refresh">Refresh</div></div>
+    <div role="tablist">
+      <div role="tab" aria-label="Primary" aria-selected="true">Primary</div>
+      <div role="tab" aria-label="Promotions" aria-selected="false">Promotions</div>
+    </div>
+    <div gh="tl">
+      <table role="grid"><tbody id="rows"></tbody></table>
+      <div class="TC" id="empty" hidden>No new mail!</div>
+    </div>
+  </div>
+  <div id="view-thread" class="view" hidden></div>
+  <div id="view-settings" class="view" hidden><h2>Settings</h2></div>
+</div>
+
+<!-- The notice area is always in the page; only its content changes. -->
+<div class="b8 UC" role="alert"><div class="J-J5-Ji"><div class="vh" id="notice" style="display:none"><span class="bAq"></span> <span id="link_undo" role="link">Undo</span></div></div></div>
+
+<script src="/mock/app.js"></script>
+</body>
+</html>

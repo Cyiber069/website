@@ -4,11 +4,11 @@ import { LlmError, callJson, chooseProvider, knowledgeBudget, parseLooseJson, re
 import { mockDecide } from '../../src/brain/mock';
 import { validatePolish } from '../../src/brain/polish';
 import {
-  DECISION_SCHEMA, POLISH_SCHEMA, buildDecidePrompt, buildPolishPrompt, claimsHuman, decideInstructions, looksLikeOptOut, numbersIn, renderConversation,
+  DECISION_SCHEMA, POLISH_SCHEMA, buildDecidePrompt, buildPolishPrompt, claimsHuman, decideInstructions, looksLikeBotQuestion, looksLikeOptOut, numbersIn, renderConversation,
   styleCard, unsupportedNumbers, validateDecision, type PromptKnowledge, type RawDecision,
 } from '../../src/brain/prompt';
 import { normalizePlaceholders, sanitizeTemplate } from '../../src/brain/recovery';
-import { enforceDecision, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, seriousTopic } from '../../src/brain/rules';
+import { botLines, enforceDecision, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, protectedCodes, seriousTopic } from '../../src/brain/rules';
 import { violations } from '../../src/brain/style';
 import { analyzeTone, mirrorPlan } from '../../src/brain/tone';
 import type { DecideInput, Env, HistoryMessage, PolishInput, Settings } from '../../src/types';
@@ -208,15 +208,77 @@ describe('enforceDecision', () => {
     const asked = [inMsg('are you a bot or a real person')];
     const lied = enforce(raw({ parts: ["haha no I'm a real person", 'what do you need'], flags: { opt_out: false, asked_if_bot: true, needs_human: false } }), asked);
     expect(lied.parts.join(' ')).not.toMatch(/real person/i);
-    expect(lied.parts).toEqual(['what do you need']);
+    // What was left did not answer the question honestly, so the fixed honest lines go out instead.
+    expect(lied.parts).toEqual(['this is the ACX AI assistant', 'the team can jump in whenever you want a person']);
     const onlyLie = enforce(raw({ parts: ['I am not a bot mate'], flags: { opt_out: false, asked_if_bot: true, needs_human: false } }), asked);
     expect(onlyLie.action).toBe('reply');
-    expect(onlyLie.parts).toEqual(['yeah this is the ACX AI assistant', 'the team can jump in whenever you want a person']);
+    expect(onlyLie.parts).toEqual(['this is the ACX AI assistant', 'the team can jump in whenever you want a person']);
     const unprompted = enforce(raw({ parts: ["I'm a human and delivery is 2 to 4 days"] }), ask);
     expect(unprompted.action).toBe('escalate');
     expect(unprompted.flags.needs_human).toBe(true);
     for (const t of ["I'm a real person", 'im not a bot', 'you are talking to a real human', 'No bots here', 'I am a person']) expect(claimsHuman(t)).toBe(true);
     for (const t of ['this is the ACX assistant', 'a person from the team can jump in', 'the bot question', 'I am not sure']) expect(claimsHuman(t)).toBe(false);
+  });
+
+  it('spots the bot question in code and makes sure the answer is honest', () => {
+    for (const t of ['u a bot?', 'wait is this a bot lol', 'Am I talking to a real person?', 'IS THIS A BOT?? get me a human', 'are you a robot', 'can i speak to a human',
+      'May I ask whether I am speaking with a person or an automated system?', 'is this chatgpt']) expect(looksLikeBotQuestion(t)).toBe(true);
+    for (const t of ['how long is delivery', 'is this the 72v battery', 'are you open today', 'can the bike carry a person and a child', 'whats the bottom bracket size']) expect(looksLikeBotQuestion(t)).toBe(false);
+
+    // The model missed the question entirely: the flag is set and the honest lines replace the dodge.
+    const missed = enforce(raw({ parts: ['haha anyway delivery is 2 to 4 days'] }), [inMsg('wait is this a bot lol')]);
+    expect(missed.flags.asked_if_bot).toBe(true);
+    expect(missed.parts.join(' ')).toMatch(/AI assistant/);
+    // An honest answer in the model's own words is left alone.
+    const honest = enforce(raw({ parts: ['yeah this is the ACX AI assistant', 'the team can jump in any time if you want a person. what did you need?'] }), [inMsg('wait is this a bot lol')]);
+    expect(honest.parts).toEqual(['yeah this is the ACX AI assistant', 'the team can jump in any time if you want a person. what did you need?']);
+    expect(honest.action).toBe('reply');
+
+    const s = settings();
+    expect(botLines(analyzeTone([inMsg('Good morning. May I ask whether I am speaking with a person? Kind regards, David')]).profile, s)).toEqual(['This is the ACX Ebikes AI assistant. A member of the team can take over whenever you prefer.']);
+    expect(botLines(analyzeTone([inMsg('Am I talking to a real person?')]).profile, s)[0]).toBe("This is ACX's AI assistant");
+    // Upset and asking for a human: the honest line goes out and the owner is called.
+    const angry = enforce(raw({ parts: ['sorry about that'] }), [inMsg('IS THIS A BOT?? this is a joke, absolute scam, get me a human')]);
+    expect(angry.action).toBe('escalate');
+    expect(angry.escalate!.category).toBe('human_request');
+    expect(angry.parts).toEqual(["Yes this is ACX's AI assistant. I've asked the team to take over this chat now"]);
+  });
+
+  it('asks for one rewrite on the first pass instead of patching, and patches on the final pass', () => {
+    const history = [inMsg('wait is this a bot lol')];
+    const inp = input(history);
+    const ctx = { settings: settings(), input: inp, tone: analyzeTone(history).profile, sources: '' };
+    const dodge = raw({ parts: ['haha what do you need'] });
+    const first = enforceDecision(dodge, { ...ctx, final: false });
+    expect(first.retry.join(' ')).toMatch(/asked if this is a bot/);
+    expect(first.parts).toEqual(['haha what do you need']); // untouched, waiting for the rewrite
+    expect(enforceDecision(dodge, ctx).retry).toEqual([]);
+
+    const ask = [inMsg('hi is the 72v in stock')];
+    const c2 = { settings: settings(), input: input(ask), tone: analyzeTone(ask).profile, sources: '72v' };
+    const flowery = enforceDecision(raw({ parts: ["It's not just a battery, it's a complete transformation of your ride."] }), { ...c2, final: false });
+    expect(flowery.retry).toEqual(['drop the "not just X, it is Y" sentence and state the fact']);
+    const lie = enforceDecision(raw({ parts: ["I'm a real person and yes it is in stock"] }), { ...c2, final: false });
+    expect(lie.retry.join(' ')).toMatch(/never say or imply that a person is typing/);
+    const waffle = enforceDecision(raw({ parts: ['Great question!', 'I hope this helps!'] }), { ...c2, final: false });
+    expect(waffle.retry.join(' ')).toMatch(/stock phrases/);
+    const tooLong = enforceDecision(raw({ parts: ['Yes it is in stock today. It ships tomorrow morning from the UK. It arrives by the end of the week. It comes fully charged in the box. It has a full warranty included.'] }), { ...c2, final: false });
+    expect(tooLong.retry.join(' ')).toMatch(/too long/);
+    expect(enforceDecision(raw({ parts: ['yes the 72v is in stock'] }), { ...c2, final: false }).retry).toEqual([]);
+  });
+
+  it('gives the owner the reason when a draft is held back for an invented figure', () => {
+    const d = enforce(raw({ parts: ['it does about 47mph'] }), [inMsg('how fast is the 3000w')]);
+    expect(d.action).toBe('reply');
+    expect(d.escalate).toMatchObject({ category: 'low_confidence', question: 'how fast is the 3000w' });
+    expect(d.escalate!.reason).toMatch(/figure that is not in the knowledge \(47\)/);
+  });
+
+  it('keeps hyphenated part numbers that appear in the knowledge', () => {
+    expect(protectedCodes('Mid drive kit bbs02-750 and ACX-72V. Fits 26-inch wheels, 2-4 days, plug-and-play.', ['you want the bbs02-750 for a 26-inch wheel'])).toEqual(['bbs02-750']);
+    const d = enforce(raw({ parts: ['you want the bbs02-750 kit'] }), [inMsg('which mid drive')], settings(), {}, 'Mid drive kit bbs02-750');
+    expect(d.parts).toEqual(['you want the bbs02-750 kit']);
+    expect(enforce(raw({ parts: ['its a 26-inch plug-and-play kit'] }), [inMsg('which one')], settings(), {}, 'a 26-inch plug-and-play kit').parts).toEqual(['its a 26 inch plug and play kit']);
   });
 
   it('hands the bot question to the owner when the policy says so', () => {
@@ -325,7 +387,9 @@ describe('polish', () => {
 
 describe('figures', () => {
   it('compares numbers without thousands separators', () => {
-    expect(numbersIn('£1,299.00 for the 72v, 2 to 4 days.')).toEqual(['1299.00', '72', '2', '4']);
+    expect(numbersIn('£1,299.00 for the 72v, 2 to 4 days.')).toEqual(['1299', '72', '2', '4']);
+    expect(numbersIn('15.5mph, 0.5 kg, 1,000,000')).toEqual(['15.5', '0.5', '1000000']);
+    expect(unsupportedNumbers('12 months and 30 days', 'a twelve month warranty, thirty day returns')).toEqual([]);
     expect(unsupportedNumbers('that is £1299 and 72v', 'ACX 72V pack £1,299')).toEqual([]);
     expect(unsupportedNumbers('about 35 mph', 'top speed is not stated')).toEqual(['35']);
     expect(unsupportedNumbers('3 days', '')).toEqual([]);

@@ -160,10 +160,13 @@ function fromAnthropicError(err: unknown): LlmError {
   return new LlmError('provider_error', String((err as Error)?.message ?? err).slice(0, 200));
 }
 
-async function callAnthropic(choice: ProviderChoice, settings: Settings, input: CallJsonInput): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
+async function callAnthropic(choice: ProviderChoice, settings: Settings, input: CallJsonInput, baseURL?: string): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
   // The key comes from D1, so the client is made per call. Timeout and retries are set on purpose:
   // the SDK defaults (10 minutes, 2 retries) would outlive the request that is waiting for us.
-  const client = new Anthropic({ apiKey: choice.apiKey ?? '', timeout: ANTHROPIC_TIMEOUT_MS, maxRetries: ANTHROPIC_MAX_RETRIES });
+  const client = new Anthropic({
+    apiKey: choice.apiKey ?? '', timeout: ANTHROPIC_TIMEOUT_MS, maxRetries: ANTHROPIC_MAX_RETRIES,
+    ...(baseURL ? { baseURL } : {}),
+  });
   const fallback = supportsFallbacks(choice.model);
   // Haiku 4.5 is the one current model that rejects the effort setting.
   const effort = /haiku-4-5/.test(choice.model) ? undefined : settings.brain.effort;
@@ -315,7 +318,10 @@ export async function callJson<T = unknown>(env: Env, input: CallJsonInput): Pro
   }
   const started = Date.now();
   try {
-    const { data, usage } = choice.provider === 'anthropic' ? await callAnthropic(choice, settings, input) : await callWorkersAi(env, choice, input);
+    // Optional: send Claude calls through a proxy such as Cloudflare AI Gateway by setting the
+    // ANTHROPIC_BASE_URL variable on the Worker. Not set means the Anthropic API directly.
+    const baseURL = (env as Env & { ANTHROPIC_BASE_URL?: string }).ANTHROPIC_BASE_URL?.trim() || undefined;
+    const { data, usage } = choice.provider === 'anthropic' ? await callAnthropic(choice, settings, input, baseURL) : await callWorkersAi(env, choice, input);
     const full: LlmUsage = { ...usage, ms: Date.now() - started };
     await recordUsage(env, input.purpose, full, true);
     return { data: data as T, usage: full, provider: choice.provider, model: choice.model };
