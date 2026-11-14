@@ -1,0 +1,82 @@
+# ACX Agent: set up once
+
+About 30 minutes. You need your laptop, your Cloudflare login and your GitHub login.
+
+## 1. Put the dashboard online (Cloudflare, about 5 minutes)
+
+1. Open dash.cloudflare.com and go to **Workers & Pages**, then **Create**, then **Import a repository**.
+2. Connect GitHub when asked and pick the `website` repository.
+3. Set the branch to `claude/brave-mccarthy-rp1440` (or `main` once this work is merged). If the first screen has no branch choice, finish creating it, then change it under **Settings, Build, Branch control**.
+4. Leave the build command empty. Deploy command: `npx wrangler deploy`. Press **Save and Deploy**.
+5. If the build fails with a database permission error: open **Settings, Build, API token**, add **Account, D1, Edit** to the token, and press **Retry build**.
+6. When it finishes, copy your site address. It looks like `https://acx-agent.<your-name>.workers.dev`.
+7. Open that address and choose a password. Do this straight away: whoever opens it first sets the password.
+
+The database (`acx-agent`) already exists in your Cloudflare account and the site creates its own tables on first visit.
+
+## 2. Install the extension on the laptop (about 5 minutes)
+
+1. On GitHub open the repository, switch to the branch above, press **Code**, then **Download ZIP**. Unzip it somewhere you will not delete, for example Documents.
+2. In Chrome open `chrome://extensions`. Switch on **Developer mode** (top right) and leave it on.
+3. Press **Load unpacked** and choose the `extension` folder inside the unzipped folder.
+4. Pin "ACX Agent" to the toolbar.
+5. In the dashboard open **Connections** and press **Pair this laptop**. Copy the pairing line.
+6. Click the ACX Agent icon in Chrome, paste the line, press **Connect**.
+
+## 3. Open and log in to the three sites
+
+The extension opens WhatsApp Web, Gmail and TikTok messages as pinned tabs. Log in to each one.
+
+* **WhatsApp:** scan the QR code with the shop phone. Keep only one WhatsApp Web tab.
+* **Gmail:** Settings, General: Conversation view **on**, Language **English**, Undo Send **5 seconds**. Settings, Inbox: Reading pane **No split**, Inbox type **Default**.
+* **TikTok:** use `tiktok.com/messages` (not Business Suite), language English. In TikTok privacy settings let messages go to your Inbox so customers skip the request step.
+
+Then click the extension icon, open **More**, press **Run a check**. It tests each tab without sending anything. Send the result to Claude if anything says FAIL.
+
+## 4. Keep the laptop awake
+
+* Plug it in. Set sleep to **Never** and "when I close the lid" to **Do nothing** (Windows: Control Panel, Power Options. Mac: System Settings, Battery, Options, and keep the lid open).
+* Chrome: `chrome://settings/performance`, add `web.whatsapp.com`, `mail.google.com` and `www.tiktok.com` under **Always keep these sites active**. Turn Energy Saver off.
+* Keep the Chrome window open and not minimised.
+* Set Chrome to open at login and to "Continue where you left off".
+
+## 5. Give it a brain
+
+It works straight away on Cloudflare's free AI (a few hundred short replies a day). For better replies paste a Claude API key from console.anthropic.com in **Connections, AI brain** and press **Test**. Claude is billed per use by Anthropic.
+
+## 6. Teach it
+
+**Knowledge** already holds your products, policies and FAQs from the store. Answer the "teach me" cards: they are the questions customers ask that your store does not answer. Upload any other files there.
+
+Use **Voice** and its playground to see how it replies before it talks to real customers.
+
+## 7. Connect AcxEbikes (for the 20:00 checkout messages)
+
+**Full connect (recommended)**
+
+1. Shopify admin, **Settings, Apps, Develop apps, Build apps in Dev Dashboard**.
+2. **Create app**, name it "ACX Agent".
+3. On Versions set App URL to `https://shopify.dev/apps/default-app-home`, Webhooks API version `2026-10`, and Scopes `read_orders,read_all_orders,read_customers,read_products`.
+4. Press **Release**, then **Release** again.
+5. On the app overview press **Install app**, pick the store, **Install**.
+6. In the app's Settings copy the **Client ID** and **Client secret**.
+7. Paste both in the dashboard under **Connections, Shopify**. Save, then **Test**.
+
+**Quick connect** (sees only checkouts from now on): the dashboard's Shopify card shows a webhook address. In Shopify admin, **Settings, Notifications, Webhooks**, create three webhooks to that address (Checkout creation, Checkout update, Order creation; JSON; version 2026-10), then paste the signing key shown on that page into the dashboard.
+
+## 8. Checkout reminders
+
+Open **Recovery**, type roughly what you want to say, press **Suggest**, edit, then approve and choose who gets it. Nothing is sent until you approve. Until then 20:00 only records what it would have sent.
+
+Read this before choosing "everyone": first messages to people who never wrote to you are what gets WhatsApp numbers restricted, WhatsApp's terms forbid automated sending from the Business app, and UK marketing rules treat basket reminders as marketing that needs consent. "Only people who ticked marketing" is the safe choice. The default is 5 a day, a few minutes apart.
+
+## 9. On your phone
+
+Open your site address in the phone browser, sign in, add it to the home screen, then **Connections, Phone notifications, Turn on**. On iPhone it must be added to the home screen first.
+
+## Everyday
+
+* **Urgent** is where it asks you. Type a rough answer, it writes it properly and the laptop sends it.
+* Gmail and TikTok start in "ask me first". Switch a channel to automatic in **Connections** when you trust it.
+* If you reply to a customer yourself, the agent leaves that chat alone for 30 minutes.
+* **Stop everything** on the Live screen switches it off and cancels anything waiting.

@@ -29,10 +29,20 @@ async function findTab(channel) {
 
 async function ensureTab(channel, autoOpen) {
   let tab = await findTab(channel);
-  if (!tab && autoOpen) {
-    try {
-      tab = await chrome.tabs.create({ url: CHANNELS[channel].home, active: false, pinned: true });
-    } catch { tab = null; }
+  if (!tab) {
+    // A tab we opened may have been redirected to a sign in page on another address. Do not open
+    // another one every cycle: keep it, and report it as logged out.
+    const opened = await store.sessionGet('opened_tabs', {});
+    if (opened[channel]) {
+      try { return { ...(await chrome.tabs.get(opened[channel])), acxAway: true }; } catch { delete opened[channel]; await store.sessionSet('opened_tabs', opened); }
+    }
+    if (autoOpen) {
+      try {
+        tab = await chrome.tabs.create({ url: CHANNELS[channel].home, active: false, pinned: true });
+        opened[channel] = tab.id;
+        await store.sessionSet('opened_tabs', opened);
+      } catch { tab = null; }
+    }
   }
   if (tab && tab.autoDiscardable !== false) {
     // Stop Memory Saver from unloading the tab while the agent depends on it.
@@ -76,6 +86,7 @@ async function probeAll(autoOpen) {
   await Promise.all(NAMES.map(async (channel) => {
     const tab = await ensureTab(channel, autoOpen);
     if (!tab) { out[channel] = { state: 'no_tab', detail: 'Tab is not open', unread: 0, busy: false }; return; }
+    if (tab.acxAway) { out[channel] = { state: 'logged_out', detail: 'Log in on that tab', unread: 0, busy: false }; return; }
     if (channel === 'tiktok' && /\/login/.test(new URL(tab.url || 'https://x/').pathname)) { out[channel] = { state: 'logged_out', detail: 'Log in to TikTok on that tab', unread: 0, busy: false }; return; }
     if (tab.status !== 'complete') { out[channel] = { state: 'loading', detail: 'Page is loading', unread: 0, busy: busy[channel] }; return; }
     const res = await tabOp(channel, 'probe', {}, 8000);
@@ -305,6 +316,8 @@ async function trustedType(tabId, text) {
   const target = { tabId };
   try {
     await chrome.debugger.attach(target, '1.3');
+    // Without focus emulation a hidden tab silently drops the input.
+    await chrome.debugger.sendCommand(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
     await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
     return { ok: true };
   } catch (err) {

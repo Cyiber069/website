@@ -381,7 +381,7 @@
     toWorker({ type: 'diag', kind, data });
   }
 
-  const KEEP_ATTRS = ['data-testid', 'data-e2e', 'role', 'data-tab', 'data-icon', 'aria-selected', 'aria-modal', 'contenteditable', 'data-lexical-editor', 'type', 'name', 'gh', 'act'];
+  const KEEP_ATTRS = ['data-testid', 'data-e2e', 'role', 'data-tab', 'data-icon', 'aria-selected', 'aria-modal', 'contenteditable', 'data-lexical-editor', 'type', 'name', 'gh', 'act', 'g_editable', 'data-legacy-thread-id', 'data-legacy-message-id'];
   /**
    * Shape of the page without its content: tags and stable attributes only, never message text.
    * Sent with a failure so selectors can be repaired remotely.
@@ -399,7 +399,7 @@
       }
       if (el.id && !/^:|\d{3,}/.test(el.id)) a.id = el.id.slice(0, 40);
       if (el.hasAttribute && el.hasAttribute('aria-label')) a['aria-label-len'] = String(el.getAttribute('aria-label').length);
-      const cls = typeof el.className === 'string' ? el.className.split(/\s+/).filter((c) => /^[a-z][a-z-]{3,}$/i.test(c)).slice(0, 3) : [];
+      const cls = typeof el.className === 'string' ? el.className.split(/\s+/).filter((c) => /^[a-z][a-z0-9-]{1,}$/i.test(c)).slice(0, 3) : [];
       if (cls.length) a.class = cls.join(' ');
       if (Object.keys(a).length) node.a = a;
       const kids = [];
