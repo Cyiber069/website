@@ -228,7 +228,7 @@ The LLM is prompted with them and `sanitizeReply` enforces them deterministicall
 Every minute `recoveryTick` checks the London clock. At `recovery.send_hour_london` (20) it runs once
 per London date: pull checkouts (Shopify API or the rows fed by webhooks), pick eligible ones, render
 the owner-approved template, queue WhatsApp `new_chat` jobs spaced `spacing_seconds` apart that expire
-at `deadline_hour_london`. No approved template means a dry run only. Replies thread into normal
+`window_minutes` after the start. No approved template means a dry run only. Replies thread into normal
 conversations with a context note about the checkout.
 
 ## 9. Operating it from a Claude session

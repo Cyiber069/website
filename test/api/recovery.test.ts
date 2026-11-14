@@ -1,7 +1,7 @@
 import { createHmac, webcrypto } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { violations } from '../../src/brain/style';
 import { BASE, api, cron, finish, sql, sync, unique } from '../helpers/client';
 
@@ -87,6 +87,16 @@ beforeAll(async () => {
   await api('/api/agent-toggle', { body: { enabled: true } });
   await api('/api/settings/channels', { method: 'PUT', body: { whatsapp: { mode: 'auto' } } });
   await api('/api/connections/shopify', { method: 'PUT', body: { webhook_secret: WEBHOOK_SECRET } });
+});
+
+afterAll(async () => {
+  // Leave nothing behind that another test file could trip over (a waiting job would hold the WhatsApp tab).
+  await sql(`DELETE FROM outbox WHERE source = 'recovery'`);
+  await sql('DELETE FROM checkouts');
+  await sql('DELETE FROM recovery_runs');
+  await saveTemplate({ text: '', approved: false });
+  await setRecovery({ send_hour_london: 20, daily_cap: 5, spacing_seconds: [180, 480], personalize: true });
+  await api('/api/agent-toggle', { body: { enabled: true } });
 });
 
 beforeEach(async () => {
@@ -538,6 +548,23 @@ describe('the run', () => {
     // They buy after the reminder: that is a recovery.
     await hook('orders/create', { id: 7001, checkout_token: ids[0], created_at: new Date().toISOString() });
     expect((await overview()).stats).toMatchObject({ messaged_30d: 1, recovered_30d: 1 });
+  });
+
+  it('can reword each reminder a little without losing the name, the link or the style', async () => {
+    await setRecovery({ personalize: true, include_link: true });
+    const ids = [await seed({ first_name: 'Ana', age_hours: 2 }), await seed({ first_name: 'Ben', age_hours: 3 }), await seed({ first_name: 'Cal', age_hours: 4 })];
+    await goLive();
+    expect((await runNow()).queued).toBe(3);
+    const jobs = await recoveryJobs();
+    for (const [i, j] of jobs.entries()) {
+      const text = (JSON.parse(j.parts) as string[]).join(' ');
+      const row = await checkout(ids[i]!);
+      expect(text).toContain(['Ana', 'Ben', 'Cal'][i]);
+      expect(text).toContain(row.recovery_url);
+      expect(text).toContain('Trail Kit 72V');
+      expect(text).toContain("Reply STOP if you'd rather not hear from us");
+      expect(violations(text)).toEqual([]);
+    }
   });
 
   it('stops at the daily cap, across runs on the same day', async () => {

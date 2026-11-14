@@ -193,7 +193,7 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
       await run(db, `UPDATE urgent SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'answered'`, now, row.ref_id);
     }
     if (row.source === 'recovery' && row.ref_id) {
-      await run(db, `UPDATE checkouts SET status = 'messaged', messaged_at = ?, updated_at = ? WHERE id = ?`, now, now, row.ref_id);
+      await run(db, `UPDATE checkouts SET status = 'messaged', messaged_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'`, now, now, row.ref_id);
     }
     if (row.source !== 'alert') {
       await logEvent(db, {

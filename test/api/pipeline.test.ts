@@ -70,6 +70,7 @@ describe('inbound to reply', () => {
   });
 
   it('matches messages without platform ids by order, including repeats', async () => {
+    await api('/api/settings/channels', { method: 'PUT', body: { tiktok: { mode: 'auto' } } });
     const t = unique('tt_');
     const a = await inbound('tiktok', t, [{ direction: 'in', body: 'ok' }]);
     expect(a.action).toBe('reply');

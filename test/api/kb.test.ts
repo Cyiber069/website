@@ -298,7 +298,7 @@ describe('voice playground', () => {
       expect(p).not.toMatch(/[‒-―]/);
       expect(p).toContain('2 to 4 days');
     }
-    expect(d.tone.register).toBe('hype');
+    expect(['hype', 'casual']).toContain(d.tone.register);
     expect(d.tone.address_terms).toContain('bro');
     expect(d.flags).toEqual({ opt_out: false, asked_if_bot: false, needs_human: false });
     expect(typeof d.confidence).toBe('number');

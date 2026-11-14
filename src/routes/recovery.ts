@@ -87,12 +87,14 @@ export function register(r: Router): void {
   r.post('/api/recovery/teach', 'owner', async (c) => {
     const body = await c.body<{ rough?: unknown }>();
     const rough = str(body.rough, 'rough', { max: 2000 });
+    // Placeholders the owner typed their own way ([name], {{product}}) are normalised first, for either path.
+    const tidy = basicTemplateCleanup(rough);
     let suggestion = '';
     let source: 'brain' | 'basic' = 'basic';
     try {
       const brain = (await import('../brain/index')) as Record<string, unknown>;
       if (typeof brain.draftRecoveryTemplate === 'function') {
-        const result: unknown = await (brain.draftRecoveryTemplate as (env: typeof c.env, input: { rough: string }) => Promise<unknown>)(c.env, { rough });
+        const result: unknown = await (brain.draftRecoveryTemplate as (env: typeof c.env, input: { rough: string }) => Promise<unknown>)(c.env, { rough: tidy });
         const text = typeof result === 'string' ? result : result && typeof result === 'object'
           ? String((result as Record<string, unknown>).suggestion ?? (result as Record<string, unknown>).text ?? '') : '';
         if (text.trim()) { suggestion = text.trim(); source = 'brain'; }
@@ -100,9 +102,9 @@ export function register(r: Router): void {
     } catch (err) {
       console.error('draftRecoveryTemplate failed, using the basic cleanup', err);
     }
-    if (!suggestion) suggestion = basicTemplateCleanup(rough);
+    if (!suggestion) suggestion = tidy;
     // Whoever wrote it, the suggestion may only use variables that exist.
-    for (const v of unknownVariables(suggestion)) suggestion = suggestion.split(v).join('').replace(/[ \t]{2,}/g, ' ');
+    for (const v of unknownVariables(suggestion)) suggestion = suggestion.split(v).join('').replace(/[ \t]{2,}/g, ' ').replace(/\s+([,.!?])/g, '$1');
     return json({ suggestion: suggestion.trim().slice(0, MAX_TEMPLATE_CHARS), source });
   });
 
