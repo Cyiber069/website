@@ -30,7 +30,7 @@ export interface StyleContext {
 /** An email is a short letter, not a text: it gets more room than voice.max_chars and voice.max_sentences allow a chat reply. */
 export function lengthLimits(voice: VoiceSettings, channel: Channel): { max_chars: number; max_sentences: number } {
   if (channel !== 'gmail') return { max_chars: voice.max_chars, max_sentences: voice.max_sentences };
-  return { max_chars: Math.max(voice.max_chars * 3, 700), max_sentences: Math.max(voice.max_sentences * 2, 6) };
+  return { max_chars: Math.max(voice.max_chars, 600), max_sentences: Math.max(voice.max_sentences, 6) };
 }
 
 function options(ctx: StyleContext): SanitizeOptions {

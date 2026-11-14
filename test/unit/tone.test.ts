@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeTone, collapseElongation, mirrorPlan, profileTone } from '../../src/brain/tone';
+import { analyzeTone, collapseElongation, isSeriousTopic, mirrorPlan, profileTone } from '../../src/brain/tone';
 import type { HistoryMessage, ToneProfile } from '../../src/types';
 import vectors from './vectors/tone.vectors.json';
 
@@ -97,7 +97,8 @@ describe('mirrorPlan', () => {
 
   it('mirrors a notch calmer for a hyped customer', () => {
     const plan = mirrorPlan(hype, { mirror_level: 'match', emojis: 'mirror', max_chars: 260 });
-    expect(plan).toMatchObject({ greeting: 'yo', address: 'bro', stretch_words: 1, lowercase: true, emoji_max: 1, exclamations_max: 2, end_with_full_stop: false });
+    // "yo" is answered with "hey": one notch calmer.
+    expect(plan).toMatchObject({ greeting: 'hey', address: 'bro', stretch_words: 1, lowercase: true, emoji_max: 1, exclamations_max: 2, end_with_full_stop: false, serious: false });
   });
 
   it('follows the owner settings', () => {
@@ -113,6 +114,20 @@ describe('mirrorPlan', () => {
     expect(mirrorPlan(angry)).toMatchObject({ address: '', stretch_words: 0, lowercase: false, emoji_max: 0, exclamations_max: 0 });
     const formal = t('Dear Sir or Madam, I would like to enquire about the warranty. Kind regards, Margaret');
     expect(mirrorPlan(formal)).toMatchObject({ greeting: 'Hello', address: '', end_with_full_stop: true, exclamations_max: 0 });
+  });
+});
+
+describe('serious topics', () => {
+  it('are spotted from the words alone', () => {
+    for (const t of ['can i get a refund', 'i want to return the battery', 'the battery is getting very hot', 'is the 1000w road legal', 'it cut out and i came off', 'can my 12 year old ride it', 'how do i derestrict it']) expect(isSeriousTopic(t), t).toBe(true);
+    for (const t of ['yo how fast is the 5000w', 'do u ship to ireland', 'whats the price', 'cheers bro']) expect(isSeriousTopic(t), t).toBe(false);
+  });
+
+  it('switch mirroring off even for a relaxed customer', () => {
+    const casual = t('yoooo brooo', 'can i leave the 72v charging overnight');
+    expect(mirrorPlan(casual, {}, false)).toMatchObject({ address: 'bro', lowercase: true });
+    expect(mirrorPlan(casual, {}, true)).toMatchObject({ address: '', lowercase: false, stretch_words: 0, emoji_max: 0, exclamations_max: 0, serious: true });
+    expect(mirrorPlan(casual, {}, true).char_budget).toBeGreaterThanOrEqual(160);
   });
 });
 

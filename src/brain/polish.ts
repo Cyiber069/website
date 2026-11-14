@@ -7,8 +7,8 @@ import { getSettings } from '../lib/settings';
 import { LlmError, callJson, chooseProvider } from './llm';
 import { mockPolish } from './mock';
 import { POLISH_SCHEMA, buildPolishPrompt, claimsHuman, renderConversation, unsupportedNumbers } from './prompt';
-import { promptToneNotes } from './rules';
-import { finalizeParts } from './style';
+import { promptToneNotes, seriousTopic } from './rules';
+import { finalizeParts, type StyleContext } from './style';
 import { analyzeTone, mirrorPlan } from './tone';
 
 interface PolishOutput { parts?: unknown; general?: unknown; learned_title?: unknown; learned_content?: unknown }
@@ -37,7 +37,7 @@ export async function polishOwnerAnswer(env: Env, input: PolishInput): Promise<P
   const settings = await getSettings(env.DB);
   const analysis = analyzeTone(input.history);
   const tone = analysis.profile;
-  const style = { voice: settings.voice, tone, channel: input.channel };
+  const style: StyleContext = { voice: settings.voice, tone, channel: input.channel, serious: seriousTopic(input.history), customer_emojis: analysis.emojis };
   // If anything goes wrong the customer still gets the owner's answer, tidied by the style rules only.
   const asWritten = (): PolishResult => ({
     parts: finalizeParts([input.owner_answer], style),
@@ -53,7 +53,7 @@ export async function polishOwnerAnswer(env: Env, input: PolishInput): Promise<P
     return r;
   }
 
-  const prompt = buildPolishPrompt({ settings, input, tone, plan: mirrorPlan(tone, settings.voice), toneNotes: promptToneNotes(analysis.notes, tone) });
+  const prompt = buildPolishPrompt({ settings, input, tone, plan: mirrorPlan(tone, settings.voice, seriousTopic(input.history)), toneNotes: promptToneNotes(analysis.notes, tone) });
   try {
     const res = await callJson(env, { purpose: 'polish', system: prompt.system, user: prompt.user, schema: POLISH_SCHEMA, choice });
     const checked = validatePolish(res.data, input);

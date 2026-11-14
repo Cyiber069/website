@@ -291,7 +291,7 @@ export function mirrorPlan(tone: ToneProfile, voice: Partial<Pick<VoiceSettings,
   const upset = tone.mood === 'angry' || tone.mood === 'frustrated';
   const formal = tone.register === 'formal';
   const off = level === 'off' || upset || formal || serious;      // serious = isSeriousTopic(last customer messages)
-  const SAFE_ADDR = ['bro', 'bruv', 'mate', 'man', 'pal', 'bud', 'buddy', 'lad', 'boss', 'chief', 'dude', 'guys', 'g', 'fam', 'bruh', 'my man', 'my guy'];
+  const SAFE_ADDR = ['bro', 'bruv', 'bruh', 'mate', 'man', 'pal', 'bud', 'buddy', 'lad', 'boss', 'chief', 'dude', 'guys', 'my man', 'my guy'];   // fam, g, blud, akh, hun, love and the rest are understood, never said back
   const address = off ? '' : (tone.address_terms.find((a) => SAFE_ADDR.includes(a)) || '');
   const greetMap: Record<string, string> = { yo: 'hey', oi: 'hey', ay: 'hey', sup: 'hey', wagwan: 'hey', alright: 'alright', hiya: 'hiya', hey: 'hey', hi: 'hi', hello: 'hello', dear: 'Hello', salam: 'hi', 'ey up': 'hiya' };
   let greeting = tone.greeting ? (greetMap[tone.greeting] ?? (tone.greeting.startsWith('good ') ? tone.greeting.replace(/^g/, 'G') : 'hi')) : '';

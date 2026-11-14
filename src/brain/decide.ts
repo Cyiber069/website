@@ -30,7 +30,8 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
   const settings = await getSettings(env.DB);
   const analysis = analyzeTone(input.history);
   const tone = analysis.profile;
-  const plan = mirrorPlan(tone, settings.voice);
+  const serious = seriousTopic(input.history);
+  const plan = mirrorPlan(tone, settings.voice, serious);
   const pending = pendingInbound(input.history);
   const lastText = [...pending].reverse().find(hasWords)?.body ?? '';
 
@@ -38,7 +39,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
   if (pending.length > 0 && !pending.some(hasWords)) {
     const kinds = [...new Set(pending.map((m) => (m.kind === 'voice' ? 'a voice note' : m.kind === 'image' ? 'a photo' : m.kind === 'video' ? 'a video' : m.kind === 'document' ? 'a file' : m.kind === 'sticker' ? 'a sticker' : 'a message with no text')))];
     const raw: RawDecision = {
-      action: 'escalate', parts: [mediaHoldingLine(pending.map((m) => m.kind), tone.language)], confidence: 0.9, language: tone.language,
+      action: 'escalate', parts: [mediaHoldingLine(pending.map((m) => m.kind), tone.language)], confidence: 0.9,
       escalate: { question: `The customer sent ${kinds.join(' and ')} that I cannot open. Please have a look and reply.`, reason: 'I cannot listen to voice notes or look at pictures', category: 'media' },
       flags: { opt_out: false, asked_if_bot: false, needs_human: true }, kb_refs: [], note: `Customer sent ${kinds.join(' and ')} with no text`,
     };
@@ -56,7 +57,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
 
   if (choice.provider === 'mock') {
     const m = mockDecide(input, tone);
-    const raw: RawDecision = { action: m.action, parts: m.parts, confidence: m.confidence, escalate: m.escalate, flags: m.flags, kb_refs: [], note: m.note, language: tone.language };
+    const raw: RawDecision = { action: m.action, parts: m.parts, confidence: m.confidence, escalate: m.escalate, flags: m.flags, kb_refs: [], note: m.note };
     // The mock invents its wording, so the "figures must be in the knowledge" check cannot apply to it.
     const done = enforceDecision(raw, { ...ctx, sources: `${sources}\n${m.parts.join('\n')}` });
     // Report what the real brain would have been shown, so retrieval is exercised end to end in tests.
@@ -64,9 +65,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
     return toDecision(done, tone, null);
   }
 
-  const toneNotes = promptToneNotes(analysis.notes, tone);
-  if (seriousTopic(input.history)) toneNotes.push('serious topic (money back, a complaint, safety or the law): plain and direct, normal capitals, no slang, no emoji, no stretched letters');
-  const prompt = buildDecidePrompt({ settings, input, tone, plan, toneNotes, knowledge });
+  const prompt = buildDecidePrompt({ settings, input, tone, plan, toneNotes: promptToneNotes(analysis.notes, tone), knowledge });
   const allowedRefs = knowledge.docs.map((d) => d.id);
   const purpose = input.mode === 'playground' ? 'playground' : 'decide';
   let usage: Decision['usage'] = null;
@@ -88,7 +87,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
       usage = addUsage(usage, again.usage);
       const rewritten = validateDecision(again.data, allowedRefs, lastText);
       // Only the wording is taken from the second answer. The decision itself stands.
-      if (rewritten.parts.length) second = { ...raw, parts: rewritten.parts, language: rewritten.language };
+      if (rewritten.parts.length) second = { ...raw, parts: rewritten.parts };
     } catch (err) {
       if (!(err instanceof LlmError)) throw err;
       console.error('regeneration failed, keeping the first answer:', err.code);
@@ -101,7 +100,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
     // thrown so the pipeline logs it and tries again later.
     if (!(err instanceof LlmError) || err.code !== 'refusal') throw err;
     const raw: RawDecision = {
-      action: 'escalate', parts: [holdingLine(tone.language)], confidence: 0.9, language: tone.language,
+      action: 'escalate', parts: [holdingLine(tone.language)], confidence: 0.9,
       escalate: { question: lastText.slice(0, 1000) || 'The customer needs an answer from you', reason: 'The AI declined to answer this message', category: 'other' },
       flags: { opt_out: false, asked_if_bot: false, needs_human: true }, kb_refs: [], note: 'The AI declined to answer, passed to the owner',
     };

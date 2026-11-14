@@ -101,7 +101,7 @@ const TAG_RE = new RegExp(`^(?:${alt(TAGS)})(?:\\s+(?:${alt(ADDR)}))?$`, 'i');
 // B rules: never rewritten, only reported. blocked = do not send. regen = ask the model again once.
 const CLAIMS_HUMAN = /\bi\s*(?:'m|am|m)\s+(?:a\s+|an\s+)?(?:real\s+|actual\s+|genuine\s+)?(?:human|person)\b|\bi\s*(?:'m|am)\s+real\b|(?:\bnot|n't|\baint)\s+(?:a\s+|an\s+)?(?:bot|robot|chatbot|ai|machine|computer)\b|\b(?:real|actual)\s+(?:human|person)\s+(?:here|typing|speaking|talking)\b|\bno\s+(?:bots?|robots?|ai)\s+here\b/i;
 const NOT_JUST = /\b(?:it'?s|its|that'?s|this is|we'?re|they'?re)\s+not\s+(?:just|only|merely|simply)\b[^.?!]*\b(?:it'?s|its|but|they'?re|we'?re)\b|\bnot only\b[^.?!]*\bbut also\b/i;
-const AI_WORDS = /\b(?:delve|tapestry|testament|seamless(?:ly)?|leverage|robust|crucial|pivotal|vibrant|landscape|elevate|unlock|unleash|game[- ]changer|embark|navigat(?:e|ing) the|treasure trove|holistic|meticulous(?:ly)?|foster(?:ing)?|underscore[sd]?|showcas(?:e|ing)|in today's|when it comes to|look no further)\b/i;
+const AI_WORDS = /\b(?:delve|tapestry|testament|seamless(?:ly)?|leverage|robust|crucial|pivotal|vibrant|landscape|elevate|unleash|game[- ]changer|embark|navigat(?:e|ing) the|treasure trove|holistic|meticulous(?:ly)?|foster(?:ing)?|underscore[sd]?|showcas(?:e|ing)|in today's|when it comes to|look no further)\b/i;
 
 // S8 stock phrases. SENT = drop the whole sentence. LEAD = drop at the start of a sentence. INLINE = drop anywhere.
 const THANKS_FOR = "thanks? (?:you )?(?:so much |very much )?for (?:reaching out|getting in touch|contacting (?:us|acx(?: ebikes)?)|your (?:message|email|enquiry|inquiry|question|interest|patience))(?: (?:to|with) (?:us|acx(?: ebikes)?))?(?: today)?";
@@ -156,8 +156,9 @@ const EMOJI_BANNED = new Set(['\u{2705}', '\u{2728}', '\u{1F680}', '\u{1F4A1}', 
 const EMOJI_SAFE = new Set(['\u{1F44D}', '\u{1F64F}', '\u{1F605}', '\u{1F602}', '\u{1F91D}', '\u{1F4AA}', '\u{1F525}', '\u{1F44C}', '\u{1F923}', '\u{1F601}', '\u{1F642}', '\u{1F60A}', '\u{1FAE1}', '\u{26A1}', '\u{26A1}\u{FE0F}', '\u{1F6B2}']);
 const CLEAR_ADDR = ['bro', 'bruv', 'bruh', 'mate', 'pal', 'bud', 'buddy', 'fam', 'geezer', 'my man', 'my guy', 'big man'];   // unambiguous address terms: only say them if the customer did
 const KEEP_CAPS = new Set(['UK', 'ACX', 'DPD', 'DHL', 'UPS', 'BMS', 'LCD', 'PAS', 'VAT', 'EU', 'USA', 'OK', 'AI', 'FAQ', 'USB', 'LED', 'PDF', 'DM', 'MOT', 'DVLA', 'EAPC', 'AH', 'KW', 'MPH', 'RRP', 'GPS', 'AM', 'PM', 'UKCA', 'CE', 'NI', 'ROI', 'PO', 'KT', 'BBS', 'TV', 'ID', 'PIN', 'SMS', 'QR', 'MTB', 'BMX', 'TBC']);
-// dialect and in-group words the agent understands but never says, whoever said them first
-const MARKED_SLANG = /(?<![\p{L}])(?:wagwan|wag1|mandem|gyaldem|blud|bredrin|akh|akhi|ting|tings|innit|peng|leng|bare|peak|wallahi|inshallah|dat|dis|dem|wid|ya get me|you get me|my g|big man ting|roadman|yute|ends)(?![\p{L}])/iu;
+// dialect and in-group words the agent understands but never says, whoever said them first.
+// bare, peak and ends are left out on purpose: "peak power" and "bar ends" are normal shop words.
+const MARKED_SLANG = /(?<![\p{L}])(?:wagwan|wag1|mandem|gyaldem|blud|bredrin|fam|akh|akhi|ting|tings|innit|peng|leng|wallahi|inshallah|dat|dis|dem|wid|ya get me|you get me|my g|big man ting|roadman|yute)(?![\p{L}])/iu;
 const DESTRETCH: Record<string, string> = { heyy: 'hey', yoo: 'yo', broo: 'bro', bruvv: 'bruv', matee: 'mate', yess: 'yes', yeahh: 'yeah', yeaa: 'yea', soo: 'so', noo: 'no', nicee: 'nice', thankss: 'thanks', pleasee: 'please', okk: 'ok', okayy: 'okay', loll: 'lol', ayy: 'ay', hii: 'hi', helloo: 'hello', sickk: 'sick', maan: 'man', mann: 'man', yepp: 'yep', nahh: 'nah', cheerss: 'cheers', ohh: 'oh', ahh: 'ah', wayy: 'way' };
 const LEGIT_DOUBLE = new Set(['cool', 'good', 'too', 'soon', 'need', 'sweet', 'free', 'see', 'all', 'well', 'will', 'off', 'feel', 'been', 'speed', 'wheel', 'look', 'really', 'book', 'room', 'three', 'keep', 'week', 'meet', 'agree', 'still', 'full', 'call', 'small', 'stuff', 'less', 'miss', 'pass', 'boss', 'class', 'yall', 'hello', 'sorry', 'cheers', 'proper', 'ebook', 'tell', 'sell', 'fell', 'bell', 'hill', 'pull', 'roll', 'poll', 'bill', 'fill', 'kill', 'mill', 'till', 'wall', 'ball', 'fall', 'tall', 'add', 'odd', 'egg', 'inn', 'err', 'ass', 'mood', 'food', 'root', 'boot', 'door', 'floor', 'poor', 'moon', 'noon', 'zoom', 'loop', 'hook', 'took', 'cook', 'foot', 'wood', 'wool', 'tool', 'pool', 'school', 'smooth', 'choose', 'loose', 'goose', 'green', 'seen', 'seem', 'deep', 'sleep', 'sheet', 'street', 'steel', 'teeth', 'fee', 'bee', 'tree', 'coffee', 'weeeek']);
 
@@ -520,4 +521,12 @@ export function numbersPreserved(before: string[], after: string[]): boolean {
   const pool = runs(before), prices = money(before);
   return runs(after).every((n) => { const k = pool.indexOf(n); if (k < 0) return false; pool.splice(k, 1); return true; })
     && money(after).every((m) => prices.includes(m));
+}
+
+// Guard G1 (research/voice.md section D.3): every number in the reply must appear in the text the model was given
+// (knowledge entries, conversation, notes). 1,299 and 1299 count as the same number. Run it on the model's parts before sanitizing.
+export function numbersGrounded(parts, sourceText) {
+  const norm = (s) => String(s).replace(/,(?=\d{3}(?!\d))/g, '');
+  const have = new Set(norm(sourceText).match(/\d+(?:\.\d+)?/g) || []);
+  return (norm(parts.join(' ')).match(/\d+(?:\.\d+)?/g) || []).every((n) => have.has(n));
 }

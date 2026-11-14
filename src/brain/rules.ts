@@ -210,11 +210,13 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
   }
   // The sanitizer has its own, wider check for text that claims a person is typing. It never rewrites
   // such text, it only reports it, so it must not be sent.
-  if (clean.flags.blocked && out.parts.length) {
+  // The same goes for a broken hard rule, which should be impossible and is treated as a bug: never queue it.
+  const withheld = clean.flags.blocked ?? (clean.violations.length ? `style check failed: ${clean.violations.join(', ')}` : null);
+  if (withheld && out.parts.length) {
     out.parts = [];
     out.flags.needs_human = true;
-    out.note = `${out.note} (draft withheld: ${clean.flags.blocked.replace(/_/g, ' ')})`.trim();
-    if (out.action === 'reply') escalate('The draft claimed to be a person, which is not allowed', 'bot_question');
+    out.note = `${out.note} (draft withheld: ${withheld.replace(/_/g, ' ')})`.trim();
+    if (out.action === 'reply') escalate(clean.flags.blocked ? 'The draft claimed to be a person, which is not allowed' : 'The draft broke a writing rule that code could not repair', clean.flags.blocked ? 'bot_question' : 'other');
   }
   if (clean.flags.regen.length) out.note = `${out.note} (reads machine written: ${clean.flags.regen.join(', ').replace(/_/g, ' ')})`.trim();
   if (out.action === 'reply' && out.parts.length === 0) {

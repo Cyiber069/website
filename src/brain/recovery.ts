@@ -5,7 +5,8 @@
 import type { Env, Settings, ToneProfile } from '../types';
 import { getSettings } from '../lib/settings';
 import { LlmError, callJson, chooseProvider } from './llm';
-import { numbersIn, styleCard } from './prompt';
+import { numbersIn, ownerRules } from './prompt';
+import { writingRules } from './static-prompt';
 import { finalizeParts, sanitizeReply, type StyleContext } from './style';
 
 export const RECOVERY_VARIABLES = ['{first_name}', '{product}', '{total}', '{checkout_link}', '{shop}'] as const;
@@ -63,14 +64,18 @@ const variablesIn = (text: string): string[] => [...new Set(text.match(VARIABLE_
 const linksIn = (text: string): string[] => [...new Set(text.match(/https?:\/\/\S+/g) ?? [])].map((u) => u.replace(/[.,!?)]+$/, '')).sort();
 const same = (a: string[], b: string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
+/** The writing rules the brain follows everywhere, plus the owner's own. */
+function houseStyle(settings: Settings): string {
+  const rules = ownerRules(settings);
+  return `${writingRules(settings.store.name, settings.voice.brand_name || settings.store.name)}${rules ? `\n\n${rules}` : ''}`;
+}
+
 function templateInstructions(settings: Settings): string {
-  return `You help the owner of ${settings.store.name}, a UK shop selling electric bike conversion kits, write the WhatsApp message sent to people who started a checkout and did not finish. It is the first message they get from the shop, so it must read like a quick friendly text from a person at the shop, not like marketing.
+  return `You help the owner of ${settings.store.name}, a small UK online shop for ebike conversion kits, write the WhatsApp message sent to people who started a checkout and did not finish. It is the first message they get from the shop, so it should read like a quick friendly text from a person at the shop and not like marketing. There is no customer to mirror yet: write casual, warm and plain, with normal capitals.
 
-<style>
-${styleCard(settings)}
-</style>
+Two or three short sentences, under 300 characters. No pressure, no made up urgency and no discount unless the owner's wording offers one. Keep every fact and figure the owner gave and add none.
 
-Two or three short sentences, under 300 characters. No pressure, no fake urgency, no discount unless the owner's wording offers one. Keep every fact and figure the owner gave and add none.`;
+${houseStyle(settings)}`;
 }
 
 const DRAFT_SCHEMA = {
@@ -219,7 +224,7 @@ export async function testBrain(env: Env): Promise<BrainTestResult> {
     model = choice.model;
     const res = await callJson<{ reply?: unknown }>(env, {
       purpose: 'test', choice,
-      system: [{ text: `You text customers for ${settings.store.name}.\n\n<style>\n${styleCard(settings)}\n</style>` }],
+      system: [{ text: `You text customers for ${settings.store.name}, a small UK online shop for ebike conversion kits. Answer with one JSON object.\n\n${houseStyle(settings)}` }],
       user: 'A customer just wrote: "yo is anyone there". Reply with one short friendly line that says you are here and asks what they need. State no facts about products or delivery.',
       schema: { type: 'object', additionalProperties: false, properties: { reply: { type: 'string' } }, required: ['reply'] },
       maxTokens: 1500,
