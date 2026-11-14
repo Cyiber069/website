@@ -2,7 +2,7 @@
 // Chromium, mock Gmail served under https://mail.google.com. Run with: node test/e2e/gmail.e2e.mjs
 // Exit code 0 means every check passed.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -56,6 +56,13 @@ async function main() {
   for (const name of ['whatsapp.js', 'whatsapp-main.js', 'tiktok.js']) {
     const f = join(ext, 'content', name);
     if (!existsSync(f)) writeFileSync(f, '// not built yet\n');
+  }
+  // Chrome refuses to load an extension whose manifest names icon files that do not exist.
+  const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const manifest = JSON.parse(readFileSync(join(ext, 'manifest.json'), 'utf8'));
+  for (const icon of Object.values(manifest.icons ?? {})) {
+    const f = join(ext, icon);
+    if (!existsSync(f)) { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, PIXEL); console.log(`NOTE extension/${icon} is missing, using a placeholder for the test`); }
   }
   const profile = mkdtempSync(join(tmpdir(), 'acx-profile-'));
   tmp.push(profile);
