@@ -6,7 +6,7 @@ export const DEFAULT_SETTINGS: Settings = {
   channels: {
     whatsapp: { mode: 'auto' },
     gmail: { mode: 'review' },
-    tiktok: { mode: 'auto' },
+    tiktok: { mode: 'review' },
   },
   voice: {
     brand_name: 'ACX',

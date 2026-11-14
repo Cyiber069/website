@@ -1,8 +1,9 @@
 // The Worker creates and upgrades its own tables, so deploying is only ever "wrangler deploy".
 // Add a new numbered file in migrations/ and list it here; applied ones are never edited.
 import m0001 from '../../migrations/0001_init.sql';
+import m0002 from '../../migrations/0002_kb_fts.sql';
 
-const MIGRATIONS: [string, string][] = [['0001_init', m0001]];
+const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002]];
 
 let ready: Promise<void> | null = null;
 
