@@ -70,8 +70,8 @@ export function chunkMarkdown(title: string, content: string, opts: ChunkOptions
   const flush = () => {
     const text = buf.trim();
     buf = '';
-    if (!text) return;
-    chunks.push({ heading, content: text, token_estimate: estimateTokens(`${heading}\n${text}`) });
+    if (text) chunks.push({ heading, content: text, token_estimate: estimateTokens(`${heading}\n${text}`) });
+    heading = path(); // whatever comes next sits under the headings open right now
   };
   const add = (block: string) => {
     for (const piece of splitLong(block, maxChars - heading.length)) {

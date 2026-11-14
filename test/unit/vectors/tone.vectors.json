@@ -1,0 +1,1011 @@
+{
+ "cases": [
+  {
+   "name": "T01 hype opener",
+   "messages": [
+    {
+     "body": "yoooo brooo",
+     "kind": "text"
+    },
+    {
+     "body": "how fast does the 5000w go 🔥🔥",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "hype",
+    "mood": "positive",
+    "greeting": "yo",
+    "address_terms": [
+     "bro"
+    ],
+    "elongation": 0.29,
+    "emoji_rate": 1,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 21,
+    "language": "en",
+    "slang": [
+     "bro"
+    ]
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "yo",
+    "address": "bro",
+    "stretch_words": 1,
+    "lowercase": true,
+    "emoji_max": 1,
+    "exclamations_max": 2,
+    "slang_ok": [],
+    "char_budget": 92,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T02 casual",
+   "messages": [
+    {
+     "body": "hey mate do u do the 72v battery on its own",
+     "kind": "text"
+    },
+    {
+     "body": "cheers",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "neutral",
+    "greeting": "hey",
+    "address_terms": [
+     "mate"
+    ],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 25,
+    "language": "en",
+    "slang": [
+     "u",
+     "cheers"
+    ]
+   },
+   "notes": [
+    "last message is one or two words: answer in one short line"
+   ],
+   "plan": {
+    "greeting": "hey",
+    "address": "mate",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [
+     "cheers"
+    ],
+    "char_budget": 98,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T03 neutral question",
+   "messages": [
+    {
+     "body": "Hi, how long does delivery take to Leeds?",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "hi",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 41,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "hi",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 122,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T04 formal email",
+   "messages": [
+    {
+     "body": "Good afternoon,\n\nI recently purchased a 250W conversion kit (order #ACX-10234) and would like to enquire whether it is compatible with a 700c wheel. Could you please advise?\n\nKind regards,\nMargaret Ellis",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "formal",
+    "mood": "neutral",
+    "greeting": "good afternoon",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 203,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "formal or older customer: full sentences, no slang, no emoji, explain one step at a time"
+   ],
+   "plan": {
+    "greeting": "Good afternoon",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 260,
+    "end_with_full_stop": true
+   }
+  },
+  {
+   "name": "T05 angry",
+   "messages": [
+    {
+     "body": "This is an absolute joke. 3 weeks and STILL no kit. I want my money back now or I am going to trading standards",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "angry",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 111,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 227,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T06 frustrated chaser",
+   "messages": [
+    {
+     "body": "hello??",
+     "kind": "text"
+    },
+    {
+     "body": "any update on my order its been 9 days now",
+     "kind": "text"
+    },
+    {
+     "body": "still waiting",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "frustrated",
+    "greeting": "hello",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 21,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "hi",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 160,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T07 confused beginner",
+   "messages": [
+    {
+     "body": "sorry im new to this, which one do i need for a mountain bike? whats the difference between 48v and 52v",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "confused",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "light",
+    "avg_chars": 103,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 215,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T08 one word",
+   "messages": [
+    {
+     "body": "price?",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 6,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "last message is one or two words: answer in one short line"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 69,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T09 older customer",
+   "messages": [
+    {
+     "body": "Hello. I am 71 and not very technical. My grandson fitted the kit but the display will not turn on. Could you tell me what to check please. Thank you. Brian",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "formal",
+    "mood": "neutral",
+    "greeting": "hello",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 156,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "formal or older customer: full sentences, no slang, no emoji, explain one step at a time"
+   ],
+   "plan": {
+    "greeting": "Hello",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 260,
+    "end_with_full_stop": true
+   }
+  },
+  {
+   "name": "T10 non native English",
+   "messages": [
+    {
+     "body": "Hello dear, please kindly tell me how much cost the 1000w kit and can send to my country Poland",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "hello",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "light",
+    "avg_chars": 95,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "customer may not be a native English speaker: short plain sentences, no slang, no idioms"
+   ],
+   "plan": {
+    "greeting": "hello",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 203,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T11 Polish",
+   "messages": [
+    {
+     "body": "Dzień dobry, czy macie zestaw 1000W? Ile kosztuje wysyłka do Polski?",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 68,
+    "language": "pl",
+    "slang": []
+   },
+   "notes": [
+    "customer wrote in pl: reply in simple English unless the owner enabled other languages"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 162,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T12 swearing but happy",
+   "messages": [
+    {
+     "body": "bro that kit is fucking sick 😂 pulls like mad",
+     "kind": "text"
+    },
+    {
+     "body": "cheers for sorting it g",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "positive",
+    "greeting": "",
+    "address_terms": [
+     "bro",
+     "g"
+    ],
+    "elongation": 0,
+    "emoji_rate": 0.5,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 35,
+    "language": "en",
+    "slang": [
+     "bro",
+     "sick",
+     "pulls",
+     "mad",
+     "cheers"
+    ]
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "bro",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 1,
+    "exclamations_max": 1,
+    "slang_ok": [
+     "sick",
+     "cheers"
+    ],
+    "char_budget": 113,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T13 capitals but happy",
+   "messages": [
+    {
+     "body": "YESSSS IT CAME TODAY LETS GOOOO 🔥🔥🔥",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "hype",
+    "mood": "positive",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0.33,
+    "emoji_rate": 3,
+    "lowercase": false,
+    "punctuation": "none",
+    "avg_chars": 38,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "customer is writing in capitals"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 1,
+    "lowercase": false,
+    "emoji_max": 2,
+    "exclamations_max": 2,
+    "slang_ok": [],
+    "char_budget": 117,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T14 mate as a noun is not an address term",
+   "messages": [
+    {
+     "body": "my mate bought one off you last month, is the 60v back in stock",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "light",
+    "avg_chars": 63,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 155,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T15 thanks man",
+   "messages": [
+    {
+     "body": "thanks man appreciate it",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "positive",
+    "greeting": "",
+    "address_terms": [
+     "man"
+    ],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 24,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "man",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 96,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T16 opt out word",
+   "messages": [
+    {
+     "body": "STOP",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "none",
+    "avg_chars": 4,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "last message is one or two words: answer in one short line"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 66,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T17 Arabic script",
+   "messages": [
+    {
+     "body": "السلام عليكم هل ترسلون",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "none",
+    "avg_chars": 22,
+    "language": "ar",
+    "slang": []
+   },
+   "notes": [
+    "customer wrote in ar: reply in simple English unless the owner enabled other languages"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 93,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T18 London slang",
+   "messages": [
+    {
+     "body": "wagwan bruv u got the 72v ting in stock or what",
+     "kind": "text"
+    },
+    {
+     "body": "need it asap fam",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "neutral",
+    "greeting": "wagwan",
+    "address_terms": [
+     "bruv",
+     "fam"
+    ],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 32,
+    "language": "en",
+    "slang": [
+     "wagwan",
+     "bruv",
+     "u",
+     "ting",
+     "asap",
+     "fam"
+    ]
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "yo",
+    "address": "bruv",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 108,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T19 fault report stays neutral",
+   "messages": [
+    {
+     "body": "Hi the motor cuts out when I go over 20mph, any idea?",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "hi",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 53,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "hi",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 140,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T20 polite return",
+   "messages": [
+    {
+     "body": "Hi, I would like to return the battery please. Order 10234. Thanks",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "hi",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 66,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "hi",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 159,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T21 thanks inside a complaint",
+   "messages": [
+    {
+     "body": "thanks for nothing, still not got my refund and nobody replies",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "frustrated",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "light",
+    "avg_chars": 62,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 160,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T22 voice note only",
+   "messages": [
+    {
+     "body": "",
+     "kind": "voice"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "light",
+    "avg_chars": 0,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 120,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T23 emoji only",
+   "messages": [
+    {
+     "body": "👍",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 1,
+    "lowercase": false,
+    "punctuation": "none",
+    "avg_chars": 2,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "last message is one or two words: answer in one short line"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 1,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 63,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T24 calmed down: newest message wins",
+   "messages": [
+    {
+     "body": "this is a joke where is my order",
+     "kind": "text"
+    },
+    {
+     "body": "ok thanks for sorting that, appreciate it",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "neutral",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "light",
+    "avg_chars": 37,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 116,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T25 capitals and angry",
+   "messages": [
+    {
+     "body": "WHERE IS MY ORDER. 2 WEEKS AND NOTHING. ABSOLUTE SHAMBLES",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "neutral",
+    "mood": "angry",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": false,
+    "punctuation": "full",
+    "avg_chars": 57,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [
+    "customer is writing in capitals"
+   ],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 160,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T26 sick of is not praise",
+   "messages": [
+    {
+     "body": "im sick of chasing you lot for a tracking number",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "angry",
+    "greeting": "",
+    "address_terms": [],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "none",
+    "avg_chars": 48,
+    "language": "en",
+    "slang": [
+     "sick"
+    ]
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "",
+    "address": "",
+    "stretch_words": 0,
+    "lowercase": false,
+    "emoji_max": 0,
+    "exclamations_max": 0,
+    "slang_ok": [],
+    "char_budget": 160,
+    "end_with_full_stop": false
+   }
+  },
+  {
+   "name": "T27 alright mate",
+   "messages": [
+    {
+     "body": "alright mate, you got any 52v chargers in",
+     "kind": "text"
+    }
+   ],
+   "expected": {
+    "register": "casual",
+    "mood": "neutral",
+    "greeting": "alright",
+    "address_terms": [
+     "mate"
+    ],
+    "elongation": 0,
+    "emoji_rate": 0,
+    "lowercase": true,
+    "punctuation": "light",
+    "avg_chars": 41,
+    "language": "en",
+    "slang": []
+   },
+   "notes": [],
+   "plan": {
+    "greeting": "alright",
+    "address": "mate",
+    "stretch_words": 0,
+    "lowercase": true,
+    "emoji_max": 0,
+    "exclamations_max": 1,
+    "slang_ok": [],
+    "char_budget": 122,
+    "end_with_full_stop": false
+   }
+  }
+ ]
+}

@@ -1,8 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { collapseElongation, profileTone } from '../../src/brain/tone';
-import type { HistoryMessage } from '../../src/types';
+import { analyzeTone, collapseElongation, mirrorPlan, profileTone } from '../../src/brain/tone';
+import type { HistoryMessage, ToneProfile } from '../../src/types';
+import vectors from './vectors/tone.vectors.json';
 
 const t = (...bodies: string[]) => profileTone(bodies.map((body): HistoryMessage => ({ direction: 'in', author: 'customer', body, kind: 'text', ts: 0 })));
+
+// Vectors from the voice research (research/voice.md section F). Each one is a short run of customer
+// messages with the exact profile, prompt notes and mirror plan the reference implementation gives.
+describe('tone vectors from the voice report', () => {
+  for (const c of vectors.cases) {
+    it(c.name, () => {
+      const messages = c.messages.map((m) => ({ body: m.body, kind: m.kind as HistoryMessage['kind'] }));
+      const a = analyzeTone(messages);
+      expect(a.profile).toEqual(c.expected);
+      expect(a.notes).toEqual(c.notes);
+      expect(mirrorPlan(a.profile, { max_chars: 260, emojis: 'mirror', mirror_level: 'match' })).toEqual(c.plan);
+    });
+  }
+});
 
 describe('profileTone', () => {
   it('reads a hyped casual opener', () => {
@@ -53,7 +68,7 @@ describe('profileTone', () => {
     expect(t('hi how much is delivery').language).toBe('en');
   });
 
-  it('only counts "man" and "g" as address terms at the end of a message', () => {
+  it('only counts "man" and "g" as address terms when they address someone', () => {
     expect(t('is this for a man or a woman').address_terms).toEqual([]);
     expect(t('safe g').address_terms).toContain('g');
     expect(t('cheers man').address_terms).toContain('man');
@@ -64,7 +79,7 @@ describe('profileTone', () => {
       { direction: 'out', author: 'agent', body: 'Dear customer, kind regards', kind: 'text', ts: 0 },
       { direction: 'in', author: 'customer', body: '', kind: 'voice', ts: 0 },
       { direction: 'in', author: 'customer', body: 'yo', kind: 'text', ts: 0 },
-    ]);
+    ] as HistoryMessage[]);
     expect(p.greeting).toBe('yo');
     expect(p.register).not.toBe('formal');
   });
@@ -73,6 +88,31 @@ describe('profileTone', () => {
     const p = profileTone([]);
     expect(p.register).toBe('neutral');
     expect(p.language).toBe('en');
+    expect(analyzeTone([]).notes).toEqual([]);
+  });
+});
+
+describe('mirrorPlan', () => {
+  const hype = t('yoooo brooo', 'how fast does the 5000w go 🔥🔥');
+
+  it('mirrors a notch calmer for a hyped customer', () => {
+    const plan = mirrorPlan(hype, { mirror_level: 'match', emojis: 'mirror', max_chars: 260 });
+    expect(plan).toMatchObject({ greeting: 'yo', address: 'bro', stretch_words: 1, lowercase: true, emoji_max: 1, exclamations_max: 2, end_with_full_stop: false });
+  });
+
+  it('follows the owner settings', () => {
+    expect(mirrorPlan(hype, { mirror_level: 'off' })).toMatchObject({ address: '', stretch_words: 0, lowercase: false });
+    expect(mirrorPlan(hype, { mirror_level: 'light' })).toMatchObject({ address: 'bro', stretch_words: 0, lowercase: false });
+    expect(mirrorPlan(hype, { emojis: 'never' }).emoji_max).toBe(0);
+    expect(mirrorPlan(hype, { max_chars: 80 }).char_budget).toBeLessThanOrEqual(80);
+  });
+
+  it('never mirrors slang or stretching back at an upset or formal customer', () => {
+    const angry: ToneProfile = { ...t('yo bro this is a joke, absolute scam, refund me now'), address_terms: ['bro'] };
+    expect(angry.mood).toBe('angry');
+    expect(mirrorPlan(angry)).toMatchObject({ address: '', stretch_words: 0, lowercase: false, emoji_max: 0, exclamations_max: 0 });
+    const formal = t('Dear Sir or Madam, I would like to enquire about the warranty. Kind regards, Margaret');
+    expect(mirrorPlan(formal)).toMatchObject({ greeting: 'Hello', address: '', end_with_full_stop: true, exclamations_max: 0 });
   });
 });
 

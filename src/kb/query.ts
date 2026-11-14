@@ -79,3 +79,15 @@ export function searchTerms(text: string, maxTerms = 32): string[] {
 export function buildFtsQuery(text: string): string {
   return searchTerms(text).map((t) => `"${t.replace(/"/g, '""')}"`).join(' OR ');
 }
+
+const titleWords = (title: string): string[] => title.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+
+/** 0..1, how alike two titles are, ignoring case, punctuation and word order. */
+export function titleSimilarity(a: string, b: string): number {
+  const x = new Set(titleWords(a));
+  const y = new Set(titleWords(b));
+  if (!x.size || !y.size) return 0;
+  let both = 0;
+  for (const w of x) if (y.has(w)) both++;
+  return both / (x.size + y.size - both);
+}
