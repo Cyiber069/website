@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
     provider: 'auto',
     model: 'claude-opus-5-5',
     effort: 'low',
-    workers_ai_model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    workers_ai_model: '@cf/google/gemma-4-26b-a4b-it',
     confidence_threshold: 0.6,
     kb_full_tokens: 24_000,
     kb_top_chunks: 14,

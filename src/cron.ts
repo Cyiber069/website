@@ -7,6 +7,7 @@ import { DAY, MIN } from './lib/time';
 import { alertOwner } from './pipeline/alerts';
 import { sweepConversations } from './pipeline/inbound';
 import { sweepOutbox } from './pipeline/outbox';
+import { syncStore } from './kb';
 import { recoveryTick } from './recovery';
 import { ONLINE_WINDOW_MS } from './routes/agent';
 
@@ -44,10 +45,21 @@ async function cleanup(env: Env): Promise<void> {
   await run(db, `DELETE FROM outbox WHERE status IN ('sent', 'failed', 'cancelled', 'expired') AND created_at < ?`, now - 60 * DAY);
 }
 
+/** Refresh product and policy knowledge from the public store once a day. */
+async function dailyStoreSync(env: Env): Promise<void> {
+  const settings = await getSettings(env.DB);
+  if (!settings.store.sync_public || env.ACX_TEST_MODE === '1') return;
+  const now = Date.now();
+  if (now - (await getState<number>(env.DB, 'store_sync_at', 0)) < DAY) return;
+  await setState(env.DB, 'store_sync_at', now);
+  await syncStore(env);
+}
+
 export async function runCron(env: Env): Promise<void> {
   await safely('outbox', () => sweepOutbox(env.DB));
   await safely('conversations', () => sweepConversations(env));
   await safely('recovery', () => recoveryTick(env));
   await safely('device', () => watchDevice(env));
+  await safely('store-sync', () => dailyStoreSync(env));
   await safely('cleanup', () => cleanup(env));
 }

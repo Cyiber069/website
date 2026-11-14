@@ -525,8 +525,8 @@ export function numbersPreserved(before: string[], after: string[]): boolean {
 
 // Guard G1 (research/voice.md section D.3): every number in the reply must appear in the text the model was given
 // (knowledge entries, conversation, notes). 1,299 and 1299 count as the same number. Run it on the model's parts before sanitizing.
-export function numbersGrounded(parts, sourceText) {
-  const norm = (s) => String(s).replace(/,(?=\d{3}(?!\d))/g, '');
+export function numbersGrounded(parts: string[], sourceText: string): boolean {
+  const norm = (s: string): string => String(s).replace(/,(?=\d{3}(?!\d))/g, '');
   const have = new Set(norm(sourceText).match(/\d+(?:\.\d+)?/g) || []);
   return (norm(parts.join(' ')).match(/\d+(?:\.\d+)?/g) || []).every((n) => have.has(n));
 }
