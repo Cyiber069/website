@@ -73,12 +73,14 @@ export interface KnowledgeContext {
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 const attr = (text: string): string => text.replace(/ > /g, ' / ').replace(/["<>\n]/g, ' ').trim();
 
+// Entries are laid out the way the prompt describes them (research/voice.md, P2.2). The source tells
+// the model whose words these are: what the owner wrote or taught outranks text copied from the store.
 function renderDoc(d: KbDocRow): string {
-  return `<doc id="${d.id}" title="${attr(d.title)}" category="${d.category}" source="${d.source}" updated="${day(d.updated_at)}">\n${d.content}\n</doc>`;
+  return `<entry id="${d.id}" title="${attr(d.title)}" source="${d.source}" updated="${day(d.updated_at)}">\n${d.content}\n</entry>`;
 }
 
 function renderExcerpt(h: KbHit): string {
-  return `<excerpt doc="${h.doc_id}" section="${attr(h.heading)}" category="${h.category}" source="${h.source}" updated="${day(h.updated_at)}">\n${h.content}\n</excerpt>`;
+  return `<entry id="${h.doc_id}" title="${attr(h.title)}" section="${attr(h.heading)}" source="${h.source}" updated="${day(h.updated_at)}">\n${h.content}\n</entry>`;
 }
 
 /**

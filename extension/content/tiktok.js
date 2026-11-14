@@ -822,7 +822,11 @@
       const editor = await composerOf(chat); // also where a message request fails with "blocked"
 
       // Idempotency: what this page already sent for the job, and what the conversation itself shows.
-      const usable = msgs.filter((m) => m.direction);
+      const usable = msgs.filter((m) => !(m.failed && m.direction !== 'in'));
+      if (usable.some((m) => !m.direction || m.conflict)) {
+        ACX.snapshot('tiktok.send.direction', chat.box);
+        throw new Fail('unknown', 'Could not tell which TikTok messages are ours', true);
+      }
       const seen = alreadySent(usable, parts);
       const prog = progress.get(job.id) || { done: 0, ids: [] };
       if (seen.count > prog.done) { prog.done = seen.count; prog.ids = seen.ids; }
