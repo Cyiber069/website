@@ -75,16 +75,11 @@ function chunkStatements(db: D1Database, docId: string, title: string, content: 
   return list;
 }
 
-/** Create a document, or replace the one with the given id. The text is chunked and indexed for search. */
-export async function ingestDocument(env: Env, input: IngestInput): Promise<KbDocRow> {
-  const db = env.DB;
+function buildRow(input: IngestInput, existing: KbDocRow | null, now: number): KbDocRow {
   const content = cleanText(input.content).slice(0, MAX_DOC_CHARS);
-  const title = clip(input.title || 'Untitled', 160);
-  const now = Date.now();
-  const id = input.id ?? uid('kb');
-  const existing = input.id ? await one<KbDocRow>(db, 'SELECT * FROM kb_docs WHERE id = ?', id) : null;
-  const row: KbDocRow = {
-    id, title, category: validCategory(input.category ?? existing?.category), source: input.source ?? (existing?.source as KbSource | undefined) ?? 'note',
+  return {
+    id: input.id ?? uid('kb'), title: clip(input.title || 'Untitled', 160), category: validCategory(input.category ?? existing?.category),
+    source: input.source ?? (existing?.source as KbSource | undefined) ?? 'note',
     source_ref: input.source_ref !== undefined ? input.source_ref : existing?.source_ref ?? null,
     filename: input.filename !== undefined ? input.filename : existing?.filename ?? null,
     mime: input.mime !== undefined ? input.mime : existing?.mime ?? null,
@@ -93,7 +88,11 @@ export async function ingestDocument(env: Env, input: IngestInput): Promise<KbDo
     pinned: (input.pinned ?? (existing ? existing.pinned === 1 : false)) ? 1 : 0,
     token_estimate: estimateTokens(content), created_at: existing?.created_at ?? now, updated_at: now,
   };
-  await db.batch([
+}
+
+/** Everything needed to write one document with its chunks and index rows. */
+function rowStatements(db: D1Database, row: KbDocRow): D1PreparedStatement[] {
+  return [
     stmt(
       db,
       `INSERT INTO kb_docs (id, title, category, source, source_ref, filename, mime, bytes, content, enabled, pinned, token_estimate, created_at, updated_at)
@@ -104,9 +103,43 @@ export async function ingestDocument(env: Env, input: IngestInput): Promise<KbDo
       row.id, row.title, row.category, row.source, row.source_ref, row.filename, row.mime, row.bytes, row.content, row.enabled, row.pinned,
       row.token_estimate, row.created_at, row.updated_at,
     ),
-    ...chunkStatements(db, id, title, content),
-  ]);
+    ...chunkStatements(db, row.id, row.title, row.content),
+  ];
+}
+
+/** Create a document, or replace the one with the given id. The text is chunked and indexed for search. */
+export async function ingestDocument(env: Env, input: IngestInput): Promise<KbDocRow> {
+  const db = env.DB;
+  const existing = input.id ? await one<KbDocRow>(db, 'SELECT * FROM kb_docs WHERE id = ?', input.id) : null;
+  const row = buildRow(input, existing, Date.now());
+  await db.batch(rowStatements(db, row));
   return row;
+}
+
+/**
+ * Write many documents with as few database round trips as possible. The free plan allows 50 D1
+ * queries per request and a batch counts as one, so seeding and store sync go through here.
+ * Pass the current row as `existing` when replacing a document (nothing is looked up).
+ */
+export async function ingestBulk(env: Env, items: { input: IngestInput; existing?: KbDocRow | null }[]): Promise<KbDocRow[]> {
+  const db = env.DB;
+  const now = Date.now();
+  const rows = items.map((it) => buildRow(it.input, it.existing ?? null, now));
+  let batch: D1PreparedStatement[] = [];
+  let size = 0;
+  for (const row of rows) {
+    const list = rowStatements(db, row);
+    // Keep each batch modest: a document's statements stay together, about 400 KB of text at most.
+    if (batch.length && (batch.length + list.length > 60 || size + row.content.length * 2 > 400_000)) {
+      await db.batch(batch);
+      batch = [];
+      size = 0;
+    }
+    batch.push(...list);
+    size += row.content.length * 2;
+  }
+  if (batch.length) await db.batch(batch);
+  return rows;
 }
 
 export interface DocPatch { title?: string; content?: string; category?: string; enabled?: boolean; pinned?: boolean }
@@ -149,7 +182,17 @@ export function getDocument(env: Env, id: string): Promise<KbDocRow | null> {
   return one<KbDocRow>(env.DB, 'SELECT * FROM kb_docs WHERE id = ?', id);
 }
 
-/** Every document, pinned first, then by category and title. The same order is used when the whole knowledge base is given to the brain. */
-export function listDocuments(env: Env, onlyEnabled = false): Promise<KbDocRow[]> {
-  return all<KbDocRow>(env.DB, `SELECT * FROM kb_docs ${onlyEnabled ? 'WHERE enabled = 1' : ''} ORDER BY pinned DESC, category ASC, title ASC, id ASC`);
+/**
+ * Every document, pinned first, then by category and title. The same order is used when the whole
+ * knowledge base is given to the brain, so that text stays identical from one call to the next.
+ * `contentChars` limits how much of each text is read (the list screen only needs a preview).
+ */
+export function listDocuments(env: Env, opts: { onlyEnabled?: boolean; onlyPinned?: boolean; contentChars?: number } = {}): Promise<KbDocRow[]> {
+  const where = [opts.onlyEnabled ? 'enabled = 1' : '', opts.onlyPinned ? 'pinned = 1' : ''].filter(Boolean).join(' AND ');
+  const content = opts.contentChars !== undefined ? `substr(content, 1, ${Math.max(0, Math.floor(opts.contentChars))}) AS content` : 'content';
+  return all<KbDocRow>(
+    env.DB,
+    `SELECT id, title, category, source, source_ref, filename, mime, bytes, ${content}, enabled, pinned, token_estimate, created_at, updated_at
+     FROM kb_docs ${where ? `WHERE ${where}` : ''} ORDER BY pinned DESC, category ASC, title ASC, id ASC`,
+  );
 }

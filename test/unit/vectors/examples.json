@@ -1,0 +1,467 @@
+{
+ "golden": [
+  {
+   "id": "E01",
+   "label": "hype casual",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "yoooo brooo",
+     "kind": "text"
+    },
+    {
+     "body": "how fast does the 5000w go 🔥🔥",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "hey broo",
+    "the 5000w does about 50mph on the 72v battery 🔥",
+    "private land only though as its not road legal"
+   ]
+  },
+  {
+   "id": "E02",
+   "label": "casual",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "hey mate do u do the 72v battery on its own",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "hey mate yeah we do",
+    "the 72v 40ah is £649 and its in stock"
+   ]
+  },
+  {
+   "id": "E03",
+   "label": "neutral",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "Hi, how long does delivery take to Leeds?",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "Hi there",
+    "Delivery to Leeds is 2 to 4 working days and you get a tracking link by email"
+   ]
+  },
+  {
+   "id": "E04",
+   "label": "formal email",
+   "channel": "gmail",
+   "customer": [
+    {
+     "body": "Good afternoon,\n\nI recently purchased a 250W conversion kit (order #ACX-10234) and would like to enquire whether it is compatible with a 700c wheel. Could you please advise?\n\nKind regards,\nMargaret Ellis",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "Good afternoon Margaret\n\nYes, the 250W kit fits a 700c wheel. Please choose the 700c option at checkout so the rim size matches.\n\nCould you tell me the make and model of your bike? Then we can confirm the fit before it ships.\n\nKind regards\nACX Ebikes"
+   ]
+  },
+  {
+   "id": "E05",
+   "label": "angry, refund threat",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "This is an absolute joke. 3 weeks and STILL no kit. I want my money back now or I am going to trading standards",
+     "kind": "text"
+    }
+   ],
+   "action": "escalate",
+   "category": "complaint",
+   "parts": [
+    "I'm sorry. 3 weeks is far too long",
+    "I've marked this urgent for the owner so they can sort your refund or delivery with you directly",
+    "Can you send me your order number so they can pull it up straight away?"
+   ]
+  },
+  {
+   "id": "E06",
+   "label": "confused beginner",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "sorry im new to this, which one do i need for a mountain bike? whats the difference between 48v and 52v",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "no worries",
+    "52v gives a bit more speed and pull than 48v on the same motor",
+    "is it mostly for road or trails? and whats your budget"
+   ]
+  },
+  {
+   "id": "E07",
+   "label": "one word",
+   "channel": "tiktok",
+   "customer": [
+    {
+     "body": "price?",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "which kit are you after? the 250w road legal one or one of the bigger ones"
+   ]
+  },
+  {
+   "id": "E08",
+   "label": "older customer",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "Hello. I am 71 and not very technical. My grandson fitted the kit but the display will not turn on. Could you tell me what to check please. Thank you. Brian",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "Hello Brian. Let's check two things.",
+    "Is the battery switched on and showing lights when you press its button?",
+    "Then hold the power button on the display for 3 seconds and tell me what you see."
+   ]
+  },
+  {
+   "id": "E09",
+   "label": "non native English",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "Hello dear, please kindly tell me how much cost the 1000w kit and can send to my country Poland",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "Hello. The 1000W kit costs £499",
+    "Yes we send to Poland. Delivery to Poland costs £35 and takes 5 to 7 working days"
+   ]
+  },
+  {
+   "id": "E10",
+   "label": "frustrated chaser",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "hello??",
+     "kind": "text"
+    },
+    {
+     "body": "any update on my order its been 9 days now",
+     "kind": "text"
+    },
+    {
+     "body": "still waiting",
+     "kind": "text"
+    }
+   ],
+   "action": "escalate",
+   "category": "order_status",
+   "parts": [
+    "Sorry for the wait",
+    "Can you send me your order number? I'll get the team to chase it right now"
+   ]
+  },
+  {
+   "id": "E11",
+   "label": "voice note",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "",
+     "kind": "voice"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "Sorry I can't play voice notes on here",
+    "Can you type it out for me?"
+   ]
+  },
+  {
+   "id": "E12",
+   "label": "opt out",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "stop messaging me",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "flags": {
+    "opt_out": true
+   },
+   "parts": [
+    "no worries you won't hear from us again"
+   ]
+  },
+  {
+   "id": "E13",
+   "label": "asks if it is a bot",
+   "channel": "tiktok",
+   "customer": [
+    {
+     "body": "wait is this a bot lol",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "flags": {
+    "asked_if_bot": true
+   },
+   "parts": [
+    "yeah this is the ACX AI assistant",
+    "the team can jump in any time if you want a person. what did you need?"
+   ]
+  },
+  {
+   "id": "E14",
+   "label": "battery safety",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "can i leave the 72v charging overnight in the hallway",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "Best not to",
+    "Only charge it while you're awake and at home and unplug it once it's full",
+    "Keep it off your way out too so the hallway isn't ideal. A shed or garage is safest"
+   ]
+  },
+  {
+   "id": "E15",
+   "label": "road legality, joking",
+   "channel": "tiktok",
+   "customer": [
+    {
+     "body": "bro can i ride the 3000w kit on the road if i just say its 250w 😂",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "haha can't help with that one bro",
+    "anything over 250w or 15.5mph is private land only by law",
+    "if you want road legal the 250w kit is the one"
+   ]
+  },
+  {
+   "id": "E16",
+   "label": "polite return",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "Hi, I would like to return the battery please. Order 10234. Thanks",
+     "kind": "text"
+    }
+   ],
+   "action": "escalate",
+   "category": "refund_return",
+   "parts": [
+    "No problem",
+    "You can return it within 14 days of delivery as long as it's unused",
+    "I've passed order 10234 to the team to set up the return and they'll message you the details"
+   ]
+  },
+  {
+   "id": "E17",
+   "label": "short casual",
+   "channel": "tiktok",
+   "customer": [
+    {
+     "body": "do u ship to ireland",
+     "kind": "text"
+    }
+   ],
+   "action": "reply",
+   "parts": [
+    "yeah we do",
+    "its £25 and takes 3 to 5 working days"
+   ]
+  },
+  {
+   "id": "E18",
+   "label": "not in the knowledge base",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "any discount if i buy 2 kits bro",
+     "kind": "text"
+    }
+   ],
+   "action": "escalate",
+   "category": "discount_price",
+   "parts": [
+    "good shout bro let me ask the team and come back to you"
+   ]
+  },
+  {
+   "id": "E19",
+   "label": "angry, safety incident",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "your kit is fucking useless it cut out on a hill and i nearly came off",
+     "kind": "text"
+    }
+   ],
+   "action": "escalate",
+   "category": "safety",
+   "parts": [
+    "I'm really sorry. Are you ok?",
+    "Please don't ride it again until we've looked at it",
+    "Can you send your order number and what the display showed when it cut out? I'm getting the team on this now"
+   ]
+  },
+  {
+   "id": "E20",
+   "label": "thanks only",
+   "channel": "whatsapp",
+   "customer": [
+    {
+     "body": "cheers bro 🙏",
+     "kind": "text"
+    }
+   ],
+   "action": "ignore",
+   "parts": []
+  }
+ ],
+ "bot_lines": [
+  {
+   "register": "hype or casual",
+   "asked": "u a bot?",
+   "parts": [
+    "yeah this is the ACX AI assistant bro",
+    "the team can jump in whenever you want a person"
+   ]
+  },
+  {
+   "register": "neutral",
+   "asked": "Am I talking to a real person?",
+   "parts": [
+    "No this is ACX's AI assistant",
+    "The team can take over any time if you'd rather talk to a person. What can I help with?"
+   ]
+  },
+  {
+   "register": "formal",
+   "asked": "Good morning. May I ask whether I am speaking with a person or an automated system? Kind regards, David",
+   "parts": [
+    "This is the ACX Ebikes AI assistant. A member of the team can take over whenever you prefer."
+   ]
+  },
+  {
+   "register": "angry",
+   "asked": "IS THIS A BOT?? get me a human",
+   "parts": [
+    "Yes this is ACX's AI assistant",
+    "I've asked the team to take over this chat now"
+   ]
+  }
+ ],
+ "negative": [
+  {
+   "id": "N01",
+   "bad": [
+    "Great question! The 5000W kit can reach speeds of approximately 50mph — however, please note that it is intended for off-road use only. Let me know if you have any other questions! 😊"
+   ],
+   "caught": "sanitizer"
+  },
+  {
+   "id": "N02",
+   "bad": [
+    "Here are your delivery options:\n\n- **Standard:** 2-4 working days\n- **Express:** next working day\n- **Collection:** free from our unit"
+   ],
+   "caught": "sanitizer"
+  },
+  {
+   "id": "N03",
+   "bad": [
+    "YOOOOO BROOOO wagwan my g 🔥🔥🔥 that 5000w ting is PEAK fam innit!!!"
+   ],
+   "caught": "prompt"
+  },
+  {
+   "id": "N04",
+   "bad": [
+    "I completely understand your frustration, and I sincerely apologize for any inconvenience this may have caused. Rest assured, we are looking into this matter with the utmost urgency."
+   ],
+   "caught": "sanitizer"
+  },
+  {
+   "id": "N05",
+   "bad": [
+    "You're asking whether the 72V battery can be purchased separately. Yes, the 72V battery can be purchased separately."
+   ],
+   "caught": "prompt"
+  },
+  {
+   "id": "N06",
+   "bad": [
+    "It's not just a conversion kit, it's a complete transformation of your riding experience."
+   ],
+   "caught": "flag"
+  },
+  {
+   "id": "N07",
+   "bad": [
+    "Our kits are fast, reliable, and easy to install."
+   ],
+   "caught": "prompt"
+  },
+  {
+   "id": "N08",
+   "bad": [
+    "While I can't guarantee exact delivery times, it typically takes around 2-4 business days, though this may vary depending on a variety of factors."
+   ],
+   "caught": "prompt"
+  },
+  {
+   "id": "N09",
+   "bad": [
+    "Haha no I'm a real person, just typing fast!"
+   ],
+   "caught": "block"
+  },
+  {
+   "id": "N10",
+   "bad": [
+    "Yes the 5000W kit is road legal as long as you ride sensibly."
+   ],
+   "caught": "prompt"
+  },
+  {
+   "id": "N11",
+   "bad": [
+    "Dear valued customer, thank you for contacting ACX Ebikes. We are delighted to assist you with your enquiry today."
+   ],
+   "caught": "prompt"
+  },
+  {
+   "id": "N12",
+   "bad": [
+    "The battery is in stock; however, the charger is on back-order. Best regards, The ACX Team"
+   ],
+   "caught": "sanitizer"
+  }
+ ]
+}

@@ -358,3 +358,23 @@ describe('learning from the owner', () => {
     await api(`/api/kb/${doc.id}`, { method: 'DELETE' });
   });
 });
+
+describe('messages the agent cannot open', () => {
+  it('passes a lone voice note to the owner with an honest holding line, without guessing', async () => {
+    const r = await inbound('whatsapp', `${unique('4479')}@c.us`, [{ external_id: 'v1', direction: 'in', body: '', kind: 'voice' }]);
+    expect(r.action).toBe('escalate');
+    expect(r.jobs).toHaveLength(1);
+    expect(r.jobs[0]!.parts.join(' ')).toMatch(/voice notes/);
+    for (const p of r.jobs[0]!.parts) expect(violations(p)).toEqual([]);
+    const item = (await api('/api/urgent')).data.urgent.find((u: any) => u.conversation_id === r.conversation_id);
+    expect(item.question).toMatch(/voice note/);
+    expect(item.category).toBe('media');
+    await api(`/api/urgent/${item.id}/dismiss`, { body: {} });
+  });
+
+  it('still answers when there are words next to the photo', async () => {
+    const r = await inbound('whatsapp', `${unique('4479')}@c.us`, [{ external_id: 'p1', direction: 'in', body: '', kind: 'image' }, { external_id: 'p2', direction: 'in', body: 'will the kit fit this bike' }]);
+    expect(r.action).toBe('reply');
+    expect(r.jobs[0]!.parts[0]).toContain('will the kit fit this bike');
+  });
+});

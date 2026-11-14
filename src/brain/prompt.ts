@@ -35,36 +35,38 @@ export const languageName = (code: string): string => LANGUAGE_NAMES[code] ?? co
 
 // ---- JSON schemas (structured output) ------------------------------------------------------------
 
+// Property order matters: the model writes the fields in this order, so it first says what was asked
+// and which documents hold the answer (note, kb_refs), then decides, then writes the reply.
 export const DECISION_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
   properties: {
+    note: { type: 'string', description: 'One short line for the activity log: what the customer wants and what you did about it.' },
+    kb_refs: { type: 'array', items: { type: 'string' }, description: 'Ids of the knowledge documents that hold the answer. Empty when none does.' },
     action: { type: 'string', enum: ['reply', 'escalate', 'ignore'] },
-    parts: { type: 'array', items: { type: 'string' }, description: 'The messages to send, in order. One to three for chat, exactly one for email. For escalate: one short holding line, or empty.' },
     confidence: { type: 'number', description: '0 to 1. How sure you are that every fact in parts is supported by the knowledge or the conversation.' },
-    language: { type: 'string', description: 'Language code of the reply, for example en.' },
     escalate_question: { type: 'string', description: 'For escalate: the question the owner has to answer, written for the owner, self contained. Otherwise empty.' },
     escalate_reason: { type: 'string', description: 'For escalate: one short sentence on why you could not answer. Otherwise empty.' },
     escalate_category: { type: 'string', enum: [...ESCALATE_CATEGORIES] },
     opt_out: { type: 'boolean', description: 'The customer asked not to be messaged again.' },
     asked_if_bot: { type: 'boolean', description: 'The customer sincerely asked whether they are talking to a bot, an AI or a real person.' },
     needs_human: { type: 'boolean', description: 'A person should look at this even if you drafted a reply.' },
-    kb_refs: { type: 'array', items: { type: 'string' }, description: 'Ids of the knowledge documents your answer relied on.' },
-    note: { type: 'string', description: 'One short line for the activity log on what you did and why.' },
+    language: { type: 'string', description: 'Language code of the reply, for example en.' },
+    parts: { type: 'array', items: { type: 'string' }, description: 'The messages to send, in order. One to three for chat, exactly one for email. For escalate: one short holding line, or empty.' },
   },
-  required: ['action', 'parts', 'confidence', 'language', 'escalate_question', 'escalate_reason', 'escalate_category', 'opt_out', 'asked_if_bot', 'needs_human', 'kb_refs', 'note'],
+  required: ['note', 'kb_refs', 'action', 'confidence', 'escalate_question', 'escalate_reason', 'escalate_category', 'opt_out', 'asked_if_bot', 'needs_human', 'language', 'parts'],
 };
 
 export const POLISH_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    parts: { type: 'array', items: { type: 'string' }, description: 'The reply to the customer: one to three chat messages, or exactly one email.' },
     general: { type: 'boolean', description: 'True when the owner answer is a fact that holds for every customer. False when it is about this customer, this order or a one off.' },
     learned_title: { type: 'string', description: 'When general: the question as a short neutral title. Otherwise empty.' },
     learned_content: { type: 'string', description: 'When general: the fact in one to three plain neutral sentences, no greeting, no customer details. Otherwise empty.' },
+    parts: { type: 'array', items: { type: 'string' }, description: 'The reply to the customer: one to three chat messages, or exactly one email.' },
   },
-  required: ['parts', 'general', 'learned_title', 'learned_content'],
+  required: ['general', 'learned_title', 'learned_content', 'parts'],
 };
 
 // ---- the style card ------------------------------------------------------------------------------
@@ -173,12 +175,21 @@ const KIND_LABEL: Record<string, string> = {
   image: 'photo', voice: 'voice note', video: 'video', sticker: 'sticker', document: 'file', other: 'attachment',
 };
 
+/**
+ * The words that came with a message. For a photo or voice note this is the caption, without the
+ * "[sent a photo]" stand in the pipeline stores when there was none.
+ */
+export function wordsOf(m: HistoryMessage): string {
+  const body = m.body.trim();
+  return m.kind === 'text' ? body : body.replace(/^\[sent [^\]]*\]$/i, '').trim();
+}
+
 /** One line per message, oldest first. Media the model cannot open becomes a placeholder. */
 export function renderConversation(history: HistoryMessage[], now: number): string {
   const lines: string[] = [];
   for (const m of history) {
     const who = m.direction === 'in' ? 'customer' : m.author === 'owner' ? 'shop (owner)' : 'shop';
-    const body = m.body.replace(/\s*\n\s*/g, ' / ').trim().slice(0, 1500);
+    const body = wordsOf(m).replace(/\s*\n\s*/g, ' / ').trim().slice(0, 1500);
     const media = m.kind !== 'text' ? `[${KIND_LABEL[m.kind] ?? 'attachment'}]` : '';
     const text = [media, body].filter(Boolean).join(' ') || '[empty message]';
     lines.push(`${who}${ago(now - m.ts)}: ${text}`);
@@ -369,7 +380,7 @@ export function unsupportedNumbers(text: string, sources: string): string[] {
 }
 
 // Phrases that claim a human is typing, in the shop's own voice.
-const CLAIMS_HUMAN = /\b(?:i(?:'| a)?m (?:a |an )?(?:real |actual )?(?:human|person)\b|i(?:'| a)?m not (?:a |an )?(?:bot|robot|ai|machine|chatbot)\b|(?:this is|it'?s|you(?:'| a)re (?:talking|speaking|chatting) (?:to|with)) (?:a |an )?(?:real |actual )(?:human|person)\b|(?:not|no) (?:a )?(?:bot|robot|ai) here\b|real (?:human|person) here\b|100% human\b)/i;
+const CLAIMS_HUMAN = /\bi\s*(?:'m|am|m)\s+(?:a\s+|an\s+)?(?:real\s+|actual\s+|genuine\s+)?(?:human|person)\b|\bi\s*(?:'m|am)\s+real\b|(?:\bnot|n't|\baint)\s+(?:a\s+|an\s+)?(?:bot|robot|chatbot|ai|machine|computer)\b|\b(?:real|actual)\s+(?:human|person)\s+(?:here|typing|speaking|talking)\b|\bno\s+(?:bots?|robots?|ai)\s+here\b|\b(?:talking|speaking|chatting)\s+(?:to|with)\s+(?:a\s+|an\s+)?(?:real\s+|actual\s+)?(?:human|person)\b|\b100% human\b/i;
 
 export const claimsHuman = (text: string): boolean => CLAIMS_HUMAN.test(text.replace(/’/g, "'"));
 

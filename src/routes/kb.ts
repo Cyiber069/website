@@ -1,10 +1,10 @@
 // Owner facing API for the Knowledge screen: documents, uploads, store sync and open questions.
-import { all, one } from '../lib/db';
+import { one } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError, bad, bool, json, notFound, oneOf, str, type Router } from '../lib/http';
 import {
   KB_CATEGORIES, MAX_UPLOAD_BYTES, answerGap, deleteDocument, dismissGap, docView, ensureSeeded, extractText, getDocument, getGaps,
-  ingestDocument, searchKb, syncStore, updateDocument, type KbDocRow,
+  ingestDocument, listDocuments, searchKb, syncStore, updateDocument, type KbDocRow,
 } from '../kb';
 
 const MAX_TEXT = 1_000_000;
@@ -17,11 +17,7 @@ export function register(r: Router): void {
   r.get('/api/kb', 'owner', async (c) => {
     await ensureSeeded(c.env);
     // Only the start of each text is read: the list can hold hundreds of long documents.
-    const rows = await all<KbDocRow>(
-      c.db,
-      `SELECT id, title, category, source, source_ref, filename, mime, bytes, substr(content, 1, 400) AS content, enabled, pinned, token_estimate, created_at, updated_at
-       FROM kb_docs ORDER BY pinned DESC, category ASC, title ASC, id ASC`,
-    );
+    const rows = await listDocuments(c.env, { contentChars: 400 });
     const totals = await one<{ docs: number; tokens: number }>(c.db, 'SELECT COUNT(*) AS docs, COALESCE(SUM(token_estimate), 0) AS tokens FROM kb_docs WHERE enabled = 1');
     return json({ docs: rows.map(docView), totals: { docs: totals?.docs ?? 0, tokens: totals?.tokens ?? 0 }, gaps: await getGaps(c.env) });
   });

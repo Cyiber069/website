@@ -1,0 +1,1051 @@
+{
+ "tones": {
+  "casual": {
+   "register": "casual",
+   "mood": "neutral",
+   "lowercase": true,
+   "elongation": 0,
+   "emoji_rate": 0,
+   "punctuation": "none",
+   "address_terms": [
+    "bro",
+    "mate"
+   ]
+  },
+  "hype": {
+   "register": "hype",
+   "mood": "positive",
+   "lowercase": true,
+   "elongation": 0.29,
+   "emoji_rate": 1,
+   "punctuation": "none",
+   "address_terms": [
+    "bro"
+   ]
+  },
+  "neutral": {
+   "register": "neutral",
+   "mood": "neutral",
+   "lowercase": false,
+   "elongation": 0,
+   "emoji_rate": 0,
+   "punctuation": "light"
+  },
+  "formal": {
+   "register": "formal",
+   "mood": "neutral",
+   "lowercase": false,
+   "elongation": 0,
+   "emoji_rate": 0,
+   "punctuation": "full"
+  },
+  "angry": {
+   "register": "neutral",
+   "mood": "angry",
+   "lowercase": false,
+   "elongation": 0,
+   "emoji_rate": 0,
+   "punctuation": "light"
+  },
+  "upsetCasual": {
+   "register": "casual",
+   "mood": "frustrated",
+   "lowercase": true,
+   "elongation": 0,
+   "emoji_rate": 0,
+   "punctuation": "none",
+   "address_terms": [
+    "bro"
+   ]
+  }
+ },
+ "cases": [
+  {
+   "name": "S01 em dash, range, Oxford comma, spaced hyphen",
+   "input": [
+    "Sure \u2014 delivery is 2-4 days, and it is free - no worries!"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Sure delivery is 2 to 4 days and it is free. No worries!"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S02 em dash between clauses",
+   "input": [
+    "The 72V kit is in stock \u2014 it ships tomorrow."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The 72V kit is in stock. It ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S03 en dash number range",
+   "input": [
+    "Delivery takes 2\u20134 working days."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Delivery takes 2 to 4 working days"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S04 price range keeps thousands comma",
+   "input": [
+    "Kits run from \u00a3399\u2013\u00a31,299 depending on power."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Kits run from \u00a3399 to \u00a31,299 depending on power"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S05 unit range",
+   "input": [
+    "It works with 48V-52V batteries."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It works with 48V to 52V batteries"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S06 product code keeps hyphens",
+   "input": [
+    "You want the ACX-72V-40AH pack."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "You want the ACX-72V-40AH pack"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S07 URL keeps hyphens, dash after it becomes a full stop",
+   "input": [
+    "Here you go https://acxebikes.co.uk/products/72v-40ah-battery-pack - all the specs are there."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Here you go https://acxebikes.co.uk/products/72v-40ah-battery-pack. All the specs are there"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S08 email keeps hyphens",
+   "input": [
+    "Drop us a line at support-team@acx-ebikes.co.uk and we will sort it."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Drop us a line at support-team@acx-ebikes.co.uk and we will sort it"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S09 phone keeps hyphens",
+   "input": [
+    "Call us on 0161-496-0123 - we are in till 5pm."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Call us on 0161-496-0123. We are in till 5pm"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S10 order number keeps hyphen",
+   "input": [
+    "Your order #ACX-10234 went out today - tracking is on its way."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Your order #ACX-10234 went out today. Tracking is on its way"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S11 compound words lose hyphens",
+   "input": [
+    "The e-bike kit is plug-and-play and road-legal at 250W."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The ebike kit is plug and play and road legal at 250W"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S12 paired dashes become brackets",
+   "input": [
+    "The 72v \u2014 the big one \u2014 is back in stock."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The 72v (the big one) is back in stock"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S13 dates use slashes, day range",
+   "input": [
+    "It was sent on 12-11-2026 and should land Mon-Wed."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It was sent on 12/11/2026 and should land Mon to Wed"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S14 time and day ranges",
+   "input": [
+    "We are open 9am-5pm Mon-Fri."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "We are open 9am to 5pm Mon to Fri"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S15 negative number",
+   "input": [
+    "The battery is fine down to -10 degrees."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The battery is fine down to minus 10 degrees"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S16 double hyphen",
+   "input": [
+    "It is in stock -- ships tomorrow."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It is in stock. Ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S17 non breaking hyphen",
+   "input": [
+    "It is a twist\u2011and\u2011go throttle."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It is a twist and go throttle"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S18 arrows",
+   "input": [
+    "Go to Settings -> Display -> P08 and set it to 100."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Go to Settings > Display > P08 and set it to 100"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S19 lower case SKU needs the protect list",
+   "input": [
+    "you want the acx-bbs-72 kit"
+   ],
+   "tone": "casual",
+   "opts": {
+    "protect": [
+     "acx-bbs-72"
+    ]
+   },
+   "expected": [
+    "you want the acx-bbs-72 kit"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S20 lower case SKU without protect loses its hyphens (known limit)",
+   "input": [
+    "you want the bbs02-750 kit"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "you want the bbs02 750 kit"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S21 dash only message tail",
+   "input": [
+    "Sound - "
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "sound"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S22 thousands and decimals survive, comma before and goes",
+   "input": [
+    "The 5000W bundle is \u00a31,299.00, and the battery is \u00a3649."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The 5000W bundle is \u00a31,299.00 and the battery is \u00a3649"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S23 real list keeps commas",
+   "input": [
+    "The kit comes with the motor, controller, display and throttle."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The kit comes with the motor, controller, display and throttle"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S24 greeting comma and comma splice",
+   "input": [
+    "Hey bro, yeah we do, it ships tomorrow."
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "hey bro yeah we do. it ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S25 trailing address term",
+   "input": [
+    "no worries, mate"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "no worries mate"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S26 dependent clause comma",
+   "input": [
+    "If it is in stock, it ships the same day."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "If it is in stock it ships the same day"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S27 opener plus two clauses",
+   "input": [
+    "Sorry about that, I will chase it now, you should hear back today."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Sorry about that I will chase it now. You should hear back today"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S28 which clause",
+   "input": [
+    "The 72v, which is the big one, is in stock."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The 72v which is the big one is in stock"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S29 yes comma",
+   "input": [
+    "Yes, we do."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Yes we do"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S30 name after thanks",
+   "input": [
+    "Thanks Sam, it went out today."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Thanks Sam it went out today"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S31 commas none mode",
+   "input": [
+    "Yeah we have 48v, 52v, 60v and 72v, all in stock."
+   ],
+   "tone": "casual",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
+    "yeah we have 48v 52v 60v and 72v all in stock"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S32 price then short list",
+   "input": [
+    "It is \u00a31,299, free delivery and a 2 year warranty."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It is \u00a31,299, free delivery and a 2 year warranty"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S33 decimal prices in a list",
+   "input": [
+    "Chargers are \u00a349.99, \u00a359.99 or \u00a379.99."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Chargers are \u00a349.99, \u00a359.99 or \u00a379.99"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S34 formal register keeps its commas",
+   "input": [
+    "Good afternoon, thank you for your message. The 250W kit is road legal in the UK, and it is limited to 15.5mph. Kind regards"
+   ],
+   "tone": "formal",
+   "opts": {},
+   "expected": [
+    "Good afternoon, thank you for your message. The 250W kit is road legal in the UK and it is limited to 15.5mph."
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S35 bold and markdown link",
+   "input": [
+    "**Yes** the 60v fits. See [the guide](https://acxebikes.co.uk/pages/fitting-guide) for more."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Yes the 60v fits. See the guide https://acxebikes.co.uk/pages/fitting-guide for more"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S36 bullets after a colon",
+   "input": [
+    "You'll need:\n- a torque arm\n- a 72v battery\n- the charger"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "You'll need a torque arm, a 72v battery and the charger"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S37 numbered steps",
+   "input": [
+    "1. Unplug the battery\n2. Hold the power button for 10 seconds\n3. Plug it back in"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Unplug the battery. Hold the power button for 10 seconds. Plug it back in"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S38 emoji bullets",
+   "input": [
+    "\u2705 In stock\n\u2705 Free delivery\n\u2705 2 year warranty"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "In stock, free delivery and 2 year warranty"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S39 heading and bold labels",
+   "input": [
+    "### Delivery\n**UK:** 2-4 days\n**EU:** 5-7 days"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Delivery. UK: 2 to 4 days. EU: 5 to 7 days"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S40 semicolon",
+   "input": [
+    "It is in stock; it ships tomorrow."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It is in stock. It ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S41 smart quotes and ellipsis",
+   "input": [
+    "It\u2019s \u201cplug and play\u201d\u2026 pretty much"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "it's \"plug and play\"... pretty much"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S42 a lone leading number is not a list",
+   "input": [
+    "28. That is the top speed on the 1000W."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "28. That is the top speed on the 1000W"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S43 opener and closers",
+   "input": [
+    "Great question! The 1000W kit does about 28mph. I hope this helps! Let me know if you have any other questions."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The 1000W kit does about 28mph"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S44 thanks for reaching out, at this time",
+   "input": [
+    "Thank you for reaching out! Unfortunately we do not ship to the US at this time."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Unfortunately we don't ship to the US"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S45 owner banned phrase",
+   "input": [
+    "No problem at all, happy to help. It ships tomorrow."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "banned_phrases": [
+     "happy to help"
+    ]
+   },
+   "expected": [
+    "It ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S46 word swaps",
+   "input": [
+    "However, in order to utilize the 72V pack you will require approximately 2 hours of fitting."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "But to use the 72V pack you will require about 2 hours of fitting"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S47 nothing left",
+   "input": [
+    "Thank you for reaching out!"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [],
+   "flags": {
+    "empty": true
+   }
+  },
+  {
+   "name": "S48 as an AI is dropped unless the customer asked",
+   "input": [
+    "As an AI assistant, I can check that for you."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "I can check that for you"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S49 honest bot line survives when asked",
+   "input": [
+    "This is the ACX assistant. The team can jump in whenever you want."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "asked_if_bot": true
+   },
+   "expected": [
+    "This is the ACX assistant. The team can jump in whenever you want"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S50 claiming to be human is blocked",
+   "input": [
+    "Haha no I'm a real person mate"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "haha no i'm a real person mate"
+   ],
+   "flags": {
+    "blocked": "claims_human"
+   }
+  },
+  {
+   "name": "S51 not just X but Y is flagged",
+   "input": [
+    "It's not just a kit, it's a whole new ride."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It's not just a kit. It's a whole new ride"
+   ],
+   "flags": {
+    "regen": [
+     "not_just_x_but_y"
+    ]
+   }
+  },
+  {
+   "name": "S52 AI vocabulary is flagged",
+   "input": [
+    "Our robust kit lets you seamlessly unlock more power."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Our robust kit lets you seamlessly unlock more power"
+   ],
+   "flags": {
+    "regen": [
+     "ai_vocabulary"
+    ]
+   }
+  },
+  {
+   "name": "S53 lower case mirror",
+   "input": [
+    "Hey bro! Yeah the 72V does about 50mph. Its \u00a31,299 with the battery."
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "hey bro! yeah the 72v does about 50mph. its \u00a31,299 with the battery"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S54 stretch is toned down to one extra letter on one word",
+   "input": [
+    "Yooooo brooo!!! Sooo the 5000W kit is insaneee 🔥🔥🔥"
+   ],
+   "tone": "hype",
+   "opts": {
+    "customer_emojis": [
+     "🔥"
+    ]
+   },
+   "expected": [
+    "yo broo! so the 5000w kit is insane 🔥"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S55 owner example",
+   "input": [
+    "Heyyy brooo"
+   ],
+   "tone": "hype",
+   "opts": {},
+   "expected": [
+    "hey broo"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S56 stretch removed when the customer does not stretch",
+   "input": [
+    "Heyyy brooo yeah sooo good"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "hey bro yeah so good"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S57 marketing emoji removed",
+   "input": [
+    "Great news! 🎉 Your order has shipped 🚀\u2705"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Great news! Your order has shipped"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S58 upset customer: no exclamation, no emoji",
+   "input": [
+    "So sorry about that!! We will sort it today 😊"
+   ],
+   "tone": "angry",
+   "opts": {},
+   "expected": [
+    "So sorry about that. We will sort it today"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S59 upset casual customer: no lower case mirror",
+   "input": [
+    "Hey bro, really sorry about that! I have chased DPD for you."
+   ],
+   "tone": "upsetCasual",
+   "opts": {},
+   "expected": [
+    "Hey bro really sorry about that. I have chased DPD for you"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S60 exclamation cap",
+   "input": [
+    "Nice one! It ships today! Tracking to follow!"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Nice one! It ships today. Tracking to follow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S61 mirror off",
+   "input": [
+    "Hey bro! Yeah it does."
+   ],
+   "tone": "casual",
+   "opts": {
+    "mirror_level": "off"
+   },
+   "expected": [
+    "Hey bro! Yeah it does"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S62 five sentences cut to three",
+   "input": [
+    "The kit fits most bikes with 135mm dropouts. It takes about two hours to fit. You get everything in the box. We also have a video guide on the site. Shout if you get stuck."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The kit fits most bikes with 135mm dropouts. It takes about two hours to fit. You get everything in the box"
+   ],
+   "flags": {
+    "overflow": true
+   }
+  },
+  {
+   "name": "S63 four parts merge to three",
+   "input": [
+    "hey",
+    "yeah we do",
+    "its \u00a3499",
+    "ships tomorrow"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "hey",
+    "yeah we do",
+    "its \u00a3499. ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S64 the question is kept when cutting",
+   "input": [
+    "Yeah should fit fine. We do them in 26 and 27.5 inch. Fitting takes about 2 hours. There is a video on the site too. What bike is it going on?"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Yeah should fit fine. We do them in 26 and 27.5 inch. What bike is it going on?"
+   ],
+   "flags": {
+    "overflow": true
+   }
+  },
+  {
+   "name": "S65 one over long sentence is cut at a word",
+   "input": [
+    "The kit fits most bikes with 135mm rear dropouts and a standard threaded bottom bracket and you get the motor wheel the controller the display the throttle the brake levers the torque arms and all the wiring in the box so you only need to add a battery and a charger"
+   ],
+   "tone": "neutral",
+   "opts": {
+    "max_chars": 200
+   },
+   "expected": [
+    "The kit fits most bikes with 135mm rear dropouts and a standard threaded bottom bracket and you get the motor wheel the controller the display the throttle the brake levers the torque arms and all the"
+   ],
+   "flags": {
+    "overflow": true
+   }
+  },
+  {
+   "name": "S66 link at the end loses its full stop",
+   "input": [
+    "Tracking is here https://www.dpd.co.uk/track/1550-2218-9931."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Tracking is here https://www.dpd.co.uk/track/1550-2218-9931"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S67 gmail: one message, paragraphs kept, sign off kept",
+   "input": [
+    "Hi Sam",
+    "The refund of \u00a31,299.00 went back to your card today - it normally takes 3-5 working days to show.",
+    "Kind regards\nACX Ebikes"
+   ],
+   "tone": "formal",
+   "opts": {
+    "channel": "gmail",
+    "max_chars": 600,
+    "max_sentences": 6
+   },
+   "expected": [
+    "Hi Sam\n\nThe refund of \u00a31,299.00 went back to your card today. It normally takes 3 to 5 working days to show.\n\nKind regards\nACX Ebikes"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S68 decimals are not sentence ends",
+   "input": [
+    "Top speed is 15.5mph. The pack is 17.5Ah."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Top speed is 15.5mph. The pack is 17.5Ah"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S69 abbreviations",
+   "input": [
+    "It fits most frames, e.g. hardtails and hybrids."
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "It fits most frames, eg hardtails and hybrids"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S70 question mark cluster",
+   "input": [
+    "You what??"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "you what?"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S71 address term the customer never used",
+   "input": [
+    "No worries mate it ships tomorrow"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "No worries mate it ships tomorrow"
+   ],
+   "flags": {
+    "regen": [
+     "address_term_not_mirrored"
+    ]
+   }
+  },
+  {
+   "name": "S72 marked slang is never sent back",
+   "input": [
+    "wagwan bro the ting is in stock innit"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "wagwan bro the ting is in stock innit"
+   ],
+   "flags": {
+    "regen": [
+     "marked_slang"
+    ]
+   }
+  },
+  {
+   "name": "S73 shouting is lower cased",
+   "input": [
+    "YES it is IN STOCK and ships TODAY"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "Yes it is in stock and ships today"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S74 laughing at an upset customer",
+   "input": [
+    "haha sorry about that"
+   ],
+   "tone": "angry",
+   "opts": {},
+   "expected": [
+    "haha sorry about that"
+   ],
+   "flags": {
+    "regen": [
+     "laughing_at_upset_customer"
+    ]
+   }
+  },
+  {
+   "name": "S75 serious topic: no lower case mirror",
+   "input": [
+    "Best not to. Only charge it while you are awake and at home."
+   ],
+   "tone": "casual",
+   "opts": {
+    "serious": true
+   },
+   "expected": [
+    "Best not to. Only charge it while you are awake and at home"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S76 the honest bot line keeps its capitals",
+   "input": [
+    "yeah this is the ACX AI assistant"
+   ],
+   "tone": "casual",
+   "opts": {
+    "asked_if_bot": true
+   },
+   "expected": [
+    "yeah this is the ACX AI assistant"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S77 email sign off in a chat",
+   "input": [
+    "The battery is in stock; however, the charger is on back-order. Best regards, The ACX Team"
+   ],
+   "tone": "neutral",
+   "opts": {},
+   "expected": [
+    "The battery is in stock. But the charger is on back order"
+   ],
+   "flags": {}
+  }
+ ]
+}

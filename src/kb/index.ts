@@ -6,7 +6,7 @@ import { ensureSeeded, getGaps, setGaps } from './seed';
 
 export { chunkMarkdown, splitSections, type Chunk } from './chunk';
 export {
-  KB_CATEGORIES, KB_SOURCES, deleteDocument, docView, getDocument, ingestDocument, listDocuments, updateDocument,
+  KB_CATEGORIES, KB_SOURCES, deleteDocument, docView, getDocument, ingestBulk, ingestDocument, listDocuments, updateDocument,
   type DocPatch, type IngestInput, type KbDocRow, type KbDocView,
 } from './docs';
 export { MAX_UPLOAD_BYTES, extractText, htmlToText, type UploadedFile } from './extract';

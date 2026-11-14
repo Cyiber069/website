@@ -1,8 +1,9 @@
 // The owner's rules applied in code to whatever the model (or the mock) decided, plus the small
 // helpers decide() needs to read a conversation. Pure functions: no database, no network.
 import type { DecideInput, HistoryMessage, Settings, ToneProfile } from '../types';
-import { claimsHuman, languageName, looksLikeOptOut, renderConversation, unsupportedNumbers, type RawDecision } from './prompt';
-import { finalizeParts } from './style';
+import { claimsHuman, languageName, looksLikeOptOut, renderConversation, unsupportedNumbers, wordsOf, type RawDecision } from './prompt';
+import { sanitizeDetailed, type StyleContext } from './style';
+import { isSeriousTopic } from './tone';
 
 // Fallback lines for when the model's own wording cannot be used. The sanitizer still adapts
 // capitals and the final full stop to the customer.
@@ -16,7 +17,12 @@ const HOLDING: Record<string, string> = {
   pt: 'vou verificar e já te digo',
   pl: 'sprawdzę to i dam znać',
 };
-export const MEDIA_HOLDING = 'let me get someone to take a look at that for you';
+/** What to say when the customer sent something that cannot be opened. Honest, and it often gets the question typed out. */
+export function mediaHoldingLine(kinds: string[], language: string): string {
+  if (language !== 'en') return holdingLine(language);
+  if (kinds.every((k) => k === 'voice')) return "sorry I can't play voice notes on here. can you type it out for me?";
+  return 'let me get someone to take a look at that for you';
+}
 
 export const holdingLine = (language: string): string => HOLDING[language] ?? HOLDING.en!;
 
@@ -34,11 +40,11 @@ export function pendingInbound(history: HistoryMessage[]): HistoryMessage[] {
   return history.slice(i);
 }
 
-export const hasWords = (m: HistoryMessage): boolean => /[\p{L}\p{N}]{2,}/u.test(m.body);
+export const hasWords = (m: HistoryMessage): boolean => /[\p{L}\p{N}]{2,}/u.test(wordsOf(m));
 
 /** What to search the knowledge base for: the subject and the customer's last few messages. */
 export function knowledgeQuery(input: DecideInput): string {
-  const recent = input.history.filter((m) => m.direction === 'in' && hasWords(m)).slice(-3).map((m) => m.body.slice(0, 600));
+  const recent = input.history.filter((m) => m.direction === 'in' && hasWords(m)).slice(-3).map((m) => wordsOf(m).slice(0, 600));
   return [input.subject ?? '', ...recent].join('\n').trim();
 }
 
@@ -48,6 +54,13 @@ export interface EnforceContext {
   tone: ToneProfile;
   /** Everything the model was allowed to take facts from. */
   sources: string;
+  /** Emoji the customer used, from the tone analysis. */
+  customerEmojis?: string[];
+}
+
+/** Complaints, refunds, safety and the law: the reply stays plain whatever the customer's style. */
+export function seriousTopic(history: HistoryMessage[]): boolean {
+  return isSeriousTopic(history.filter((m) => m.direction === 'in' && m.kind === 'text').slice(-3).map((m) => m.body).join(' '));
 }
 
 /**
@@ -80,7 +93,7 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): RawDecisio
     out.note = `${out.note} (removed a line that claimed to be human)`.trim();
     if (!out.parts.length && out.action === 'reply') {
       if (out.flags.asked_if_bot && voice.bot_question_policy === 'honest_short' && tone.language === 'en') {
-        out.parts = [`this is the ${voice.brand_name} assistant. the team can jump in whenever you want`];
+        out.parts = [`yeah this is the ${voice.brand_name} AI assistant`, 'the team can jump in whenever you want a person'];
       } else {
         out.flags.needs_human = true;
         escalate('The draft claimed to be a person, which is not allowed', 'bot_question');
@@ -108,7 +121,20 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): RawDecisio
   }
   if (out.action === 'ignore') out.parts = [];
 
-  out.parts = finalizeParts(out.parts, { voice, tone, channel: input.channel });
+  const style: StyleContext = {
+    voice, tone, channel: input.channel, asked_if_bot: out.flags.asked_if_bot, serious: seriousTopic(input.history), customer_emojis: ctx.customerEmojis,
+  };
+  const clean = sanitizeDetailed(out.parts, style);
+  out.parts = [...new Set(clean.parts)];
+  // The sanitizer has its own, wider check for text that claims a person is typing. It never rewrites
+  // such text, it only reports it, so it must not be sent.
+  if (clean.flags.blocked && out.parts.length) {
+    out.parts = [];
+    out.flags.needs_human = true;
+    out.note = `${out.note} (draft withheld: ${clean.flags.blocked.replace(/_/g, ' ')})`.trim();
+    if (out.action === 'reply') escalate('The draft claimed to be a person, which is not allowed', 'bot_question');
+  }
+  if (clean.flags.regen.length) out.note = `${out.note} (reads machine written: ${clean.flags.regen.join(', ').replace(/_/g, ' ')})`.trim();
   if (out.action === 'reply' && out.parts.length === 0) {
     out.flags.needs_human = true;
     escalate('The draft was empty after the style rules were applied', 'other');

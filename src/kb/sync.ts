@@ -3,7 +3,7 @@
 import type { Env } from '../types';
 import { all } from '../lib/db';
 import { getSettings, patchSettings } from '../lib/settings';
-import { type KbDocRow, cleanText, ingestDocument } from './docs';
+import { type IngestInput, type KbDocRow, cleanText, ingestBulk } from './docs';
 import { htmlToText } from './extract';
 import { ensureSeeded } from './seed';
 
@@ -83,10 +83,12 @@ export async function syncStore(env: Env): Promise<SyncResult> {
 
   let added = 0;
   let updated = 0;
-  const upsert = async (ref: string, title: string, content: string, category: string) => {
-    const old = storeDocs.get(ref);
+  // Changes are collected and written together at the end, in a few database batches.
+  const writes: { input: IngestInput; existing: KbDocRow | null }[] = [];
+  const upsert = (ref: string, title: string, content: string, category: string): void => {
+    const old = storeDocs.get(ref) ?? null;
     if (old && old.content === cleanText(content) && old.title === title) return;
-    await ingestDocument(env, { id: old?.id, title, content, category, source: 'store', source_ref: ref });
+    writes.push({ input: { id: old?.id, title, content, category, source: 'store', source_ref: ref }, existing: old });
     if (old) updated++; else added++;
   };
 
@@ -102,7 +104,7 @@ export async function syncStore(env: Env): Promise<SyncResult> {
         // Prices and stock change, so they are always synced. The description is skipped when the
         // starter knowledge has a richer copy of the same page.
         const slim = seeded.has(url);
-        await upsert(url, slim ? `${p.title} (live prices)` : p.title, productToMarkdown(p, url, symbol, slim), 'products');
+        upsert(url, slim ? `${p.title} (live prices)` : p.title, productToMarkdown(p, url, symbol, slim), 'products');
       }
       if (products.length < 250) break;
     }
@@ -114,10 +116,11 @@ export async function syncStore(env: Env): Promise<SyncResult> {
       const policy = ((await res.json().catch(() => ({}))) as { policy?: StorePolicy }).policy;
       const text = htmlToText(policy?.body ?? '');
       if (!policy?.title || !text) continue;
-      await upsert(url, policy.title, `- URL: ${url}\n\n${text}`, handle === 'shipping-policy' ? 'shipping' : 'policies');
+      upsert(url, policy.title, `- URL: ${url}\n\n${text}`, handle === 'shipping-policy' ? 'shipping' : 'policies');
     }
+    await ingestBulk(env, writes);
   } catch (err) {
-    return { ok: false, added, updated, error: String((err as Error)?.message ?? err).slice(0, 200) };
+    return { ok: false, added: 0, updated: 0, error: String((err as Error)?.message ?? err).slice(0, 200) };
   }
   await patchSettings(env.DB, 'store', { last_sync_at: Date.now() });
   return { ok: true, added, updated };

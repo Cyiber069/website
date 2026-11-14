@@ -1,0 +1,23 @@
+{
+  "name": "ACX Agent",
+  "short_name": "ACX Agent",
+  "description": "Your customer service agent for ACX Ebikes. See what it is doing and answer the questions it cannot.",
+  "id": "/",
+  "start_url": "/#/urgent",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#08090A",
+  "theme_color": "#08090A",
+  "lang": "en-GB",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Urgent", "url": "/#/urgent", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Live", "url": "/#/live", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

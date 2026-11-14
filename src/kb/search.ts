@@ -90,19 +90,22 @@ export async function buildKnowledgeContext(env: Env, queryText: string, opts: {
   await ensureSeeded(env);
   const settings = await getSettings(env.DB);
   const budget = opts.budgetTokens ?? Number.MAX_SAFE_INTEGER;
-  const docs = await listDocuments(env, true);
-  if (!docs.length) return { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
+  // Sizes first, without the text: a large knowledge base is not read in full just to find that it is too large.
+  const sizes = await listDocuments(env, { onlyEnabled: true, contentChars: 0 });
+  if (!sizes.length) return { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
 
-  const total = docs.reduce((n, d) => n + d.token_estimate, 0);
+  const total = sizes.reduce((n, d) => n + d.token_estimate, 0);
   if (total <= Math.min(settings.brain.kb_full_tokens, budget)) {
+    const docs = await listDocuments(env, { onlyEnabled: true });
     return { mode: 'full', stable: docs.map(renderDoc).join('\n\n'), retrieved: '', docs: docs.map((d) => ({ id: d.id, title: d.title })), tokens: total };
   }
+  const docs = sizes.some((d) => d.pinned === 1) ? await listDocuments(env, { onlyEnabled: true, onlyPinned: true }) : [];
 
   // Too big to send whole: pinned documents first (they are listed first), then the best matches.
   const used: { id: string; title: string }[] = [];
   const stable: string[] = [];
   let tokens = 0;
-  for (const d of docs.filter((x) => x.pinned === 1)) {
+  for (const d of docs) {
     if (tokens + d.token_estimate > budget) continue;
     stable.push(renderDoc(d));
     used.push({ id: d.id, title: d.title });

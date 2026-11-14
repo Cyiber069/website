@@ -7,7 +7,7 @@ import { getSettings } from '../lib/settings';
 import { LlmError, callJson, chooseProvider, knowledgeBudget } from './llm';
 import { mockDecide } from './mock';
 import { DECISION_SCHEMA, buildDecidePrompt, renderConversation, validateDecision, type RawDecision } from './prompt';
-import { MEDIA_HOLDING, enforceDecision, hasWords, holdingLine, knowledgeQuery, pendingInbound, promptToneNotes, type EnforceContext } from './rules';
+import { enforceDecision, hasWords, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
 import { analyzeTone, mirrorPlan } from './tone';
 
 const NO_KNOWLEDGE: KnowledgeContext = { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
@@ -28,11 +28,11 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
   if (pending.length > 0 && !pending.some(hasWords)) {
     const kinds = [...new Set(pending.map((m) => (m.kind === 'voice' ? 'a voice note' : m.kind === 'image' ? 'a photo' : m.kind === 'video' ? 'a video' : m.kind === 'document' ? 'a file' : m.kind === 'sticker' ? 'a sticker' : 'a message with no text')))];
     const raw: RawDecision = {
-      action: 'escalate', parts: [tone.language === 'en' ? MEDIA_HOLDING : holdingLine(tone.language)], confidence: 0.9, language: tone.language,
+      action: 'escalate', parts: [mediaHoldingLine(pending.map((m) => m.kind), tone.language)], confidence: 0.9, language: tone.language,
       escalate: { question: `The customer sent ${kinds.join(' and ')} that I cannot open. Please have a look and reply.`, reason: 'I cannot listen to voice notes or look at pictures', category: 'media' },
       flags: { opt_out: false, asked_if_bot: false, needs_human: true }, kb_refs: [], note: `Customer sent ${kinds.join(' and ')} with no text`,
     };
-    return toDecision(enforceDecision(raw, { settings, input, tone, sources: '' }), tone, null);
+    return toDecision(enforceDecision(raw, { settings, input, tone, sources: '', customerEmojis: analysis.emojis }), tone, null);
   }
 
   const choice = await chooseProvider(env, settings);
@@ -42,7 +42,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
     return NO_KNOWLEDGE;
   });
   const sources = [knowledge.stable, knowledge.retrieved, input.context_notes.join('\n'), input.subject ?? '', renderConversation(input.history, input.now)].join('\n');
-  const ctx: EnforceContext = { settings, input, tone, sources };
+  const ctx: EnforceContext = { settings, input, tone, sources, customerEmojis: analysis.emojis };
 
   if (choice.provider === 'mock') {
     const m = mockDecide(input, tone);
@@ -54,7 +54,9 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
     return toDecision(done, tone, null);
   }
 
-  const prompt = buildDecidePrompt({ settings, input, tone, plan, toneNotes: promptToneNotes(analysis.notes, tone), knowledge });
+    const toneNotes = promptToneNotes(analysis.notes, tone);
+  if (seriousTopic(input.history)) toneNotes.push('serious topic (money back, a complaint, safety or the law): plain and direct, normal capitals, no slang, no emoji, no stretched letters');
+  const prompt = buildDecidePrompt({ settings, input, tone, plan, toneNotes, knowledge });
   let raw: RawDecision;
   let usage: Decision['usage'] = null;
   try {

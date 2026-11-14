@@ -11,7 +11,7 @@ import policiesMd from '../../seed/knowledge/policies.md';
 import productsMd from '../../seed/knowledge/products.md';
 import storeFactsMd from '../../seed/knowledge/store-facts.md';
 import { splitSections } from './chunk';
-import { ingestDocument } from './docs';
+import { type IngestInput, ingestBulk } from './docs';
 
 export interface KbGap { question: string; why_it_matters: string; category: string }
 
@@ -32,29 +32,30 @@ export async function setGaps(env: Env, gaps: KbGap[]): Promise<void> {
 }
 
 async function seed(env: Env): Promise<void> {
+  const docs: IngestInput[] = [];
   for (const entry of indexJson as SeedEntry[]) {
     const text = FILES[entry.file];
     if (!text) continue;
     if (entry.pinned) {
       // Short, always needed facts stay one document so they can be given to the brain in full.
-      await ingestDocument(env, { id: `seed_${entry.id}`, title: entry.title, content: text, category: entry.category, source: 'seed', source_ref: entry.source_url, pinned: true });
+      docs.push({ id: `seed_${entry.id}`, title: entry.title, content: text, category: entry.category, source: 'seed', source_ref: entry.source_url, pinned: true });
       continue;
     }
     // The big files hold one "## " section per product, policy or page. Each becomes its own
     // document so the owner can read, correct or switch off one product without touching the rest.
     const { intro, sections } = splitSections(text);
-    if (intro) {
-      await ingestDocument(env, { id: `seed_${entry.id}_notes`, title: `${entry.title}: notes`, content: intro, category: entry.category, source: 'seed', source_ref: entry.source_url });
-    }
+    if (intro) docs.push({ id: `seed_${entry.id}_notes`, title: `${entry.title}: notes`, content: intro, category: entry.category, source: 'seed', source_ref: entry.source_url });
     const used = new Set<string>();
     for (const section of sections) {
       let id = `seed_${entry.id}_${slug(section.title)}`;
       while (used.has(id)) id += '_2';
       used.add(id);
       const url = /^- URL: (https?:\/\/\S+)/m.exec(section.content)?.[1] ?? `${entry.source_url}#${slug(section.title)}`;
-      await ingestDocument(env, { id, title: section.title, content: section.content, category: entry.category, source: 'seed', source_ref: url });
+      docs.push({ id, title: section.title, content: section.content, category: entry.category, source: 'seed', source_ref: url });
     }
   }
+  // A handful of batches in total: the free plan allows 50 database queries per request.
+  await ingestBulk(env, docs.map((input) => ({ input })));
   await setGaps(env, gapsJson as KbGap[]);
 }
 
@@ -62,6 +63,7 @@ let seeded: Promise<void> | null = null;
 
 async function seedOnce(env: Env): Promise<void> {
   const db = env.DB;
+  if (await one<{ key: string }>(db, `SELECT key FROM settings WHERE key = 'state:kb_seeded'`)) return;
   // Claim the flag first: two requests arriving together must not both load the files.
   const claimed = await run(db, `INSERT INTO settings (key, value, updated_at) VALUES ('state:kb_seeded', ?, ?) ON CONFLICT(key) DO NOTHING`, JSON.stringify({ at: Date.now() }), Date.now());
   if (!claimed) return;

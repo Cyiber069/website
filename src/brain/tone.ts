@@ -2,8 +2,8 @@
 // mirror the customer, and to the sanitizer so the final text matches (lower case, no full stop, ...).
 //
 // Ported from the reference in the voice research (research/voice.md section F, voice_ref/tone.mjs).
-// The test vectors in test/unit/tone.vectors.json were generated from that reference: keep the two
-// in step. Non ASCII characters are written as \u{...} escapes on purpose so the source stays reviewable.
+// The test vectors in test/unit/vectors/tone.vectors.json were generated from that reference: keep the
+// two in step. Non ASCII characters are written as \u{...} escapes on purpose so the source stays reviewable.
 import type { MessageKind, ToneProfile, VoiceSettings } from '../types';
 
 /** What profileTone needs from a message. HistoryMessage fits; tests may pass just a body. */
@@ -277,6 +277,11 @@ export function analyzeTone(messagesIn: readonly ToneMessage[]): ToneAnalysis {
   };
 }
 function words(s: string): number { return (s.trim().match(/\S+/g) || []).length; }
+
+// Topics where the reply stops mirroring whatever the mood is: money back, complaints, safety, the law.
+// Cheap and deliberately broad. Run it on the last three customer messages joined with a space.
+const SERIOUS = /\b(?:refund(?:s|ed)?|money back|return(?:s|ing|ed)?|send (?:it|this) back|cancel(?:led|ling|lation)?|charge ?back|dispute|complain(?:t|ts|ing)?|trading standards|solicitor|court|warranty claim|fire|caught fire|on fire|smok(?:e|ing)|burn(?:t|ing|s)?|melt(?:ed|ing)?|spark(?:s|ed|ing)?|swoll?en|swelling|bulg(?:e|ing)|over ?heat(?:s|ed|ing)?|(?:very|really|too|so|extremely) hot|explod(?:e|ed|ing)|leak(?:s|ed|ing)?|charg(?:e|ing) (?:it )?(?:overnight|over night|unattended|indoors|inside|in (?:my|the) (?:bedroom|hallway|flat|house))|overnight|crash(?:ed)?|came off|fell off|accident|injur(?:y|ed|ies)|hurt|hospital|road legal|street legal|on (?:the )?(?:road|roads|street|pavement|cycle (?:lane|path)|public)|sticker|legal(?:ly)?|illegal|law|police|seized|insurance|insured|licen[cs]e|register(?:ed)?|dvla|number ?plate|mot|derestrict(?:ed|ing)?|de restrict|unrestrict(?:ed)?|speed limiter|remove the limit(?:er)?|bypass|under ?age|my (?:kid|son|daughter|child)|\d{1,2} ?(?:year|yr) ?old)\b/i;
+export function isSeriousTopic(text: string): boolean { return SERIOUS.test(String(text || '').toLowerCase()); }
 
 // What the reply may do with a profile. Pure function, used to fill the <tone> block of the prompt and the sanitizer options.
 export function mirrorPlan(tone: ToneProfile, voice: Partial<Pick<VoiceSettings, 'mirror_level' | 'max_chars' | 'emojis'>> = {}): MirrorPlan {

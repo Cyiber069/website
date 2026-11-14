@@ -320,6 +320,7 @@
       if (!fn) continue;
       try {
         placeCaretAtEnd(el);
+        await sleep(70); // editors such as Lexical drop text inserted before they see the new selection
         fn(el, text);
       } catch { /* try the next one */ }
       if (await waitFor(landed, { timeout: 1800, interval: 150, root: el })) return name;
