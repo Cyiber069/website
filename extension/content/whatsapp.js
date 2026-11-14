@@ -160,6 +160,7 @@
   const known = {};    // chat title -> { jid, is_group } learned by opening it
   const lastSeen = {}; // chat title -> id of the last message when we last read or sent there
   const sentIds = new Set(); // ids of messages this adapter sent (always outgoing, whatever the page shows)
+  const jobProgress = new Map(); // job id -> ids of the parts already sent, in case the same job comes again
 
   // A new_chat job reloads the page. This note (extension storage, invisible to the page) tells the
   // freshly loaded script that the dialog it may find belongs to that job.
@@ -775,7 +776,7 @@
   }
 
   /** After the send?phone page load: wait for the chat or for WhatsApp's verdict on the number. */
-  async function openNewChat(job, digits) {
+  async function openNewChat(digits) {
     const end = Date.now() + 30_000;
     let cur = null;
     while (Date.now() < end && !cur) {
@@ -813,7 +814,7 @@
 
     let cur;
     if (job.kind === 'new_chat' && navigated) {
-      cur = await openNewChat(job, want.digits);
+      cur = await openNewChat(want.digits);
     } else {
       await closeDialogs();
       if (!want.titles.length && !want.digits) throw new Fail('thread_not_found', 'The job does not say which chat', false);
@@ -835,13 +836,17 @@
       if (sameServer || (a && b && a !== b)) throw new Fail('thread_not_found', 'A different chat with the same name is open', false);
     }
 
-    // Idempotent: parts that are already the last messages we sent are not typed again.
-    const done = alreadySent(msgs, parts);
-    const sent = [...done.ids];
-    for (let i = done.k; i < parts.length; i++) {
-      if (i > done.k) await sleep(rand(700, 1600));
+    // Idempotent: parts this page already sent for the job, or that are already the last messages
+    // we sent in the chat, are not typed again.
+    const seen = alreadySent(msgs, parts);
+    const mine = jobProgress.get(job.id) || [];
+    const sent = mine.length >= seen.k ? [...mine] : [...seen.ids];
+    const from = sent.length;
+    for (let i = from; i < parts.length; i++) {
+      if (i > from) await sleep(rand(700, 1600));
       await typePart(parts[i], cps, cur.title);
       sent.push(await sendTyped(parts[i]));
+      jobProgress.set(job.id, [...sent]);
     }
     if (sent.length) lastSeen[cur.title] = sent[sent.length - 1];
     return { sent_external_ids: sent };

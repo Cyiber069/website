@@ -29,7 +29,8 @@ async function handleApi(req: Request, env: Env, exec: ExecutionContext, url: UR
   } else if (route.auth === 'device') {
     c.device = await deviceFromRequest(env, req);
     if (!c.device) throw new HttpError(401, 'bad_device_token', 'This laptop is not paired any more');
-  } else {
+  } else if (!url.pathname.startsWith('/api/agent/') && !url.pathname.startsWith('/api/hooks/')) {
+    // Public browser routes (sign in, first run). The extension and Shopify call from other origins.
     assertSameOrigin(req);
   }
   return route.handler(c);

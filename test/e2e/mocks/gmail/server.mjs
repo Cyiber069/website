@@ -21,6 +21,7 @@ function seed() {
     account: ACCOUNT.email,
     name: ACCOUNT.name,
     seq: 0x100,
+    rev: 0,
     sent: [],
     threads: [
       {
@@ -89,7 +90,12 @@ export function createGmailMock() {
       const url = new URL(req.url());
       const send = (status, contentType, body) => route.fulfill({ status, contentType, body, headers: { 'cache-control': 'no-store' } });
       if (url.pathname === '/mock/state') {
-        if (req.method() === 'POST') { gmail.state = JSON.parse(req.postData() || '{}'); return send(200, 'application/json', '{"ok":true}'); }
+        if (req.method() === 'POST') {
+          if (process.env.MOCK_DEBUG) { const d = JSON.parse(req.postData() || '{}'); console.error('push', 'rev', d.rev, 'have', gmail.state.rev, 'sent', d.sent?.length, 'threads', d.threads?.map((t) => t.messages.length).join(',')); }
+          const next = JSON.parse(req.postData() || '{}');
+          if ((next.rev || 0) >= (gmail.state.rev || 0)) gmail.state = next; // ignore a save that was overtaken by a newer one
+          return send(200, 'application/json', '{"ok":true}');
+        }
         return send(200, 'application/json', JSON.stringify(gmail.state));
       }
       if (url.pathname === '/mock/app.js') return send(200, 'text/javascript; charset=utf-8', file('app.js'));

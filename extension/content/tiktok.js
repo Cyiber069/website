@@ -157,12 +157,14 @@
   function startRest(detail) {
     const minutes = limit('too_fast_pause_minutes', 30);
     if (!minutes) return;
-    const until = Date.now() + minutes * 60_000;
-    if (until <= rest.until) return;
+    const now = Date.now();
+    const until = now + minutes * 60_000;
+    if (until - rest.until < 60_000) return; // already resting: the notice is simply still on screen
+    const fresh = rest.until < now;
     const at = new Date(until);
     rest = { until, detail: `${detail}. Resting until ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` };
     try { chrome.storage.local.set({ [BLOCK_KEY]: rest }).catch(() => {}); } catch { /* ignore */ }
-    ACX.diag('note', { where: 'tiktok.rest', minutes });
+    if (fresh) ACX.diag('note', { where: 'tiktok.rest', minutes });
   }
 
   /** Blocker including the rest period. Remembers a "too fast" notice. */

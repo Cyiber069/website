@@ -22,7 +22,8 @@
   // ---- mailbox --------------------------------------------------------------------------------
 
   function push() {
-    return fetch('/mock/state', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify(state) }).catch(() => {});
+    state.rev = (state.rev || 0) + 1; // saves can arrive out of order: the test process keeps the newest
+    return fetch('/mock/state', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(state) }).catch(() => {});
   }
   const hexId = () => (0x19a8000000000000n + BigInt(state.seq++)).toString(16);
   const threadBy = (id) => state.threads.find((t) => t.id === id || t.messages.some((m) => m.id === id)) || null;

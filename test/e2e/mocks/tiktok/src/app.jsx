@@ -44,6 +44,7 @@ function seed() {
     toast: '',
     sent: [],
     failed: [],
+    dropped: [],
     convs: [
       conv('6800000000000000011', 'jake.rides', 'Jake', [
         msg(false, 'hey do you ship to ireland'),
@@ -132,6 +133,9 @@ function receiveRequest({ handle, nickname, text }) {
   return c.id;
 }
 
+// Misbehaviour the test can switch on: { ignoreSendClick, dropNextSend, limitNextSend }.
+const quirks = {};
+
 /** What TikTok's onPost does: takes the text from React state, shows the bubble, then the server answers. */
 function post(convId, text, via, trusted) {
   const c = find(convId);
@@ -139,6 +143,15 @@ function post(convId, text, via, trusted) {
   c.messages.push(m);
   c.order = seq++;
   c.time = clock();
+  if (quirks.dropNextSend) {
+    // The box empties but no bubble ever shows: the outcome nobody can be sure about.
+    quirks.dropNextSend = false;
+    c.messages.pop();
+    state.dropped.push({ convId: c.id, text });
+    commit();
+    return;
+  }
+  if (quirks.limitNextSend) { quirks.limitNextSend = false; state.rateLimited = true; }
   if (state.rateLimited) {
     m.failed = true;
     state.failed.push({ convId: c.id, text });
@@ -167,6 +180,8 @@ window.mock = {
   composerText: () => composerText,
   accept(who) { const c = find(who); c.request = false; c.order = seq++; if (!state.convs.some((x) => x.request)) state.view = 'main'; commit(); },
   setRateLimited(on) { state.rateLimited = Boolean(on); state.toast = on ? 'You are sending messages too fast. Take a rest.' : ''; commit(); },
+  dropped: () => JSON.parse(JSON.stringify(state.dropped)),
+  setQuirk(name, on = true) { quirks[name] = Boolean(on); },
   setCaptcha(on) { state.captcha = Boolean(on); commit(); },
   setVariant(v) { state.variant = v === 'legacy' ? 'legacy' : 'sdk'; commit(); },
   reset() { localStorage.removeItem(STORE_KEY); state = seed(); loadingId = null; commit(); },
@@ -335,7 +350,7 @@ function Composer({ conv }) {
     text.trim() !== ''
       ? h('div', {
         'data-e2e': 'dm-new-send-btn', role: 'button', 'aria-label': 'Send', tabIndex: 0, className: cls('StyledSendButton', 'send'),
-        onClick: (e) => onPost('click', e.nativeEvent.isTrusted),
+        onClick: (e) => { if (!quirks.ignoreSendClick) onPost('click', e.nativeEvent.isTrusted); },
       }, '➤')
       : null);
 }
