@@ -1,0 +1,24 @@
+{
+  "name": "acx-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ACX Agent: customer service agent backend (Cloudflare Worker) + dashboard + Chrome extension",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler d1 migrations apply acx-agent --remote && wrangler deploy",
+    "db:local": "wrangler d1 migrations apply acx-agent --local",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "node test/e2e/run.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "typescript": "latest",
+    "vitest": "latest",
+    "wrangler": "latest"
+  }
+}
