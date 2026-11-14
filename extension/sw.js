@@ -8,7 +8,8 @@ const VERSION = chrome.runtime.getManifest().version;
 const CHANNELS = {
   whatsapp: { match: ['https://web.whatsapp.com/*'], home: 'https://web.whatsapp.com/' },
   gmail: { match: ['https://mail.google.com/*'], home: 'https://mail.google.com/mail/u/0/#inbox' },
-  tiktok: { match: ['https://www.tiktok.com/messages*'], home: 'https://www.tiktok.com/messages' },
+  // A logged out TikTok redirects /messages to /login: treat that tab as ours so no new tab is opened each cycle.
+  tiktok: { match: ['https://www.tiktok.com/messages*', 'https://www.tiktok.com/login*'], home: 'https://www.tiktok.com/messages?lang=en' },
 };
 const NAMES = Object.keys(CHANNELS);
 
@@ -75,6 +76,7 @@ async function probeAll(autoOpen) {
   await Promise.all(NAMES.map(async (channel) => {
     const tab = await ensureTab(channel, autoOpen);
     if (!tab) { out[channel] = { state: 'no_tab', detail: 'Tab is not open', unread: 0, busy: false }; return; }
+    if (channel === 'tiktok' && /\/login/.test(new URL(tab.url || 'https://x/').pathname)) { out[channel] = { state: 'logged_out', detail: 'Log in to TikTok on that tab', unread: 0, busy: false }; return; }
     if (tab.status !== 'complete') { out[channel] = { state: 'loading', detail: 'Page is loading', unread: 0, busy: busy[channel] }; return; }
     const res = await tabOp(channel, 'probe', {}, 8000);
     if (res.ok && res.data) out[channel] = { state: res.data.state || 'error', detail: res.data.detail || '', unread: res.data.unread || 0, busy: busy[channel] };

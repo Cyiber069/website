@@ -116,6 +116,11 @@ async function main() {
     await page.waitForFunction(() => document.body.dataset.mockReady === '1' || !!document.querySelector('#identifierId'), null, { timeout: 15_000 });
   };
   await openGmail();
+  /** A real page load (going to the same address again would only change the hash). */
+  const reloadGmail = async () => {
+    await page.reload();
+    await page.waitForFunction(() => document.body.dataset.mockReady === '1' || !!document.querySelector('#identifierId'), null, { timeout: 15_000 });
+  };
 
   // ---- pair through the real popup ----------------------------------------------------------------
   const popup = await context.newPage();
@@ -223,7 +228,7 @@ async function main() {
   // ---- 4. a job delivered again is not sent again (reply) ----------------------------------------
   // Forget everything the extension remembers, so only the check inside the thread can stop a resend.
   await sw.evaluate(() => chrome.storage.local.set({ done_jobs: [], gmail_adapter: null }));
-  await openGmail();
+  await reloadGmail();
   await sql(`UPDATE outbox SET status = 'pending', lease_until = NULL, attempts = 0, not_before = 0 WHERE id = ?`, [draft.id]);
   await until('the redelivered reply job to be confirmed', async () => (await outbox(draft.id)).status === 'sent');
   await idle();
@@ -335,15 +340,25 @@ async function main() {
   const self = await op('selftest');
   const failed = self.data.checks.filter((c) => !c.ok);
   assert.deepEqual(failed, [], 'selftest checks');
-  assert.ok(self.data.checks.some((c) => c.name === 'Typing into the reply box' && c.detail === 'method: exec'));
+  assert.ok(self.data.checks.some((c) => c.name === 'Typing into the reply box' && c.detail === 'method: exec'), JSON.stringify(self.data.checks));
   assert.ok(self.data.checks.some((c) => c.name === 'Draft discarded'));
   assert.equal(gmail.thread(MIA).draft, null, 'the selftest draft was discarded');
   assert.equal(gmail.sent().length, 5, 'selftest never sends');
   step(`selftest: ${self.data.checks.length} checks ok, typed and discarded, nothing sent`);
 
+  // A selector pack change from the dashboard reaches the running tab: switch to the second typing method.
+  await api('/api/selectors', { method: 'PUT', body: { override: { gmail: { timing: { afterSendMs: 250, waitVisibleMs: 6000 }, typing: { order: ['range'] } } } } });
+  await until('the second typing method to be used', async () => {
+    const r = await op('selftest');
+    return r.ok && r.data.checks.every((c) => c.ok) && r.data.checks.some((c) => c.detail === 'method: range');
+  }, 40_000);
+  assert.equal(gmail.sent().length, 5);
+  assert.equal(gmail.thread(MIA).draft, null);
+  step('hot selector update applied, second typing method works');
+
   // Signed out.
   gmail.loggedOut = true;
-  await openGmail();
+  await reloadGmail();
   const out = await until('the adapter on the sign-in page', async () => { const r = await op('probe').catch(() => null); return r && r.ok ? r : null; }, 20_000);
   assert.equal(out.data.state, 'logged_out');
   step('sign-in page reported as logged_out');

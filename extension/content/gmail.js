@@ -302,6 +302,7 @@
       return listRows(view).map(parseRow).filter((r) => HEX_ID.test(r.id));
     } finally {
       await goInbox();
+      await sleep(500); // a list is on screen either way: give Gmail a moment to swap the results for the inbox
     }
   }
 

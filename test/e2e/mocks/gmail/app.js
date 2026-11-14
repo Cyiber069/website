@@ -144,7 +144,6 @@
     show('thread');
     shown.threadId = thread.id;
     renderThread(thread);
-    if (thread.draft != null) openCompose(thread, thread.draft); // Gmail restores a saved draft
   }
 
   function renderThread(thread, { onlyLast = false } = {}) {
@@ -183,6 +182,7 @@
     const reply = () => setTimeout(() => { if (shown.threadId === thread.id && !view.querySelector('.M9')) openCompose(thread, ''); }, 140);
     view.querySelector('.bkH').addEventListener('click', reply);
     view.querySelectorAll('.aaq').forEach((b) => b.addEventListener('click', reply));
+    if (thread.draft != null) openCompose(thread, thread.draft); // Gmail restores a saved draft with the thread
   }
 
   // ---- compose ------------------------------------------------------------------------------------

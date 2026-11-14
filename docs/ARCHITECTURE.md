@@ -135,7 +135,7 @@ conversation id or peer handle). `ts` is unix ms when the page shows a time, els
 { "status": "sent" | "failed", "error_code": "not_on_whatsapp", "error": "text", "retryable": false,
   "sent_external_ids": ["true_447700900123@c.us_3EB0B2"] }
 ```
-Error codes: `thread_not_found`, `composer_missing`, `send_not_confirmed`, `not_on_whatsapp`,
+Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `send_not_confirmed`, `not_on_whatsapp`,
 `invalid_number`, `logged_out`, `tab_missing`, `blocked`, `timeout`, `unknown`.
 
 `POST /api/agent/diagnostics` `{ "channel", "kind": "selector_miss" | "dom_snapshot" | "error" | "note", "data": {} }`.

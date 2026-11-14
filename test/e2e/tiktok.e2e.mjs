@@ -93,19 +93,6 @@ async function main() {
   for (const host of ['https://web.whatsapp.com/**', 'https://mail.google.com/**']) {
     await context.route(host, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>mock</title>' }));
   }
-  // KNOWN SERVER BUG (src/index.ts): public routes run assertSameOrigin, so POST /api/agent/pair answers
-  // 403 bad_origin to the extension, whose requests carry Origin: chrome-extension://<id>. Until that is
-  // fixed, a refused pairing request is repeated without the header so the rest can be tested.
-  await context.route(`${base}/api/agent/pair`, async (route) => {
-    let res = await route.fetch();
-    if (res.status() === 403) {
-      log('NOTE server refused the extension Origin on /api/agent/pair (bad_origin); retried without it');
-      const headers = { ...route.request().headers() };
-      delete headers.origin;
-      res = await route.fetch({ headers });
-    }
-    await route.fulfill({ response: res });
-  });
   let [sw] = context.serviceWorkers();
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 20_000 });
   const extensionId = new URL(sw.url()).host;
