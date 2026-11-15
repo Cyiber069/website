@@ -157,8 +157,23 @@
    * before a thread is opened (opening marks it read) and keeps working while the tab is throttled.
    * Returns null when the feed cannot be trusted (signed out, removed by Google, network error).
    */
+  /**
+   * Inboxes with the Primary / Promotions / Social tabs: watch Primary only. Inboxes without them
+   * (categories switched off): the Primary feed is always empty there, so watch the whole inbox
+   * and rely on the sender filters and the customers only rule.
+   */
+  function hasCategoryTabs() {
+    for (const el of document.querySelectorAll('[role="tab"]')) {
+      const label = `${el.getAttribute('aria-label') || ''} ${el.textContent || ''}`.trim();
+      if (/^primary\b/i.test(label)) return true;
+    }
+    return false;
+  }
+
   async function fetchFeed() {
-    const url = String(lookup('feed.primary') || 'https://mail.google.com/mail/u/{index}/feed/atom/%5Esq_ig_i_personal').replace('{index}', account().index);
+    const which = hasCategoryTabs() ? 'primary' : 'inbox';
+    const fallback = which === 'primary' ? 'https://mail.google.com/mail/u/{index}/feed/atom/%5Esq_ig_i_personal' : 'https://mail.google.com/mail/u/{index}/feed/atom';
+    const url = String(lookup(`feed.${which}`) || fallback).replace('{index}', account().index);
     let xml = '';
     try {
       const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
@@ -201,6 +216,10 @@
     if (email && myEmails().has(email)) return 'own address';
     if (email && rx('classify.automatedSender').test(email)) return 'automated sender';
     if (email && rx('classify.denySenders').test(email)) return 'sender on the deny list';
+    if (email) {
+      const domain = email.split('@')[1] || '';
+      if (ignoreSenders.some((i) => i && (i.includes('@') ? email === i : domain === i || domain.endsWith(`.${i}`)))) return 'on your never answer list';
+    }
     if (subject && rx('classify.autoReplySubject').test(subject.trim())) return 'automatic reply';
     return '';
   }
@@ -234,11 +253,14 @@
 
   // The inbox the owner chose in the dashboard (Connections, Channels). Kept in sync from storage.
   let wantedAccount = '';
+  let ignoreSenders = [];
+  const takeConfig = (cfg) => {
+    wantedAccount = String(cfg?.gmail_account || '').toLowerCase();
+    ignoreSenders = Array.isArray(cfg?.gmail_ignore_senders) ? cfg.gmail_ignore_senders.map((x) => String(x).toLowerCase().replace(/^@/, '')) : [];
+  };
   try {
-    chrome.storage.local.get('config', (r) => { wantedAccount = String(r?.config?.gmail_account || '').toLowerCase(); });
-    chrome.storage.onChanged.addListener((ch, area) => {
-      if (area === 'local' && ch.config) wantedAccount = String(ch.config.newValue?.gmail_account || '').toLowerCase();
-    });
+    chrome.storage.local.get('config', (r) => takeConfig(r?.config));
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.config) takeConfig(ch.config.newValue); });
   } catch { /* storage unavailable */ }
 
   function probe() {

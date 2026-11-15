@@ -102,13 +102,17 @@ export function createGmailMock() {
         gmail.feedHits++;
         if (gmail.loggedOut) return send(401, 'text/html', 'Unauthorized');
         if (gmail.feedDown) return send(404, 'text/html', 'Not found');
-        // Only the Primary feed is modelled; the adapter must ask for exactly that one.
-        if (!decodeURIComponent(url.pathname).endsWith('/feed/atom/^sq_ig_i_personal')) return send(404, 'text/html', 'Not found');
+        // With category tabs the adapter must ask for the Primary feed; without them (ACX_MOCK_NO_TABS=1,
+        // like the owner's real inbox) it must ask for the whole inbox feed.
+        const want = process.env.ACX_MOCK_NO_TABS === '1' ? /\/feed\/atom\/?$/ : /\/feed\/atom\/\^sq_ig_i_personal$/;
+        if (process.env.ACX_MOCK_LOG) console.log('FEED', decodeURIComponent(url.pathname));
+        if (!want.test(decodeURIComponent(url.pathname))) return send(404, 'text/html', 'Not found');
         return send(200, 'application/atom+xml; charset=UTF-8', atomFeed(gmail.state));
       }
       if (url.pathname === '/favicon.ico') return send(204, 'image/x-icon', '');
       if (gmail.loggedOut) return send(200, 'text/html; charset=utf-8', file('logged-out.html'));
-      return send(200, 'text/html; charset=utf-8', file('index.html'));
+      const page = file('index.html');
+      return send(200, 'text/html; charset=utf-8', process.env.ACX_MOCK_NO_TABS === '1' ? String(page).replace(/<div role="tab"[^>]*>[^<]*<\/div>/g, '') : page);
     },
   };
   return gmail;

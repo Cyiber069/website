@@ -64,6 +64,7 @@ function clientConfig(settings: Settings, selectorsVersion: string, origin: stri
     selectors_version: selectorsVersion,
     dashboard_url: origin,
     gmail_account: settings.gmail.account.trim().toLowerCase(),
+    gmail_ignore_senders: settings.gmail.ignore_senders,
   };
 }
 
