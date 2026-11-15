@@ -322,3 +322,16 @@ describe('settings and health', () => {
     await api('/api/selectors', { method: 'PUT', body: { override: {} } });
   });
 });
+
+describe('gmail customers only', () => {
+  it('never answers senders on the ignore list, but still answers customers', async () => {
+    const promo = await inbound('gmail', unique('pin'), [msg('p1', 'Fortnite Zeus skins for Acx')], { subject: 'Ideas', contact: { name: 'Pinterest', email: 'ideas@inspire.pinterest.com' } });
+    expect(promo.action).toBe('none');
+    expect(promo.reason).toBe('not_a_customer');
+    await api('/api/settings/gmail', { method: 'PUT', body: { ignore_senders: ['supplier@example.com'] } });
+    const sup = await inbound('gmail', unique('sup'), [msg('s1', 'Your invoice')], { contact: { name: 'Supplier', email: 'supplier@example.com' } });
+    expect(sup.reason).toBe('not_a_customer');
+    const cust = await inbound('gmail', unique('cus'), [msg('c1', 'how fast does the 2000w bundle go')], { contact: { name: 'Kgosi', email: 'customer@example.com' } });
+    expect(cust.action).toBe('review');
+  });
+});

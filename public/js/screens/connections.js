@@ -161,8 +161,9 @@ export default {
           <p class="field__hint" id="mode-hint-${c}">${MODE_HINT[mode]}</p></div>`; })}
         <form class="stack form" id="gmail-form" novalidate>
           ${field({ label: 'Gmail inbox the agent uses', name: 'gmail_account', type: 'email', value: settings.gmail?.account || '', placeholder: 'shop@gmail.com', attrs: 'autocomplete="off" spellcheck="false" inputmode="email"', hint: 'Sign in to this address in Chrome on the laptop. The agent opens this inbox and never replies from any other. Leave empty to use the first account in Chrome.' })}
+          ${field({ label: 'Never answer emails from', name: 'ignore_senders', textarea: true, rows: 5, value: (settings.gmail?.ignore_senders || []).join('\n'), placeholder: 'pinterest.com\nsupplier@example.com', attrs: 'spellcheck="false"', hint: 'One per line. A whole site like pinterest.com, or one address. These are never answered. The agent also skips anything that is not from a customer.' })}
           <p class="form-error" role="alert" hidden></p>
-          <div><button type="submit" class="btn" disabled>Save Gmail inbox</button></div>
+          <div><button type="submit" class="btn" disabled>Save Gmail settings</button></div>
         </form>`);
     }
     function paintPacing() {
@@ -273,7 +274,8 @@ export default {
         if (account && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account)) { formError(f, 'That does not look like an email address.'); f.elements.gmail_account.focus(); return; }
         formError(f);
         return busy(btn, async () => {
-          try { const r = await put('/api/settings/gmail', { account }); settings.gmail = r.gmail || { account }; clean(f); btn.disabled = true; toast(account ? `Gmail will use ${account}.` : 'Gmail will use the first account in Chrome.'); }
+          const ignore_senders = f.elements.ignore_senders.value.split(/[\n,]+/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+          try { const r = await put('/api/settings/gmail', { account, ignore_senders }); settings.gmail = r.gmail || { account, ignore_senders }; clean(f); btn.disabled = true; toast(account ? `Gmail will use ${account}.` : 'Gmail will use the first account in Chrome.'); }
           catch (err) { formError(f, friendly(err, 'Not saved. Try again.')); }
         });
       }

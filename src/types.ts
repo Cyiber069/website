@@ -133,7 +133,8 @@ export interface Settings {
   alerts: AlertSettings;
   store: StoreSettings;
   /** Which Gmail inbox the agent works in. Empty means the first account signed in to Chrome. */
-  gmail: { account: string };
+  /** ignore_senders: addresses or domains the agent never answers (suppliers, platforms, couriers). */
+  gmail: { account: string; ignore_senders: string[] };
   /** Creator codes the agent makes when a customer asks for one. */
   discounts: DiscountSettings;
 }

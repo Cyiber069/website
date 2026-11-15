@@ -314,6 +314,10 @@ export async function processConversation(env: Env, convId: string, device: Devi
   const mode = settings.channels[conv.channel].mode;
   if (mode === 'off') { await clear(); return none(convId, 'channel_off', newInbound); }
   if (contact.opted_out) { await clear(); return none(convId, 'contact_opted_out', newInbound); }
+  if (conv.channel === 'gmail' && isIgnoredSender(contact.email, settings.gmail.ignore_senders)) {
+    await clear();
+    return none(convId, 'not_a_customer', newInbound);
+  }
   if (conv.paused_until && conv.paused_until > now) return none(convId, 'paused', newInbound);
 
   const { rows, history } = await loadHistory(db, convId);
@@ -337,6 +341,9 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   const openUrgent = await one<UrgentRow>(db, `SELECT * FROM urgent WHERE conversation_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`, convId);
   const notes = parseJson<string[]>(conv.context_notes, []);
+  if (conv.channel === 'gmail') {
+    notes.push('Only answer customers or people asking about buying, orders, products, delivery, returns or sponsorship. If this email is from a supplier, courier, payment company, platform, marketing sender, job or service pitch, or is an automatic notification, receipt or verification code, choose action ignore and write no reply.');
+  }
   if (openUrgent) notes.push(`The customer is already waiting on an answer from the owner about: "${openUrgent.question}". They have been told someone is checking. Do not send another holding line for the same thing.`);
 
   const customerChars = rows.filter((m) => m.direction === 'in').slice(-3).reduce((n, m) => n + m.body.length, 0);
@@ -488,4 +495,17 @@ export async function sweepConversations(env: Env, limit = 2): Promise<number> {
 /** Stable id for a message when the platform gives none. Exposed for the extension contract tests. */
 export async function contentId(direction: string, body: string, occurrence: number): Promise<string> {
   return `x:${direction}:${(await sha256Hex(normBody(body))).slice(0, 16)}:${occurrence}`;
+}
+
+/** True when the email address matches an address or domain on the owner's never-answer list. */
+export function isIgnoredSender(email: string | null, list: string[]): boolean {
+  if (!email) return false;
+  const addr = email.trim().toLowerCase();
+  const domain = addr.split('@')[1] ?? '';
+  return list.some((raw) => {
+    const item = raw.trim().toLowerCase().replace(/^@/, '');
+    if (!item) return false;
+    if (item.includes('@')) return addr === item;
+    return domain === item || domain.endsWith(`.${item}`);
+  });
 }

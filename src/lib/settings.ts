@@ -56,7 +56,16 @@ export const DEFAULT_SETTINGS: Settings = {
     template: { text: '', approved: false, updated_at: null },
   },
   alerts: { push: true, whatsapp_number: '', offline_minutes: 10 },
-  gmail: { account: '' },
+  gmail: {
+    account: '',
+    ignore_senders: [
+      'pinterest.com', 'instagram.com', 'facebookmail.com', 'facebook.com', 'meta.com', 'tiktok.com', 'tiktokshop.com',
+      'youtube.com', 'google.com', 'linkedin.com', 'x.com', 'twitter.com', 'snapchat.com',
+      'shopify.com', 'shopifyemail.com', 'klaviyo.com', 'mailchimp.com', 'paypal.com', 'stripe.com', 'nuvei.com', 'klarna.com',
+      'royalmail.com', 'parcelforce.com', 'dpd.co.uk', 'evri.com', 'dhl.com', 'ups.com', 'fedex.com', 'yodel.co.uk',
+      'amazon.com', 'amazon.co.uk', 'aliexpress.com', 'alibaba.com', 'matefulfill.com', 'dsers.com', 'cloudflare.com', 'github.com',
+    ],
+  },
   discounts: {
     mode: 'auto',
     amount: 20,
