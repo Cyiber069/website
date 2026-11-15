@@ -158,7 +158,12 @@ export default {
         ${head('channels', 'i-inbox', 'Channels', 'How much freedom the agent has on each one. Saves as you tap.')}
         ${CHANNELS.map((c) => { const mode = settings.channels?.[c]?.mode || 'off'; return html`<div class="chmode">${chBadge(c)}
           ${segmented({ legend: html`<span class="sr-only">${chName(c)} mode</span>`, name: `mode-${c}`, value: mode, action: `mode:${c}`, options: [['auto', 'Auto'], ['review', 'Ask me first'], ['off', 'Off']] })}
-          <p class="field__hint" id="mode-hint-${c}">${MODE_HINT[mode]}</p></div>`; })}`);
+          <p class="field__hint" id="mode-hint-${c}">${MODE_HINT[mode]}</p></div>`; })}
+        <form class="stack form" id="gmail-form" novalidate>
+          ${field({ label: 'Gmail inbox the agent uses', name: 'gmail_account', type: 'email', value: settings.gmail?.account || '', placeholder: 'shop@gmail.com', attrs: 'autocomplete="off" spellcheck="false" inputmode="email"', hint: 'Sign in to this address in Chrome on the laptop. The agent opens this inbox and never replies from any other. Leave empty to use the first account in Chrome.' })}
+          <p class="form-error" role="alert" hidden></p>
+          <div><button type="submit" class="btn" disabled>Save Gmail inbox</button></div>
+        </form>`);
     }
     function paintPacing() {
       const box = $('#sec-pacing', view);
@@ -208,7 +213,7 @@ export default {
     const formError = (f, msg) => { const e = f.querySelector('.form-error'); e.textContent = msg || ''; e.hidden = !msg; };
     const clean = (f) => { for (const i of f.querySelectorAll('[data-dirty]')) i.dataset.dirty = '0'; };
 
-    view.addEventListener('input', (e) => { const f = e.target.closest('#alerts-form, #pacing-form'); if (f) f.querySelector('[type=submit]').disabled = false; });
+    view.addEventListener('input', (e) => { const f = e.target.closest('#alerts-form, #pacing-form, #gmail-form'); if (f) f.querySelector('[type=submit]').disabled = false; });
     view.addEventListener('change', async (e) => {
       if (e.target.id === 'brain-model') { $('#model-note', view).textContent = conn?.brain?.models?.find((m) => m.id === e.target.value)?.note || ''; return; }
       const f = e.target.closest('#alerts-form, #pacing-form'); if (f) f.querySelector('[type=submit]').disabled = false;
@@ -260,6 +265,15 @@ export default {
         formError(f);
         return busy(btn, async () => {
           try { conn = { ...conn, ...(await put('/api/connections/shopify', body)) }; shopTest = null; clean(f); toast('Shopify details saved. Press Test it to check.'); paintShopify(); ctx.refreshOverview(); }
+          catch (err) { formError(f, friendly(err, 'Not saved. Try again.')); }
+        });
+      }
+      if (f.id === 'gmail-form') {
+        const account = f.elements.gmail_account.value.trim().toLowerCase();
+        if (account && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account)) { formError(f, 'That does not look like an email address.'); f.elements.gmail_account.focus(); return; }
+        formError(f);
+        return busy(btn, async () => {
+          try { const r = await put('/api/settings/gmail', { account }); settings.gmail = r.gmail || { account }; clean(f); btn.disabled = true; toast(account ? `Gmail will use ${account}.` : 'Gmail will use the first account in Chrome.'); }
           catch (err) { formError(f, friendly(err, 'Not saved. Try again.')); }
         });
       }

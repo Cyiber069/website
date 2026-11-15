@@ -19,9 +19,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- tabs -------------------------------------------------------------------------------------------
 
+/** The Gmail address the owner chose in the dashboard, or '' for Chrome's first account. */
+async function gmailAccount() {
+  const cfg = await store.get('config');
+  return String(cfg?.gmail_account || '').trim().toLowerCase();
+}
+
+function homeUrl(channel, account) {
+  if (channel === 'gmail' && account) return `https://mail.google.com/mail/u/${encodeURIComponent(account)}/#inbox`;
+  return CHANNELS[channel].home;
+}
+
 async function findTab(channel) {
   const tabs = await chrome.tabs.query({ url: CHANNELS[channel].match });
   if (!tabs.length) return null;
+  if (channel === 'gmail') {
+    // Gmail puts the account address in the tab title: prefer the tab showing the chosen inbox.
+    const account = await gmailAccount();
+    const mine = account ? tabs.find((t) => (t.title || '').toLowerCase().includes(account)) : null;
+    if (mine) return mine;
+  }
   // Prefer a pinned tab, then the oldest: stable choice when the owner opened the site twice.
   tabs.sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.id - b.id);
   return tabs[0];
@@ -38,7 +55,7 @@ async function ensureTab(channel, autoOpen) {
     }
     if (autoOpen) {
       try {
-        tab = await chrome.tabs.create({ url: CHANNELS[channel].home, active: false, pinned: true });
+        tab = await chrome.tabs.create({ url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : ''), active: false, pinned: true });
         opened[channel] = tab.id;
         await store.sessionSet('opened_tabs', opened);
       } catch { tab = null; }

@@ -56,6 +56,7 @@ export const DEFAULT_SETTINGS: Settings = {
     template: { text: '', approved: false, updated_at: null },
   },
   alerts: { push: true, whatsapp_number: '', offline_minutes: 10 },
+  gmail: { account: '' },
   store: {
     name: 'ACX Ebikes',
     domain: 'acxebikes.com',

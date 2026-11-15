@@ -232,6 +232,15 @@
     return m ? Number(m[1].replace(/[,.]/g, '')) || 0 : 0;
   }
 
+  // The inbox the owner chose in the dashboard (Connections, Channels). Kept in sync from storage.
+  let wantedAccount = '';
+  try {
+    chrome.storage.local.get('config', (r) => { wantedAccount = String(r?.config?.gmail_account || '').toLowerCase(); });
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === 'local' && ch.config) wantedAccount = String(ch.config.newValue?.gmail_account || '').toLowerCase();
+    });
+  } catch { /* storage unavailable */ }
+
   function probe() {
     if (q('auth.signIn', document, quiet)) return { state: 'logged_out', detail: 'Sign in to Gmail in this tab', unread: 0 };
 
@@ -246,6 +255,12 @@
     if (!mainRoot()) {
       if (!q('app.loading', document, quiet) && rx('text.signIn').test(document.title.trim())) return { state: 'logged_out', detail: 'Sign in to Gmail in this tab', unread: 0 };
       return { state: 'loading', detail: 'Gmail is loading', unread: 0 };
+    }
+
+    // Never answer mail from an inbox the owner did not choose.
+    const shown = account().email;
+    if (wantedAccount && shown && shown !== wantedAccount) {
+      return { state: 'blocked', detail: `This tab shows ${shown}. Switch it to ${wantedAccount}`, unread: 0 };
     }
 
     // The feed count is the real number of unread Primary emails. Refresh it in the background.

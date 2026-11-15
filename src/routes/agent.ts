@@ -63,6 +63,7 @@ function clientConfig(settings: Settings, selectorsVersion: string, origin: stri
     poll_seconds: POLL_SECONDS,
     selectors_version: selectorsVersion,
     dashboard_url: origin,
+    gmail_account: settings.gmail.account.trim().toLowerCase(),
   };
 }
 

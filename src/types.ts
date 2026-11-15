@@ -116,6 +116,8 @@ export interface Settings {
   recovery: RecoverySettings;
   alerts: AlertSettings;
   store: StoreSettings;
+  /** Which Gmail inbox the agent works in. Empty means the first account signed in to Chrome. */
+  gmail: { account: string };
 }
 
 // ---- Tone and brain --------------------------------------------------------------------------
