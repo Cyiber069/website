@@ -552,6 +552,16 @@
     }
   }
 
+  /** True when a list time like "20:14" is today and no more than `mins` minutes ago. */
+  function withinMinutes(time, mins) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(time || '').trim());
+    if (!m) return false;
+    const now = new Date();
+    const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(m[1]), Number(m[2]));
+    const ago = (now - at) / 60000;
+    return ago >= -1 && ago <= mins;
+  }
+
   // Last seen preview and time of each conversation row, to notice messages already read on the phone.
   const rowSeen = new Map();
 
@@ -576,13 +586,15 @@
       // Reading a message on the phone clears the badge everywhere, so a row whose preview or time
       // changed since the last look also counts. The server works out whether anything is unanswered.
       const rowSig = `${row.preview}|${row.time}`;
-      const changed = rowSeen.has(row.key) ? rowSeen.get(row.key) !== rowSig : firstScan && /^\d{1,2}:\d{2}/.test(String(row.time || '')) && earlyPicks++ < 3;
+      // A row that was not in the list before is a message request the owner just accepted.
+      const accepted = !firstScan && !rowSeen.has(row.key);
+      const changed = accepted || (rowSeen.has(row.key) ? rowSeen.get(row.key) !== rowSig : firstScan && withinMinutes(row.time, 10) && earlyPicks++ < 3);
       rowSeen.set(row.key, rowSig);
       if (changed && !row.unread && !isOpen) bump(row.key);
       // An open conversation gets no unread badge, so there the last bubble decides.
       if (!(row.unread > 0 || changed || (isOpen && tail.last_in))) continue;
       threads.push({
-        key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: row.is_group,
+        key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: row.is_group, accepted,
         sig: isOpen ? `${stamp(row.key)}|o|${tail.sig}` : `${stamp(row.key)}|l|${row.unread}|${row.preview}|${row.time}`,
       });
     }

@@ -335,3 +335,23 @@ describe('gmail customers only', () => {
     expect(cust.action).toBe('review');
   });
 });
+
+describe('tiktok message requests', () => {
+  it('answers a request the owner just accepted, after the first reply could not be sent', async () => {
+    await api('/api/settings/channels', { method: 'PUT', body: { tiktok: { mode: 'auto' } } });
+    const t = unique('req_');
+    const first = await inbound('tiktok', t, [{ direction: 'in', body: 'is the 3000w in stock' }]);
+    expect(first.action).toBe('reply');
+    await finish(first.jobs[0]!.id, { status: 'failed', error_code: 'blocked', error: 'Accept the message request in TikTok first', retryable: false });
+    // Seen again without accepting: nothing new, nothing sent.
+    expect((await inbound('tiktok', t, [{ direction: 'in', body: 'is the 3000w in stock' }])).action).toBe('none');
+    // The owner accepted it: the extension reports the chat as just accepted.
+    const again = await inbound('tiktok', t, [{ direction: 'in', body: 'is the 3000w in stock' }], { just_accepted: true });
+    expect(again.action).toBe('reply');
+    expect(again.jobs[0]!.parts[0]).toContain('is the 3000w in stock');
+    await finish(again.jobs[0]!.id);
+    // Already answered: a later just accepted report does nothing.
+    const done = await inbound('tiktok', t, [{ direction: 'in', body: 'is the 3000w in stock' }, { direction: 'out', body: again.jobs[0]!.parts[0]! }], { just_accepted: true });
+    expect(done.action).toBe('none');
+  });
+});

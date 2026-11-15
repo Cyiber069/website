@@ -32,6 +32,10 @@ export async function enqueue(db: D1Database, input: EnqueueInput): Promise<stri
   if (!parts.length) throw new HttpError(400, 'empty_message', 'Nothing to send');
   const id = uid('ob');
   const now = Date.now();
+  if (input.dedupe_key) {
+    // A message that failed or was cancelled earlier must not block a fresh try with the same key.
+    await run(db, `UPDATE outbox SET dedupe_key = NULL WHERE dedupe_key = ? AND status IN ('failed', 'cancelled', 'expired')`, input.dedupe_key);
+  }
   const changed = await run(
     db,
     `INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, ref_id, not_before, expires_at, dedupe_key, pacing, created_at)

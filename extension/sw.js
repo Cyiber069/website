@@ -250,7 +250,8 @@ async function channelWork(channel, jobs, config) {
     try {
       const read = await tabOp(channel, 'read', { key: t.key }, 45_000);
       if (!read.ok || !read.data?.thread) continue;
-      const decision = await api.inbound({ channel, thread: read.data.thread, messages: read.data.messages || [] });
+      const thread = t.accepted ? { ...read.data.thread, just_accepted: true } : read.data.thread;
+      const decision = await api.inbound({ channel, thread, messages: read.data.messages || [] });
       seen[t.key].reported = seen[t.key].sig;
       await store.sessionSet(seenKey, seen);
       busy[channel] = false;

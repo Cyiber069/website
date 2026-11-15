@@ -36,6 +36,8 @@ export interface InboundPayload {
     title: string;
     is_group: boolean;
     subject: string | null;
+    /** The owner just accepted this TikTok message request: answer it even though nothing is new. */
+    just_accepted: boolean;
     contact: { name: string; phone: string | null; email: string | null; handle: string | null };
   };
   /** The last messages visible in the thread, oldest first. */
@@ -79,6 +81,7 @@ export function parseInbound(raw: Record<string, unknown>): InboundPayload {
       external_id,
       title: s(t.title, 200),
       is_group: t.is_group === true,
+      just_accepted: t.just_accepted === true,
       subject: sn(t.subject, 300),
       contact: { name: s(c.name, 200), phone: normalisePhone(sn(c.phone, 40)), email: sn(c.email, 200)?.toLowerCase() ?? null, handle: sn(c.handle, 100) },
     },
@@ -488,7 +491,12 @@ export async function handleInbound(env: Env, device: DeviceRow, payload: Inboun
   const stored = await storeInbound(env, payload, settings);
   onStored?.({ conversation_id: stored.conv.id, new_inbound: stored.newInbound });
   if (stored.takeover) return none(stored.conv.id, 'human_takeover', stored.newInbound);
-  if (!stored.newInbound && !stored.conv.needs_reply_since) return none(stored.conv.id, 'nothing_new');
+  if (!stored.newInbound && !stored.conv.needs_reply_since) {
+    // A message request the owner just accepted: the earlier reply could not be sent while it was a
+    // request, so answer it now if the customer is still the last to speak.
+    if (payload.thread.just_accepted) return processConversation(env, stored.conv.id, device, 0);
+    return none(stored.conv.id, 'nothing_new');
+  }
   return processConversation(env, stored.conv.id, device, stored.newInbound);
 }
 
