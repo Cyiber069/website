@@ -9,7 +9,7 @@ About 30 minutes. You need your laptop, your Cloudflare login and your GitHub lo
 3. Set the branch to `claude/brave-mccarthy-rp1440` (or `main` once this work is merged). If the first screen has no branch choice, finish creating it, then change it under **Settings, Build, Branch control**.
 4. Leave the build command empty. Deploy command: `npx wrangler deploy`. Press **Save and Deploy**.
 5. If the build fails with a database permission error: open **Settings, Build, API token**, add **Account, D1, Edit** to the token, and press **Retry build**.
-6. When it finishes, copy your site address. It looks like `https://acx-agent.<your-name>.workers.dev`.
+6. When it finishes, copy your site address. It looks like `https://acxagent.<your-name>.workers.dev`.
 7. Open that address and choose a password. Do this straight away: whoever opens it first sets the password.
 
 The database (`acx-agent`) already exists in your Cloudflare account and the site creates its own tables on first visit.
