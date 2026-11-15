@@ -3,6 +3,7 @@ import * as agent from './agent';
 import * as auth from './auth';
 import * as connections from './connections';
 import * as dashboard from './dashboard';
+import * as discounts from './discounts';
 import * as hooks from './hooks';
 import * as kb from './kb';
 import * as recovery from './recovery';
@@ -18,6 +19,7 @@ export function buildRouter(): Router {
   kb.register(r);
   voice.register(r);
   recovery.register(r);
+  discounts.register(r);
   connections.register(r);
   hooks.register(r);
   testing.register(r);

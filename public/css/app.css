@@ -358,3 +358,32 @@ a.ucard__who { padding-block: 13px; margin-block: -13px; }
   .brand__tag { font-size: 9px; letter-spacing: 0.1em; padding: 4px 3px; }
   .side .switch { padding: 0; }
 }
+
+/* ---------- Discount codes ---------- */
+.dcode__lead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.dcode__lead > div { flex: 1 1 220px; min-width: 0; }
+.dcodes { display: grid; }
+.dcode { display: grid; gap: var(--sp-2); padding: var(--sp-4) 0; border-top: 1px solid var(--border); min-width: 0; }
+.dcode:first-child { border-top: 0; padding-top: var(--sp-2); }
+.dcode__top { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); min-width: 0; }
+.dcode__code { font: 600 var(--fs-20)/1.1 var(--font-display); letter-spacing: 0.06em; color: var(--text-1); overflow-wrap: anywhere; }
+.dcode__who { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.dcode__who b { flex: 1; min-width: 0; font-weight: 600; }
+.dcode__facts { display: grid; gap: 4px; color: var(--text-2); font-size: var(--fs-13); }
+.dcode__facts li { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; overflow-wrap: anywhere; }
+.dcode__facts .dot { flex: none; }
+.dc-convs { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); }
+button.conv { width: 100%; background: transparent; text-align: left; font: inherit; cursor: pointer; }
+button.conv:hover { background: var(--surface-1); }
+.picked { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3); border-radius: var(--r-md); background: var(--accent-soft); border: 1px solid var(--accent-line); min-width: 0; }
+.picked__body { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.dc-codein { text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+.moneyin { position: relative; }
+.moneyin > span { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }
+.moneyin .input { padding-left: 30px; }
+.linkbtn { display: inline; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.banner > .stack { flex: 1; min-width: 0; gap: var(--sp-2); }
+.dcode__facts .dot { color: var(--accent); }
+.dcode__facts .dot--wait { color: var(--warning); }
+.dcode__facts .dot--down { color: var(--danger); }
+.dcode__facts .dot--pause { color: var(--text-3); }

@@ -8,17 +8,18 @@ import inbox from './screens/inbox.js';
 import knowledge from './screens/knowledge.js';
 import voice from './screens/voice.js';
 import recovery from './screens/recovery.js';
+import discounts from './screens/discounts.js';
 import connections from './screens/connections.js';
 import health from './screens/health.js';
 import more from './screens/more.js';
 
-const SCREENS = { live, urgent, inbox, knowledge, voice, recovery, connections, health, more };
+const SCREENS = { live, urgent, inbox, knowledge, voice, recovery, discounts, connections, health, more };
 const NAV = [
   ['live', 'Live', 'i-live'], ['urgent', 'Urgent', 'i-urgent'], ['inbox', 'Inbox', 'i-inbox'], ['knowledge', 'Knowledge', 'i-knowledge'],
-  ['voice', 'Voice', 'i-voice'], ['recovery', 'Recovery', 'i-recovery'], ['connections', 'Connections', 'i-plug'], ['health', 'Health', 'i-health'],
+  ['voice', 'Voice', 'i-voice'], ['recovery', 'Recovery', 'i-recovery'], ['discounts', 'Discount codes', 'i-tag'], ['connections', 'Connections', 'i-plug'], ['health', 'Health', 'i-health'],
 ];
 const TABS = [['live', 'Live', 'i-live'], ['inbox', 'Inbox', 'i-inbox'], ['urgent', 'Urgent', 'i-urgent'], ['recovery', 'Recovery', 'i-recovery'], ['more', 'More', 'i-more']];
-const UNDER_MORE = ['knowledge', 'voice', 'connections', 'health', 'more'];
+const UNDER_MORE = ['knowledge', 'voice', 'discounts', 'connections', 'health', 'more'];
 const POLL_MS = 5000;
 
 const root = $('#root');

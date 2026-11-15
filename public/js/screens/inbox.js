@@ -128,6 +128,7 @@ export default {
             ${c.paused_until
               ? html`<button type="button" class="btn btn--sm" data-action="resume">${icon('i-play')}Let the agent reply again</button>`
               : html`<button type="button" class="btn btn--sm" data-action="pause">${icon('i-pause')}Pause the agent here</button>`}
+            <a class="btn btn--sm" href="#/discounts/new/${encodeURIComponent(c.id)}">${icon('i-tag')}Make discount code</a>
             <button type="button" class="btn btn--ghost btn--sm" data-action="optout" ${canOpt ? '' : raw('disabled title="Not available yet"')}>${c.opted_out ? 'Allow contact again' : 'Mark do not contact'}</button>
             ${canOpt ? '' : html`<span class="meta">Do not contact is not available yet.</span>`}
           </div>`);

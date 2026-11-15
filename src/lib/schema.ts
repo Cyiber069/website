@@ -2,8 +2,9 @@
 // Add a new numbered file in migrations/ and list it here; applied ones are never edited.
 import m0001 from '../../migrations/0001_init.sql';
 import m0002 from '../../migrations/0002_kb_fts.sql';
+import m0003 from '../../migrations/0003_discounts.sql';
 
-const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002]];
+const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003]];
 
 let ready: Promise<void> | null = null;
 

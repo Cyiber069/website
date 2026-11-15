@@ -54,7 +54,7 @@ This file is the contract between the parts. Keep it true when you change code.
 See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Key tables:
 `settings` (JSON groups + `state:*` keys), `secrets` (write only), `devices`, `kb_docs` / `kb_chunks`,
 `contacts`, `conversations`, `messages`, `urgent`, `outbox`, `checkouts`, `recovery_runs`, `events`,
-`diagnostics`, `llm_usage`.
+`diagnostics`, `llm_usage`, `discount_codes`.
 
 Settings groups and defaults: `src/lib/settings.ts` (`DEFAULT_SETTINGS`), typed in `src/types.ts`.
 Read with `getSettings(db)`, write with `patchSettings(db, group, patch)`. Secrets: `getSecret` /
@@ -181,6 +181,20 @@ Categories: `products policies shipping faq learned general`. Sources: `upload n
 * Other options through `PUT /api/settings/recovery`.
 
 Template variables: `{first_name}` `{product}` `{total}` `{checkout_link}` `{shop}`.
+
+### Discount codes (`owner`, `src/routes/discounts.ts`, Shopify part in `src/shopify/discounts.ts`)
+
+* `GET /api/discounts` -> `{ discounts: [{ id, conversation_id, contact_id, customer, channel, code, amount, currency, applies_to, expires_at, usage_limit, shopify_id, shopify_status, message_text, outbox_id, message_status, sent_at, status, error, created_at, updated_at }], shopify: { connected }, defaults: { amount, currency, applies_to, message } }`
+* `POST /api/discounts { conversation_id, code, amount?, applies_to?, expires_at?, usage_limit?, message_text?, send?, confirm_exists? }` -> 201 `{ discount, shopify: { ok, status, error_code, message, discount_status }, queued, needs_confirm }`.
+  Makes the code in Shopify when the API is connected (`discountCodeBasicCreate`, fixed amount, only the collections titled Kits, Bundles and Batteries, needs `write_discounts` and `read_products`).
+  With `send: true` the message is queued only once the code is live (made in Shopify, or `confirm_exists: true` when the owner made it by hand). Otherwise the row stays a `draft` and `needs_confirm` is true.
+  Errors `invalid_code` (3 to 30 of A to Z and 0 to 9), `invalid_amount` (1 to 500), `invalid_expiry` (`YYYY-MM-DD`, in the future), `invalid_usage_limit`, `conversation_not_found`, `code_taken` (409).
+* `POST /api/discounts/:id/send { message_text?, confirm_exists? }` -> `{ ok, discount, already_queued, shopify }`. Not live yet and no `confirm_exists`: Shopify is tried again, then 409 `needs_confirm`.
+  The message is an outbox job with `source: 'manual'`, `ref_id` = discount id and `dedupe_key` `discount:<id>`, so a second send never duplicates. After a failed send the old job gives up the key and a new one is queued. The text goes out as written (no style sanitizer).
+* `DELETE /api/discounts/:id` drafts only (409 `not_a_draft` otherwise).
+
+Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the owner) | `sent` | `failed`. `sent` and `failed` are read from the row's outbox job on every `GET`.
+`shopify_status`: `not_connected` | `created` | `failed` | `owner_confirmed`. Table `discount_codes` (`migrations/0003_discounts.sql`).
 
 ### Connections and push (`owner`, `src/routes/connections.ts`)
 

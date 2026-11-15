@@ -56,7 +56,7 @@ Use **Voice** and its playground to see how it replies before it talks to real c
 
 1. Shopify admin, **Settings, Apps, Develop apps, Build apps in Dev Dashboard**.
 2. **Create app**, name it "ACX Agent".
-3. On Versions set App URL to `https://shopify.dev/apps/default-app-home`, Webhooks API version `2026-10`, and Scopes `read_orders,read_all_orders,read_customers,read_products`.
+3. On Versions set App URL to `https://shopify.dev/apps/default-app-home`, Webhooks API version `2026-10`, and Scopes `read_orders,read_all_orders,read_customers,read_products,write_discounts` (`write_discounts` lets the **Discount codes** screen make codes for you).
 4. Press **Release**, then **Release** again.
 5. On the app overview press **Install app**, pick the store, **Install**.
 6. In the app's Settings copy the **Client ID** and **Client secret**.
@@ -77,6 +77,7 @@ Open your site address in the phone browser, sign in, add it to the home screen,
 ## Everyday
 
 * **Urgent** is where it asks you. Type a rough answer, it writes it properly and the laptop sends it.
+* **Discount codes** (under More): when a creator asks for a code, open the chat in Inbox and press **Make discount code**. Press **Done** and it makes the code in Shopify and sends it in the same chat. If Shopify is not connected or the app has no `write_discounts` scope, make the code in Shopify yourself, then press **Send message**.
 * Gmail and TikTok start in "ask me first". Switch a channel to automatic in **Connections** when you trust it.
 * If you reply to a customer yourself, the agent leaves that chat alone for 30 minutes.
 * **Stop everything** on the Live screen switches it off and cancels anything waiting.
