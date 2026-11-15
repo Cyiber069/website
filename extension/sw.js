@@ -65,11 +65,17 @@ async function ensureTab(channel, autoOpen) {
         const away = await chrome.tabs.get(opened[channel]);
         // Signed in, but the site moved the tab to another of its own pages (TikTok goes to the
         // home feed after logging in): bring it back to the page the agent works on.
-        if (isOwnSitePage(channel, away.url)) {
+        // Only once every 10 minutes: if the site keeps moving it away, stop and say where it went
+        // instead of reloading it forever.
+        const tries = await store.sessionGet('return_tries', {});
+        const last = tries[channel] || 0;
+        if (isOwnSitePage(channel, away.url) && Date.now() - last > 10 * 60_000) {
+          tries[channel] = Date.now();
+          await store.sessionSet('return_tries', tries);
           await chrome.tabs.update(away.id, { url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : '') });
           return { ...away, status: 'loading' };
         }
-        return { ...away, acxAway: true };
+        return { ...away, acxAway: true, acxOwnSite: isOwnSitePage(channel, away.url) };
       } catch { delete opened[channel]; await store.sessionSet('opened_tabs', opened); }
     }
     if (autoOpen) {
@@ -122,7 +128,14 @@ async function probeAll(autoOpen) {
   await Promise.all(NAMES.map(async (channel) => {
     const tab = await ensureTab(channel, autoOpen);
     if (!tab) { out[channel] = { state: 'no_tab', detail: 'Tab is not open', unread: 0, busy: false }; return; }
-    if (tab.acxAway) { out[channel] = { state: 'logged_out', detail: 'Log in on that tab', unread: 0, busy: false }; return; }
+    if (tab.acxAway) {
+      let where = '';
+      try { where = new URL(tab.url).pathname; } catch { /* no url */ }
+      out[channel] = tab.acxOwnSite
+        ? { state: 'error', detail: `The tab is on ${where}, not the messages page. Open the messages page in that tab`, unread: 0, busy: false }
+        : { state: 'logged_out', detail: 'Log in on that tab', unread: 0, busy: false };
+      return;
+    }
     if (channel === 'tiktok' && /\/login/.test(new URL(tab.url || 'https://x/').pathname)) { out[channel] = { state: 'logged_out', detail: 'Log in to TikTok on that tab', unread: 0, busy: false }; return; }
     if (tab.status !== 'complete') { out[channel] = { state: 'loading', detail: 'Page is loading', unread: 0, busy: busy[channel] }; return; }
     const res = await tabOp(channel, 'probe', {}, 8000);
