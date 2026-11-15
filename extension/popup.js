@@ -47,7 +47,7 @@ async function render() {
     nm.textContent = LABEL[name];
     const detail = document.createElement('span');
     detail.className = 'detail';
-    detail.textContent = mode === 'off' ? 'Switched off' : ch.state === 'ready' ? (mode === 'review' ? 'Working, asks you first' : 'Working') : (ch.detail || STATE_TEXT[ch.state] || ch.state);
+    detail.textContent = mode === 'off' ? 'Switched off' : ch.state === 'ready' ? `${mode === 'review' ? 'Working, asks you first' : 'Working'}${name === 'gmail' && (ch.detail || '').includes('@') ? ` (${ch.detail})` : ''}` : (ch.detail || STATE_TEXT[ch.state] || ch.state);
     li.append(dot, nm, detail);
     if (ch.unread) {
       const count = document.createElement('span');

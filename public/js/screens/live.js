@@ -17,8 +17,9 @@ export function channelState(ov, ch) {
   const st = device.status?.channels?.[ch];
   if (!st) return { text: 'Tab not open', pill: 'pill--wait', dot: 'dot--wait', mode, hint: `Open ${chName(ch)} in Chrome on the laptop` };
   const [text, pill, dot] = STATE_TEXT[st.state] || ['Checking', 'pill--pause', 'dot--pause'];
-  const hints = { no_tab: `Open ${chName(ch)} in Chrome on the laptop`, logged_out: `Sign in to ${chName(ch)} on the laptop`, blocked: `${chName(ch)} is blocking the page. Check it on the laptop`, error: st.detail || 'Look at the tab on the laptop' };
-  return { text, pill, dot, mode, hint: hints[st.state] || MODE_TEXT[mode], unread: st.unread || 0 };
+  const hints = { no_tab: `Open ${chName(ch)} in Chrome on the laptop`, logged_out: `Sign in to ${chName(ch)} on the laptop`, blocked: st.detail || `${chName(ch)} is blocking the page. Check it on the laptop`, error: st.detail || 'Look at the tab on the laptop' };
+  const inbox = ch === 'gmail' && st.state === 'ready' && st.detail.includes('@') ? `${st.detail}. ` : '';
+  return { text, pill, dot, mode, hint: hints[st.state] || `${inbox}${MODE_TEXT[mode]}`, unread: st.unread || 0 };
 }
 
 const STEPS = [

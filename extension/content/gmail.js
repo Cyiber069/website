@@ -266,7 +266,8 @@
     // The feed count is the real number of unread Primary emails. Refresh it in the background.
     if (Date.now() - feedCache.at > 45_000) { feedCache.at = Date.now(); fetchFeed().catch(() => null); }
     const unread = feedCache.count != null ? feedCache.count : titleUnread();
-    return { state: 'ready', detail: isHidden() ? 'Tab is in the background' : '', unread };
+    // The detail names the inbox so the dashboard can show which Gmail account the agent uses.
+    return { state: 'ready', detail: shown || '', unread };
   }
 
   // ---- finding unread threads ----------------------------------------------------------------------------
