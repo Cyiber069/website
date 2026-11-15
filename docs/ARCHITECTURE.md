@@ -42,6 +42,7 @@ This file is the contract between the parts. Keep it true when you change code.
 | `src/kb/` | knowledge base: extract, chunk, search, store sync | exports via `src/kb/index.ts` |
 | `src/shopify/` | Shopify client, webhooks, phone normalising | |
 | `src/recovery/` | abandoned checkout run + template | exports via `src/recovery/index.ts` |
+| `src/discounts/` | creator codes: shared create + send (`index.ts`), the agent's code turn (`agent.ts`), pure rules (`rules.ts`) | |
 | `src/routes/` | one file per API area, each exports `register(r)` | |
 | `src/cron.ts` | every-minute tasks | |
 | `public/` | dashboard | no build step |
@@ -54,7 +55,8 @@ This file is the contract between the parts. Keep it true when you change code.
 See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Key tables:
 `settings` (JSON groups + `state:*` keys), `secrets` (write only), `devices`, `kb_docs` / `kb_chunks`,
 `contacts`, `conversations`, `messages`, `urgent`, `outbox`, `checkouts`, `recovery_runs`, `events`,
-`diagnostics`, `llm_usage`, `discount_codes`.
+`diagnostics`, `llm_usage`, `discount_codes` (`made_by` owner | agent, `migrations/0004_agent_discounts.sql`).
+`urgent.discount_id` links a code request to its draft, `urgent.owner_note` holds the owner's note when they told the agent what is going on.
 
 Settings groups and defaults: `src/lib/settings.ts` (`DEFAULT_SETTINGS`), typed in `src/types.ts`.
 Read with `getSettings(db)`, write with `patchSettings(db, group, patch)`. Secrets: `getSecret` /
@@ -146,7 +148,7 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `send_not_
 `GET /api/session` (public), `POST /api/setup`, `POST /api/login`, `POST /api/logout`, `POST /api/password`,
 `GET /api/overview`, `GET /api/events?after=&limit=`, `POST /api/agent-toggle {enabled}`, `POST /api/panic`,
 `GET /api/urgent?status=open|done` (returns `urgent[]` and `review[]`),
-`POST /api/urgent/:id/answer {answer, learn}`, `POST /api/urgent/:id/send-draft {text?}`,
+`POST /api/urgent/:id/answer {answer, learn}`, `POST /api/urgent/:id/note {note, remember}` (section 6), `POST /api/urgent/:id/send-draft {text?}`,
 `POST /api/urgent/:id/dismiss`, `POST /api/review/:id/approve {text?}`, `POST /api/review/:id/reject`,
 `GET /api/conversations?channel=&q=`, `GET /api/conversations/:id`,
 `POST /api/conversations/:id/pause {minutes}` (0 resumes), `POST /api/conversations/:id/send {text}`,
@@ -165,6 +167,9 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `send_not_
 * `POST /api/kb/gaps/answer { question, answer }` -> `{ doc }` (saves the answer as knowledge, removes the gap); `POST /api/kb/gaps/dismiss { question }`
 
 Categories: `products policies shipping faq learned general`. Sources: `upload note store learned seed`.
+Seed notes added after the first release (for example `seed_creator_sponsorship`, "Creator sponsorship and discount codes",
+from `seed/knowledge/creator-sponsorship.md`) are inserted once by `ensureSeeded` into an existing knowledge base too,
+unless a doc with that title exists; a state flag per note keeps a deleted note deleted.
 
 ### Voice (`owner`, `src/routes/voice.ts`)
 
@@ -191,7 +196,12 @@ Template variables: `{first_name}` `{product}` `{total}` `{checkout_link}` `{sho
   Errors `invalid_code` (3 to 30 of A to Z and 0 to 9), `invalid_amount` (1 to 500), `invalid_expiry` (`YYYY-MM-DD`, in the future), `invalid_usage_limit`, `conversation_not_found`, `code_taken` (409).
 * `POST /api/discounts/:id/send { message_text?, confirm_exists? }` -> `{ ok, discount, already_queued, shopify }`. Not live yet and no `confirm_exists`: Shopify is tried again, then 409 `needs_confirm`.
   The message is an outbox job with `source: 'manual'`, `ref_id` = discount id and `dedupe_key` `discount:<id>`, so a second send never duplicates. After a failed send the old job gives up the key and a new one is queued. The text goes out as written (no style sanitizer).
+* `POST /api/discounts/:id/approve { message_text?, confirm_exists? }` -> `{ ok, discount, already_queued, shopify, parts }`. The Urgent "Approve code" button: same as send (409 `needs_confirm` when Shopify says no and nothing is confirmed), job `source: 'discount'`, then closes the Urgent item that points at the draft.
 * `DELETE /api/discounts/:id` drafts only (409 `not_a_draft` otherwise).
+* `GET /api/discounts` also returns `settings` (the `discounts` group) and each row's `made_by`. `defaults` follow the settings.
+* Settings group `discounts` (`PUT /api/settings/discounts`, checked by `checkDiscountPatch`): `mode` `auto` | `ask` | `off` (default `auto`), `amount` 20, `currency` GBP, `applies_to`, `message` (template with `{CODE}` and `{AMOUNT}`, must contain `{CODE}`), `daily_cap` 10, `one_per_customer` true.
+
+Create and send live in `src/discounts/index.ts` (`insertDiscount`, `makeLive`, `queueDiscountMessage`, `liveThenSend`) and are shared by the routes and the agent. In test mode only, the state key `test_fake_shopify` (`"created"` or `"taken"`) stands in for Shopify (`shopifyCreator`).
 
 Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the owner) | `sent` | `failed`. `sent` and `failed` are read from the row's outbox job on every `GET`.
 `shopify_status`: `not_connected` | `created` | `failed` | `owner_confirmed`. Table `discount_codes` (`migrations/0003_discounts.sql`).
@@ -214,14 +224,38 @@ Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the ow
    `pacing.human_takeover_minutes`.
 2. `processConversation` gates: agent on, channel mode not `off`, contact not opted out, not paused,
    last message is from the customer, hourly reply cap, short lock.
-3. `brain.decide(...)` returns a `Decision` (`src/types.ts`).
-4. Apply: `reply` goes to `outbox` (`pending`, or `review` when the channel is in review mode);
+3. Creator code turn (`src/discounts/agent.ts handleCodeTurn`, skipped when `discounts.mode` is `off`). Group chats
+   never reach this point (`handleInbound` drops them). Only when the new customer messages contain code, discount,
+   sponsor, promo or coupon, one small call `brain.extractDiscountRequest(env, history)` returns
+   `{ wants_code, code, confidence }` (mock in test mode: "discount code" or "creator code" plus a quoted or upper case token).
+   `planCodeRequest` (pure, `src/discounts/rules.ts`) then decides:
+   * no code named: the normal reply runs with a context note telling it to ask what they want their code to be.
+   * `create` (mode `auto` and every check passes): the code is made in Shopify, the template is queued in the same chat
+     (`source: 'discount'`, `review` status when the channel asks first) instead of a brain reply, an event
+     "Made discount code X for name" is logged and the owner gets a push (`alertOwner` kind `discount`).
+   * `park`: a draft row (`made_by: 'agent'`) plus an Urgent item (`category: 'discount_code'`, `discount_id`) with
+     an Approve code button, and one fixed holding line that never mentions the code. Parks on: mode `ask`, confidence
+     below 0.7, a rude word or the shop name alone, the code taken here or in Shopify, the person already has a code
+     (`one_per_customer`), `daily_cap` codes made by the agent today (London day), Shopify not connected or refusing.
+   A turn that made or parked a code sends nothing else. Any normal reply that says a code is live or ready
+   (`promisesLiveCode`) is parked for the owner instead of sent.
+4. `brain.decide(...)` returns a `Decision` (`src/types.ts`).
+5. Apply: `reply` goes to `outbox` (`pending`, or `review` when the channel is in review mode);
    low confidence or `needs_human` becomes an Urgent item that carries the draft; `escalate` creates
    or updates an Urgent item, optionally queues one holding line, and alerts the owner.
-5. Cron re-runs conversations whose live request died (`sweepConversations`).
+6. Cron re-runs conversations whose live request died (`sweepConversations`).
 
 Urgent: `answerUrgent` calls `brain.polishOwnerAnswer` (owner's rough words to a customer ready reply
 in the customer's tone), queues it, and stores a reusable fact through `kb.addLearnedFact`.
+
+Owner note (`answerUrgentWithNote`, `POST /api/urgent/:id/note { note, remember = true }` ->
+`{ ok, parts, queued_as: 'pending' | 'review' | 'none', outbox_id, learned, kb_doc_id, status }`): the note becomes an
+"Owner guidance" context note (`brain.ownerGuidance`, authoritative over the knowledge, never quoted) and `decide` writes
+the reply, forced to reply (confidence does not hold it back; a non reply is 422 `no_reply`). Queued as an urgent answer
+(`source: 'urgent'`), or a review draft when the channel asks first. A note that says to wait sends nothing. The note is
+saved on the Urgent item (`owner_note`) and on the conversation's `context_notes` (last 6) so later messages follow it.
+With `remember`, `brain.learnFromOwnerNote` returns a reusable neutral fact or null (null for notes about one customer),
+stored through `kb.addLearnedFact` (source and category `learned`), so it shows on the Knowledge screen to edit or delete.
 
 ## 7. Style rules (owner requirements, enforced twice)
 

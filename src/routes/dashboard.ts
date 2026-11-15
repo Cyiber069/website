@@ -9,8 +9,9 @@ import { getSettings, getState, isSettingsGroup, patchSettings, secretHints, set
 import { DAY, HOUR, MIN, londonTime, nextLondonHour } from '../lib/time';
 import { cancelJob, emptyTarget, enqueue } from '../pipeline/outbox';
 import { processConversation } from '../pipeline/inbound';
-import { answerUrgent, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
+import { answerUrgent, answerUrgentWithNote, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
 import { currentDevice, pairingCodeRow, selectorPack } from './agent';
+import { checkDiscountPatch } from '../discounts/rules';
 
 const count = async (db: D1Database, sql: string, ...p: (string | number)[]) => (await one<{ n: number }>(db, sql, ...p))?.n ?? 0;
 
@@ -27,13 +28,18 @@ async function urgentView(db: D1Database, rows: UrgentRow[]) {
     const recent = await all<MessageRow>(
       db, 'SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 8) ORDER BY ts ASC, created_at ASC', u.conversation_id,
     );
+    const dc = u.discount_id
+      ? await one<{ id: string; code: string; amount: number; status: string; shopify_status: string; error: string | null; message_text: string }>(
+          db, 'SELECT id, code, amount, status, shopify_status, error, message_text FROM discount_codes WHERE id = ?', u.discount_id)
+      : null;
     out.push({
       id: u.id, channel: u.channel, status: u.status, question: u.question, customer_message: u.customer_message,
       reason: u.reason, category: u.category, draft: u.status === 'open' ? u.polished_answer : null,
-      owner_answer: u.owner_answer, sent_text: u.status !== 'open' ? u.polished_answer : null,
+      owner_answer: u.owner_answer, owner_note: u.owner_note, sent_text: u.status !== 'open' ? u.polished_answer : null,
       created_at: u.created_at, answered_at: u.answered_at, sent_at: u.sent_at,
       conversation_id: u.conversation_id, customer: contact?.display_name || conv?.title || 'Customer',
       recent: recent.map((m) => ({ direction: m.direction, author: m.author, body: m.body, ts: m.ts })),
+      discount: dc ? { id: dc.id, code: dc.code, amount: dc.amount, status: dc.status, shopify_status: dc.shopify_status, error: dc.error, message_text: dc.message_text } : null,
     });
   }
   return out;
@@ -153,6 +159,14 @@ export function register(r: Router): void {
     const answer = str(body.answer, 'answer', { max: 2000 });
     const res = await answerUrgent(c.env, c.params.id!, answer, bool(body.learn, true));
     return json({ ok: true, parts: res.parts, learned: res.learned, status: res.urgent.status });
+  });
+
+  // "Tell the agent what's going on": the agent writes and sends the reply itself from the owner's note.
+  r.post('/api/urgent/:id/note', 'owner', async (c) => {
+    const body = await c.body<{ note?: unknown; remember?: unknown }>();
+    const note = str(body.note, 'note', { max: 2000 });
+    const res = await answerUrgentWithNote(c.env, c.params.id!, note, bool(body.remember, true));
+    return json({ ok: true, parts: res.parts, queued_as: res.status, outbox_id: res.outbox_id, learned: res.learned, kb_doc_id: res.kb_doc_id, status: res.urgent.status });
   });
 
   r.post('/api/urgent/:id/send-draft', 'owner', async (c) => {
@@ -293,7 +307,8 @@ export function register(r: Router): void {
     const patch = await c.body<Record<string, unknown>>(64_000);
     // The recovery message is changed through /api/recovery so approval is always deliberate.
     if (group === 'recovery') { delete patch.template; delete patch.consent_confirmed; }
-    const next = await patchSettings(c.db, group, patch as Partial<Settings[typeof group]>);
+    const clean = group === 'discounts' ? checkDiscountPatch(patch) : patch;
+    const next = await patchSettings(c.db, group, clean as Partial<Settings[typeof group]>);
     return json({ ok: true, [group]: next });
   });
 

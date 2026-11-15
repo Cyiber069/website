@@ -9,6 +9,8 @@ import { logEvent } from '../lib/events';
 import { bad } from '../lib/http';
 import { getSettings } from '../lib/settings';
 import { HOUR, MIN } from '../lib/time';
+import { handleCodeTurn } from '../discounts/agent';
+import { promisesLiveCode } from '../discounts/rules';
 import { alertOwner } from './alerts';
 import { emptyTarget, enqueue, leaseById } from './outbox';
 
@@ -337,6 +339,30 @@ export async function processConversation(env: Env, convId: string, device: Devi
   const notes = parseJson<string[]>(conv.context_notes, []);
   if (openUrgent) notes.push(`The customer is already waiting on an answer from the owner about: "${openUrgent.question}". They have been told someone is checking. Do not send another holding line for the same thing.`);
 
+  const customerChars = rows.filter((m) => m.direction === 'in').slice(-3).reduce((n, m) => n + m.body.length, 0);
+  const pacing = pacingFor(settings, customerChars);
+  const target = emptyTarget({
+    thread_external_id: conv.external_thread_id, title: conv.title || contact.display_name, phone: contact.phone,
+    email: contact.email, handle: contact.handle, subject: conv.subject,
+  });
+
+  // A customer asking for their own creator code: made here, or parked for the owner, instead of a
+  // normal reply. A request with no code only adds a note so the reply asks what they want.
+  if (settings.discounts.mode !== 'off') {
+    let turn: Awaited<ReturnType<typeof handleCodeTurn>> = { kind: 'none' };
+    try {
+      turn = await handleCodeTurn(env, { settings, conv, contact, history, rows, channel_mode: mode, device, target, pacing, now });
+    } catch (err) {
+      console.error('discount code turn failed', err);
+      await logEvent(db, { level: 'error', type: 'discount_error', channel: conv.channel, conversation_id: convId, message: `Could not handle a discount code request from ${contact.display_name || 'a customer'}: ${clip(String((err as Error)?.message ?? err), 200)}` });
+    }
+    if (turn.kind === 'done') {
+      await clear();
+      return { conversation_id: convId, action: turn.action, reason: turn.reason, jobs: turn.jobs, new_inbound: newInbound };
+    }
+    if (turn.kind === 'note') notes.push(turn.note);
+  }
+
   let decision: Decision;
   try {
     decision = await decide(env, {
@@ -350,12 +376,6 @@ export async function processConversation(env: Env, convId: string, device: Devi
   }
 
   await run(db, 'UPDATE contacts SET tone_profile = ?, updated_at = ? WHERE id = ?', JSON.stringify(decision.tone), now, contact.id);
-  const customerChars = rows.filter((m) => m.direction === 'in').slice(-3).reduce((n, m) => n + m.body.length, 0);
-  const pacing = pacingFor(settings, customerChars);
-  const target = emptyTarget({
-    thread_external_id: conv.external_thread_id, title: conv.title || contact.display_name, phone: contact.phone,
-    email: contact.email, handle: contact.handle, subject: conv.subject,
-  });
   const who = contact.display_name || conv.title || 'customer';
   const jobs: AgentJob[] = [];
   let action: Outcome['action'] = 'none';
@@ -368,13 +388,15 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   let act = decision.action;
   let draft: string | null = null;
-  if (act === 'reply' && (decision.confidence < settings.brain.confidence_threshold || decision.flags.needs_human)) {
+  // Only the code template may tell a customer a code is live, and only after the code exists.
+  const promisesCode = act === 'reply' && promisesLiveCode(decision.parts.join(' '));
+  if (act === 'reply' && (decision.confidence < settings.brain.confidence_threshold || decision.flags.needs_human || promisesCode)) {
     // Not sure enough to speak for the business: park it with the draft so the owner can approve in one tap.
     draft = decision.parts.join('\n');
     act = 'escalate';
     decision.escalate = decision.escalate ?? {
       question: clip(lastMsg.body, 300),
-      reason: decision.flags.needs_human ? 'Looks like this one needs a person' : 'Not confident enough to answer alone',
+      reason: promisesCode ? 'The reply says a discount code is ready, but no code was made' : decision.flags.needs_human ? 'Looks like this one needs a person' : 'Not confident enough to answer alone',
       category: 'low_confidence',
     };
     decision.parts = [];

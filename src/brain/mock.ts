@@ -10,6 +10,11 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
     flags: { opt_out: false, asked_if_bot: false, needs_human: false }, kb_refs: [], note: 'mock', usage: null,
   };
   if (text.includes('mock-error')) throw new Error('mock brain failure');
+  // The owner explained the situation on an Urgent card (src/brain/note.ts). Every later reply in the chat follows it too.
+  const guided = input.context_notes.some((n) => n.startsWith('Owner guidance'));
+  if (guided) {
+    return { ...base, parts: [`mock reply following owner guidance to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock owner guidance' };
+  }
   if (text.includes('warranty on the moon') || text.includes('unknown-question')) {
     return {
       ...base, action: 'escalate', confidence: 0.2, parts: ['good question let me check that for you'],
@@ -21,6 +26,10 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   }
   if (text.includes('are you a bot')) {
     return { ...base, parts: ['this is the ACX assistant. the team can jump in whenever you want'], flags: { ...base.flags, asked_if_bot: true } };
+  }
+  // The pipeline saw a code request with no code in it (src/discounts/agent.ts ASK_FOR_CODE_NOTE).
+  if (input.context_notes.some((n) => n.startsWith('The customer wants their own discount code'))) {
+    return { ...base, parts: ['nice one what do you want your code to be'], note: 'mock asks for the code' };
   }
   if (text.includes('lowconf')) return { ...base, confidence: 0.3, parts: ['i think it is about 3 days but not sure'] };
   if (text.includes('ignore-me')) return { ...base, action: 'ignore', note: 'mock ignore' };

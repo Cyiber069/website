@@ -1,7 +1,7 @@
 // Discount codes: codes for creators and sponsorship asks. Made in Shopify when it is connected,
 // then a message to the customer in the same chat.
-import { get, post, del } from '../api.js';
-import { $, html, raw, icon, setHTML, chBadge, chName, toast, toastError, friendly, unavailable, skeletonCards, emptyState, busy, confirmDialog, timeTag, refreshTimes, syncList } from '../ui.js';
+import { get, post, put, del } from '../api.js';
+import { $, html, raw, icon, setHTML, chBadge, chName, toast, toastError, friendly, unavailable, skeletonCards, emptyState, busy, confirmDialog, timeTag, refreshTimes, syncList, segmented } from '../ui.js';
 
 const DEFAULT_AMOUNT = 20;
 const DEFAULT_APPLIES = 'kits, bundles and batteries';
@@ -41,13 +41,46 @@ function messageLine(d) {
   return 'Message not sent yet';
 }
 
+// What each agent mode does, in one honest sentence.
+const MODES = [
+  ['auto', 'Auto', 'When a creator asks for a code the agent makes it in Shopify and sends it in the chat. Anything odd comes to you first.'],
+  ['ask', 'Ask me first', 'The agent saves the code as a draft and asks you on Urgent. Nothing is made until you tap Approve.'],
+  ['off', 'Off', 'The agent does not make codes. It answers code questions like any other message.'],
+];
+
+function settingsCard(s) {
+  const mode = s?.mode || 'auto';
+  return html`<section class="card stack" aria-labelledby="dc-set-h">
+    <div class="card__head"><div><h2 class="eyebrow" id="dc-set-h">When a creator asks for a code</h2><p class="meta" id="dc-mode-say">${(MODES.find((m) => m[0] === mode) || MODES[0])[2]}</p></div></div>
+    <form class="stack form" id="dc-set" novalidate>
+      ${segmented({ legend: 'What the agent does', name: 'mode', value: mode, options: MODES.map(([v, t]) => [v, t]) })}
+      <div class="grid grid--2">
+        <div class="field"><label class="field__label" for="dc-set-amount">Amount off</label>
+          <div class="moneyin"><span aria-hidden="true">£</span><input class="input num" id="dc-set-amount" name="amount" type="number" min="1" max="500" step="0.01" inputmode="decimal" value="${s?.amount ?? DEFAULT_AMOUNT}"></div>
+          <p class="field__hint">On all kits, bundles and batteries.</p></div>
+        <div class="field"><label class="field__label" for="dc-set-cap">Most codes a day</label>
+          <input class="input num" id="dc-set-cap" name="daily_cap" type="number" min="0" max="200" inputmode="numeric" value="${s?.daily_cap ?? 10}">
+          <p class="field__hint">After that the agent asks you.</p></div>
+      </div>
+      <div class="field"><label class="field__label" for="dc-set-msg">Message when the code is live</label>
+        <textarea class="input" id="dc-set-msg" name="message" rows="3" maxlength="1000">${s?.message || ''}</textarea>
+        <p class="field__hint">{CODE} becomes their code and {AMOUNT} the amount. Sent exactly as written.</p></div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="wrap"><button type="submit" class="btn btn--primary">${icon('i-check')}Save</button><span class="meta">One code per customer. Bad words or just the shop name always come to you.</span></div>
+    </form>
+  </section>`;
+}
+
 function card(d) {
   const [label, cls] = STATUS[d.status] || STATUS.draft;
-  const canSend = d.status === 'draft' || d.status === 'failed' || (d.status === 'live' && !d.outbox_id);
+  const byAgent = d.made_by === 'agent';
+  const approve = byAgent && d.status === 'draft';
+  const canSend = !approve && (d.status === 'draft' || d.status === 'failed' || (d.status === 'live' && !d.outbox_id));
   return html`<li class="dcode">
     <div class="dcode__top">
       <span class="dcode__code num">${d.code}</span>
       <span class="tag ${cls}">${label}</span>
+      ${byAgent ? html`<span class="tag">Made by agent</span>` : ''}
     </div>
     <p class="dcode__who">${chBadge(d.channel, true)}<b class="truncate">${d.customer}</b><span class="meta num">${pounds(d.amount)} off</span></p>
     <p class="meta">${d.applies_to}${d.expires_at ? ` · ends ${dateOnly(d.expires_at)}` : ''}${d.usage_limit ? ` · ${d.usage_limit === 1 ? 'one use' : `${d.usage_limit} uses`}` : ''}</p>
@@ -58,6 +91,7 @@ function card(d) {
     </ul>
     ${d.status === 'draft' && d.error ? html`<p class="banner banner--wait">${icon('i-shop')}<span>${d.error}</span></p>` : ''}
     <div class="wrap">
+      ${approve ? html`<button type="button" class="btn btn--sm btn--primary" data-action="approve" data-id="${d.id}">${icon('i-check')}Approve code</button>` : ''}
       ${canSend ? html`<button type="button" class="btn btn--sm ${d.status === 'draft' ? '' : 'btn--primary'}" data-action="send" data-id="${d.id}">${icon('i-send')}${d.status === 'failed' ? 'Send again' : 'Send message'}</button>` : ''}
       ${d.conversation_id ? html`<a class="btn btn--ghost btn--sm" href="#/inbox/${d.conversation_id}">Open chat</a>` : ''}
       ${d.status === 'draft' && !d.outbox_id ? html`<button type="button" class="btn btn--ghost btn--sm" data-action="remove" data-id="${d.id}">${icon('i-trash')}Remove</button>` : ''}
@@ -77,6 +111,7 @@ export default {
     let convTimer = null;
     let result = null;        // what Done said, shown above the form
     let seq = 0;
+    let setDirty = false;     // the settings card has unsaved changes
 
     function freshForm() {
       return { conv: null, handle: null, code: '', amount: DEFAULT_AMOUNT, applies: DEFAULT_APPLIES, expires: '', uses: '', message: '', codeTouched: false, msgTouched: false };
@@ -90,7 +125,8 @@ export default {
         ${!connected ? html`<p class="banner banner--wait">${icon('i-shop')}<span><b>Shopify is not connected.</b> You can still save a code here. Make it in Shopify yourself, then send the message. <a href="#/connections">Connect Shopify</a></span></p>` : ''}
         ${mode === 'form' ? html`<section class="card stack" id="dc-form-card" aria-labelledby="dc-form-h"></section>`
           : html`<section class="card dcode__lead"><div><h2 class="eyebrow">For creators and sponsors</h2><p class="meta">Make a code for someone who asked in a chat. It is sent to them in the same chat.</p></div>
-              <a class="btn btn--primary" href="#/discounts/new">${icon('i-tag')}Make a discount code</a></section>`}
+              <a class="btn btn--primary" href="#/discounts/new">${icon('i-tag')}Make a discount code</a></section>
+            ${settingsCard(data.settings)}`}
         <section class="card" aria-labelledby="dc-list-h">
           <div class="card__head"><h2 class="eyebrow" id="dc-list-h">Your codes</h2><span class="meta num">${list.length || ''}</span></div>
           ${list.length ? html`<ul class="dcodes" id="dc-list"></ul>`
@@ -257,7 +293,7 @@ export default {
     const askExists = (code, text) => confirmDialog({ title: `Is ${code} in Shopify?`, text, confirm: 'It is in Shopify. Send', cancel: 'Not yet' });
 
     // confirmed: the owner already pressed a button that says the code is in Shopify.
-    async function send(id, btn, confirmed) {
+    async function send(id, btn, confirmed, path = 'send') {
       const d = data?.discounts?.find((x) => x.id === id);
       const code = d?.code || result?.code || 'the code';
       const live = d && (d.shopify_status === 'created' || d.shopify_status === 'owner_confirmed');
@@ -268,14 +304,14 @@ export default {
       }
       await busy(btn, async () => {
         try {
-          const res = await post(`/api/discounts/${encodeURIComponent(id)}/send`, confirmExists ? { confirm_exists: true } : {});
+          const res = await post(`/api/discounts/${encodeURIComponent(id)}/${path}`, confirmExists ? { confirm_exists: true } : {});
           toast(res.already_queued ? 'That message was already sent or is waiting to send.' : 'Message queued. Your laptop sends it in a moment.');
           if (result?.id === id) { result = null; form = null; mode = 'list'; ctx.go('#/discounts'); }
           await load();
         } catch (err) {
           if (err.code === 'needs_confirm') {
             await load();
-            if (await askExists(code, `${err.userMessage} If you made it in Shopify yourself, you can send the message now.`)) return send(id, null, true);
+            if (await askExists(code, `${err.userMessage} If you made it in Shopify yourself, you can send the message now.`)) return send(id, null, true, path);
             return;
           }
           toastError(err, 'Not sent. Try again.');
@@ -287,6 +323,8 @@ export default {
     async function load({ withForm = false } = {}) {
       try { data = await get('/api/discounts'); error = null; }
       catch (err) { if (err.name === 'AuthError') return; if (!data) error = err; else return; }
+      // Keep what the owner is typing in the settings card: only the list is refreshed.
+      if (mode === 'list' && $('#dc-set', view) && ($('#dc-list', view) || setDirty)) { paintList(); return; }
       if (mode === 'form' && form && $('#dc-form-card', view)) {
         readForm();
         if (withForm || (!$('#dc-list', view) && data.discounts.length)) { paint(); return; }
@@ -298,6 +336,7 @@ export default {
 
     view.addEventListener('input', (e) => {
       const t = e.target;
+      if (t.closest('#dc-set')) { setDirty = true; t.removeAttribute('aria-invalid'); return; }
       if (t.id === 'dc-q') { clearTimeout(convTimer); convTimer = setTimeout(() => { convQ = t.value.trim(); loadConvs(); }, 250); return; }
       if (!form || !t.closest('#dc-form')) return;
       t.removeAttribute('aria-invalid');
@@ -314,7 +353,36 @@ export default {
       if (t.id === 'dc-msg') { form.message = t.value; form.msgTouched = true; $('#dc-reset', view).hidden = false; }
       syncPreview();
     });
+    async function saveSettings(f) {
+      const errBox = f.querySelector('.form-error');
+      const fail = (m, el) => { errBox.textContent = m; errBox.hidden = false; if (el) { el.setAttribute('aria-invalid', 'true'); el.focus(); } };
+      for (const el of f.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+      const amount = Number(f.elements.amount.value);
+      const cap = Number(f.elements.daily_cap.value);
+      const message = f.elements.message.value.trim();
+      if (!(amount >= 1 && amount <= 500)) return fail('The amount should be between £1 and £500.', f.elements.amount);
+      if (!(Number.isInteger(cap) && cap >= 0 && cap <= 200)) return fail('Most codes a day should be a whole number from 0 to 200.', f.elements.daily_cap);
+      if (!/\{CODE\}/i.test(message)) return fail('Put {CODE} in the message so the customer sees their code.', f.elements.message);
+      errBox.hidden = true;
+      await busy(f.querySelector('[type=submit]'), async () => {
+        try {
+          const res = await put('/api/settings/discounts', { mode: f.elements.mode.value, amount, daily_cap: cap, message });
+          data.settings = res.discounts;
+          setDirty = false;
+          toast('Saved.');
+        } catch (err) { fail(friendly(err, 'Not saved. Try again.')); }
+      });
+    }
+
+    view.addEventListener('change', (e) => {
+      if (e.target.closest('#dc-set')) setDirty = true;
+      if (e.target.name === 'mode' && e.target.closest('#dc-set')) {
+        const say = $('#dc-mode-say', view); const m = MODES.find((x) => x[0] === e.target.value);
+        if (say && m) say.textContent = m[2];
+      }
+    });
     view.addEventListener('submit', (e) => {
+      if (e.target.id === 'dc-set') { e.preventDefault(); saveSettings(e.target); return; }
       if (e.target.id !== 'dc-form') return;
       e.preventDefault();
       submit(e.target.querySelector('[type=submit]'));
@@ -329,6 +397,7 @@ export default {
       if (action === 'change-conv') { readForm(); form.conv = null; form.handle = null; paintForm(); loadConvs(); $('#dc-q', view)?.focus(); return; }
       if (action === 'reset-msg') { readForm(); form.msgTouched = false; paintForm(); return; }
       if (action === 'send') return send(b.dataset.id, b, b.dataset.confirmed === '1');
+      if (action === 'approve') return send(b.dataset.id, b, false, 'approve');
       if (action === 'remove') {
         const d = data?.discounts?.find((x) => x.id === b.dataset.id);
         if (!(await confirmDialog({ title: `Remove ${d?.code || 'this draft'}?`, text: 'It is only removed here. Nothing was sent to the customer.', confirm: 'Remove', danger: true }))) return;

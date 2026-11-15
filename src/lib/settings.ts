@@ -57,6 +57,15 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   alerts: { push: true, whatsapp_number: '', offline_minutes: 10 },
   gmail: { account: '' },
+  discounts: {
+    mode: 'auto',
+    amount: 20,
+    currency: 'GBP',
+    applies_to: 'kits, bundles and batteries',
+    message: "Your discount code {CODE} is now live!! It's £{AMOUNT} off all kits, bundles and batteries",
+    daily_cap: 10,
+    one_per_customer: true,
+  },
   store: {
     name: 'ACX Ebikes',
     domain: 'acxebikes.com',

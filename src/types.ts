@@ -107,6 +107,22 @@ export interface StoreSettings {
   last_sync_at: number | null;
 }
 
+export interface DiscountSettings {
+  /** auto: the agent makes the code in Shopify and sends it. ask: draft plus an Urgent card. off: no code handling. */
+  mode: 'auto' | 'ask' | 'off';
+  /** Pounds off, fixed amount. */
+  amount: number;
+  currency: string;
+  /** Wording for the message and the knowledge note. In Shopify the code always covers Kits, Bundles and Batteries. */
+  applies_to: string;
+  /** What the customer gets once the code is live. {CODE} and {AMOUNT} are filled in. */
+  message: string;
+  /** At most this many codes made by the agent on its own per London day. More go to the owner. */
+  daily_cap: number;
+  /** A customer who already has a code goes to the owner instead of getting a second one. */
+  one_per_customer: boolean;
+}
+
 export interface Settings {
   agent: { enabled: boolean };
   channels: Record<Channel, { mode: ChannelMode }>;
@@ -118,6 +134,8 @@ export interface Settings {
   store: StoreSettings;
   /** Which Gmail inbox the agent works in. Empty means the first account signed in to Chrome. */
   gmail: { account: string };
+  /** Creator codes the agent makes when a customer asks for one. */
+  discounts: DiscountSettings;
 }
 
 // ---- Tone and brain --------------------------------------------------------------------------
@@ -257,6 +275,10 @@ export interface UrgentRow {
   reason: string; category: string; status: string; owner_answer: string | null; polished_answer: string | null;
   learn: number; kb_doc_id: string | null; outbox_id: string | null; created_at: number;
   answered_at: number | null; sent_at: number | null;
+  /** Set on a discount code request: the draft row in discount_codes. */
+  discount_id: string | null;
+  /** The owner's note when they told the agent what is going on instead of typing the reply. */
+  owner_note: string | null;
 }
 
 export interface DeviceRow {

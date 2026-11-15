@@ -5,7 +5,7 @@ import { MIN } from '../lib/time';
 import { emptyTarget, enqueue } from './outbox';
 
 export interface OwnerAlert {
-  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error';
+  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount';
   title: string;
   body: string;
   /** Dashboard path, for example /#/urgent */
@@ -18,6 +18,7 @@ const THROTTLE_MS: Record<OwnerAlert['kind'], number> = {
   offline: 60 * MIN,
   recovery: 0,
   error: 30 * MIN,
+  discount: 0,
 };
 
 /**

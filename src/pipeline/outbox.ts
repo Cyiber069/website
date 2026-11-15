@@ -13,7 +13,7 @@ export interface EnqueueInput {
   conversation_id?: string | null;
   target: JobTarget;
   parts: string[];
-  source: 'auto' | 'holding' | 'urgent' | 'review' | 'recovery' | 'manual' | 'alert';
+  source: 'auto' | 'holding' | 'urgent' | 'review' | 'recovery' | 'manual' | 'alert' | 'discount';
   ref_id?: string | null;
   status?: 'pending' | 'review';
   not_before?: number;

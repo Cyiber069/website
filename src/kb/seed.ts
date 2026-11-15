@@ -10,6 +10,7 @@ import pagesMd from '../../seed/knowledge/pages.md';
 import policiesMd from '../../seed/knowledge/policies.md';
 import productsMd from '../../seed/knowledge/products.md';
 import storeFactsMd from '../../seed/knowledge/store-facts.md';
+import creatorMd from '../../seed/knowledge/creator-sponsorship.md';
 import { splitSections } from './chunk';
 import { type IngestInput, ingestBulk } from './docs';
 
@@ -59,6 +60,32 @@ async function seed(env: Env): Promise<void> {
   await setGaps(env, gapsJson as KbGap[]);
 }
 
+// Seed notes added after the first release. Each is inserted once, also into a knowledge base that
+// was seeded before it existed, unless a document with the same title is already there. A state
+// flag per note means a note the owner deleted is never put back.
+const LATER_NOTES: (IngestInput & { id: string; flag: string })[] = [
+  {
+    id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship', title: 'Creator sponsorship and discount codes',
+    content: creatorMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/',
+  },
+];
+
+async function addLaterNotes(env: Env): Promise<void> {
+  const db = env.DB;
+  for (const note of LATER_NOTES) {
+    const claimed = await run(db, `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING`, `state:${note.flag}`, JSON.stringify({ at: Date.now() }), Date.now());
+    if (!claimed) continue;
+    if (await one<{ id: string }>(db, 'SELECT id FROM kb_docs WHERE id = ? OR lower(title) = lower(?) LIMIT 1', note.id, note.title)) continue;
+    const { flag: _flag, ...input } = note;
+    try {
+      await ingestBulk(env, [{ input }]);
+    } catch (err) {
+      await run(db, 'DELETE FROM settings WHERE key = ?', `state:${note.flag}`);
+      throw err;
+    }
+  }
+}
+
 let seeded: Promise<void> | null = null;
 
 async function seedOnce(env: Env): Promise<void> {
@@ -79,6 +106,6 @@ async function seedOnce(env: Env): Promise<void> {
 
 /** Load the bundled starter knowledge if this database has never had any. Cheap to call on every request. */
 export function ensureSeeded(env: Env): Promise<void> {
-  if (!seeded) seeded = seedOnce(env).catch((err) => { seeded = null; throw err; });
+  if (!seeded) seeded = seedOnce(env).then(() => addLaterNotes(env)).catch((err) => { seeded = null; throw err; });
   return seeded;
 }
