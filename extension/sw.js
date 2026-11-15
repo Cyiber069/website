@@ -30,6 +30,16 @@ function homeUrl(channel, account) {
   return CHANNELS[channel].home;
 }
 
+/** True for a page of the channel's own site that is not a sign in page. */
+function isOwnSitePage(channel, url) {
+  let u;
+  try { u = new URL(url || ''); } catch { return false; }
+  if (channel === 'tiktok') return u.hostname === 'www.tiktok.com' && !/^\/(login|signup)/.test(u.pathname);
+  if (channel === 'whatsapp') return u.hostname === 'web.whatsapp.com';
+  if (channel === 'gmail') return u.hostname === 'mail.google.com';
+  return false;
+}
+
 async function findTab(channel) {
   const tabs = await chrome.tabs.query({ url: CHANNELS[channel].match });
   if (!tabs.length) return null;
@@ -51,7 +61,16 @@ async function ensureTab(channel, autoOpen) {
     // another one every cycle: keep it, and report it as logged out.
     const opened = await store.sessionGet('opened_tabs', {});
     if (opened[channel]) {
-      try { return { ...(await chrome.tabs.get(opened[channel])), acxAway: true }; } catch { delete opened[channel]; await store.sessionSet('opened_tabs', opened); }
+      try {
+        const away = await chrome.tabs.get(opened[channel]);
+        // Signed in, but the site moved the tab to another of its own pages (TikTok goes to the
+        // home feed after logging in): bring it back to the page the agent works on.
+        if (isOwnSitePage(channel, away.url)) {
+          await chrome.tabs.update(away.id, { url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : '') });
+          return { ...away, status: 'loading' };
+        }
+        return { ...away, acxAway: true };
+      } catch { delete opened[channel]; await store.sessionSet('opened_tabs', opened); }
     }
     if (autoOpen) {
       try {
