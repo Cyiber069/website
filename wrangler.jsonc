@@ -14,7 +14,6 @@
     {
       "binding": "DB",
       "database_name": "acx-agent",
-      "database_id": "916e2170-3ef5-48c8-863f-63f71fdc4515",
       "migrations_dir": "migrations"
     }
   ],
