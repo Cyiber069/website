@@ -302,6 +302,9 @@
 
   const dupWarned = new Set();
 
+  // Last seen time and preview of each chat row, to notice messages already read on the phone.
+  const rowSeen = new Map();
+
   async function scan() {
     if (!Q('state.loggedIn')) return { threads: [] };
     await closeDialogs();
@@ -318,8 +321,15 @@
     for (const c of chats || []) (byTitle[normTitle(c.title)] = byTitle[normTitle(c.title)] || []).push(c);
 
     const threads = [];
+    const firstScan = !rowSeen.size;
+    let earlyPicks = 0;
     for (const r of rows) {
-      if (!r.unread || r.lastMine) continue; // nothing new from the customer
+      // A chat counts as new when it has an unread badge, OR when its last message changed since the
+      // last look and is not ours: reading the message on the phone clears the badge everywhere.
+      const rowSig = `${r.time}|${r.preview}`;
+      const changed = rowSeen.has(r.title) ? rowSeen.get(r.title) !== rowSig : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
+      rowSeen.set(r.title, rowSig);
+      if (r.lastMine || !(r.unread || changed)) continue; // nothing new from the customer
       const nt = normTitle(r.title);
       if (titleCount[nt] > 1) {
         // Two chats with the same name cannot be told apart safely: leave them for the owner.
@@ -329,7 +339,7 @@
       const info = byTitle[nt] && byTitle[nt].length === 1 ? byTitle[nt][0] : null;
       if (info && (info.is_group || info.archived || !(lookup('dataId.personServers') || ['c.us', 'lid']).includes(info.server))) continue;
       if (!info && ((known[r.title] && known[r.title].is_group) || r.groupHint)) continue;
-      threads.push({ key: r.title, title: r.title, unread: r.unread, preview: r.preview, is_group: false, sig: `${r.unread}|${r.time}|${r.preview}` });
+      threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
     }
 
     // The chat that is open right now never gets an unread badge: watch its last message instead.

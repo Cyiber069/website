@@ -552,6 +552,9 @@
     }
   }
 
+  // Last seen preview and time of each conversation row, to notice messages already read on the phone.
+  const rowSeen = new Map();
+
   async function scan() {
     requireMessages();
     if (blockedNow()) return { threads: [] };
@@ -563,13 +566,21 @@
     const tail = open ? tailOf(open) : null;
     const threads = [];
 
+    const firstScan = !rowSeen.size;
+    let earlyPicks = 0;
     for (const row of rows) {
       // Unread went back to zero: the conversation was opened. Its next message starts a new signature.
       if ((lastUnread[row.key] || 0) > 0 && row.unread === 0) bump(row.key);
       lastUnread[row.key] = row.unread;
       const isOpen = Boolean(open && open.key === row.key);
+      // Reading a message on the phone clears the badge everywhere, so a row whose preview or time
+      // changed since the last look also counts. The server works out whether anything is unanswered.
+      const rowSig = `${row.preview}|${row.time}`;
+      const changed = rowSeen.has(row.key) ? rowSeen.get(row.key) !== rowSig : firstScan && /^\d{1,2}:\d{2}/.test(String(row.time || '')) && earlyPicks++ < 3;
+      rowSeen.set(row.key, rowSig);
+      if (changed && !row.unread && !isOpen) bump(row.key);
       // An open conversation gets no unread badge, so there the last bubble decides.
-      if (!(row.unread > 0 || (isOpen && tail.last_in))) continue;
+      if (!(row.unread > 0 || changed || (isOpen && tail.last_in))) continue;
       threads.push({
         key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: row.is_group,
         sig: isOpen ? `${stamp(row.key)}|o|${tail.sig}` : `${stamp(row.key)}|l|${row.unread}|${row.preview}|${row.time}`,
