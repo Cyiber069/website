@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
     max_reply_delay_s: 20,
     typing_cps: 11,
     max_auto_replies_per_thread_per_hour: 10,
-    human_takeover_minutes: 30,
+    human_takeover_minutes: 15,
     ignore_older_than_hours: 24,
   },
   recovery: {

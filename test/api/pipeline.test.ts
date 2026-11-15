@@ -197,7 +197,15 @@ describe('owner in the loop', () => {
     expect(view.data.conversation.paused_until).toBeGreaterThan(Date.now());
     expect(view.data.messages.find((m: any) => m.body.includes('shop phone')).author).toBe('owner');
 
+    // Handing the chat back answers the customer who was left waiting, straight away.
     await api(`/api/conversations/${r.conversation_id}/pause`, { body: { minutes: 0 } });
+    let handback: any = null;
+    for (let i = 0; i < 20 && !handback; i++) {
+      handback = (await sync(['whatsapp'])).data.jobs.find((j) => j.target.thread_external_id === t);
+      if (!handback) await new Promise((res) => setTimeout(res, 250));
+    }
+    expect(handback.parts[0]).toContain('ok will do');
+    await finish(handback.id);
     const resumed = await inbound('whatsapp', t, [msg('m2', 'ok will do'), msg('m3', 'one more thing')]);
     expect(resumed.action).toBe('reply');
     await finish(resumed.jobs[0]!.id);

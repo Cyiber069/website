@@ -260,7 +260,10 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
   }
   if (takeover) {
     const until = now + settings.pacing.human_takeover_minutes * MIN;
-    await run(db, `UPDATE conversations SET paused_until = ?, pause_reason = 'You replied yourself', needs_reply_since = NULL WHERE id = ?`, until, conv.id);
+    // If the customer wrote again after you, keep them marked as waiting so the agent answers when the timer ends.
+    const lastSeen = p.messages[p.messages.length - 1];
+    const waiting = lastSeen?.direction === 'in' ? now : null;
+    await run(db, `UPDATE conversations SET paused_until = ?, pause_reason = 'You replied yourself', needs_reply_since = ? WHERE id = ?`, until, waiting, conv.id);
     await logEvent(db, { type: 'takeover', channel: p.channel, conversation_id: conv.id, message: `You replied to ${contact.display_name || 'a customer'} yourself. Agent is staying out of that chat for ${settings.pacing.human_takeover_minutes} min.` });
   }
   if (newInbound > 0 && last) {

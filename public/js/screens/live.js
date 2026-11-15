@@ -1,5 +1,6 @@
 // Live: is it alive, does it need me, what did it just do.
-import { get } from '../api.js';
+import { get, post } from '../api.js';
+import { toast } from '../ui.js';
 import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, ago, clock, num, syncList, unavailable, timeTag, plural } from '../ui.js';
 import { agentStatus, urgentCount } from '../app.js';
 
@@ -60,6 +61,7 @@ export default {
       <section class="grid grid--stats" aria-label="Today" id="stats">
         ${[0, 1, 2, 3].map(() => html`<div class="stat"><span class="skel" style="--w:60%"></span><span class="skel skel--value"></span><span class="skel" style="--w:45%"></span></div>`)}
       </section>
+      <section id="takeover" hidden></section>
       <section id="setup"></section>
       <section class="card" aria-labelledby="act-h">
         <div class="card__head"><h2 class="eyebrow" id="act-h">What just happened</h2><span class="meta">Updates on its own</span></div>
@@ -164,11 +166,69 @@ export default {
       paintFeed();
     }
 
+    // ---- Chats taken over: the agent stays out until the timer ends, or until you hand it back --------
+    let takeovers = [];
+    let skew = 0; // server clock minus this device's clock
+    const left = (until) => {
+      const ms = Math.max(0, until - (Date.now() + skew));
+      const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000);
+      return `${m}:${String(s).padStart(2, '0')}`;
+    };
+    function paintTakeovers() {
+      const box = $('#takeover', view);
+      box.hidden = !takeovers.length;
+      if (!takeovers.length) return;
+      setHTML(box, html`<div class="card"><div class="card__head"><h2 class="eyebrow">Chats taken over</h2><span class="meta num">${takeovers.length}</span></div>
+        <p class="muted">The agent stays out of these. When the timer ends it answers again on its own.</p>
+        <ul class="list">${takeovers.map((t) => html`<li class="row" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--line, #262a31)">
+          <a href="#/inbox/${t.id}" style="display:flex;gap:10px;align-items:center;min-width:0;flex:1 1 220px;color:inherit;text-decoration:none">${chBadge(t.channel)}
+            <span style="min-width:0"><b>${t.customer}</b><br><span class="meta">${t.customer_waiting ? 'Customer is waiting for a reply' : t.preview}</span></span></a>
+          <span class="num" style="font-weight:700;min-width:64px;text-align:right" data-until="${t.until_unpaused ? '' : t.paused_until}">${t.until_unpaused ? 'Paused' : left(t.paused_until)}</span>
+          <span style="display:flex;gap:8px">
+            <button type="button" class="btn btn--primary" data-handback="${t.id}">Let agent reply</button>
+            ${t.until_unpaused ? '' : html`<button type="button" class="btn" data-hold="${t.id}">Pause</button>`}
+          </span></li>`)}</ul></div>`);
+    }
+    async function loadTakeovers() {
+      try {
+        const res = await get('/api/takeovers');
+        skew = (res.now || Date.now()) - Date.now();
+        takeovers = res.chats || [];
+        paintTakeovers();
+      } catch { /* the rest of the screen still works */ }
+    }
+    const timer = setInterval(() => {
+      if (!view.isConnected) { clearInterval(timer); return; }
+      let ended = false;
+      for (const el of view.querySelectorAll('[data-until]')) {
+        const until = Number(el.dataset.until);
+        if (!until) continue;
+        el.textContent = left(until);
+        if (until - (Date.now() + skew) <= 0) ended = true;
+      }
+      if (ended) loadTakeovers();
+    }, 1000);
+    view.addEventListener('click', async (e) => {
+      const back = e.target.closest('[data-handback]');
+      const hold = e.target.closest('[data-hold]');
+      if (!back && !hold) return;
+      const id = (back || hold).dataset.handback || (back || hold).dataset.hold;
+      (back || hold).disabled = true;
+      try {
+        await post(`/api/conversations/${encodeURIComponent(id)}/pause`, back ? { minutes: 0 } : {});
+        toast(back ? 'Handed back. The agent will reply if the customer is waiting.' : 'Paused. The agent waits until you press Let agent reply.');
+      } catch {
+        toast('That did not work. Try again.', { type: 'error' });
+      }
+      loadTakeovers();
+    });
+    loadTakeovers();
+
     ctx.onOverview(paint);
     if (ctx.overview) paint(ctx.overview, null);
     loadEvents();
     view.addEventListener('click', (e) => { if (e.target.closest('[data-action="retry"]')) { loadEvents(); ctx.refreshOverview(); } });
 
-    return { tick: loadEvents };
+    return { tick: () => { loadEvents(); loadTakeovers(); } };
   },
 };

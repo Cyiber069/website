@@ -8,6 +8,7 @@ import { HttpError, bad, bool, int, json, str, type Router } from '../lib/http';
 import { getSettings, getState, isSettingsGroup, patchSettings, secretHints, setState } from '../lib/settings';
 import { DAY, HOUR, MIN, londonTime, nextLondonHour } from '../lib/time';
 import { cancelJob, emptyTarget, enqueue } from '../pipeline/outbox';
+import { processConversation } from '../pipeline/inbound';
 import { answerUrgent, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
 import { currentDevice, pairingCodeRow, selectorPack } from './agent';
 
@@ -231,7 +232,35 @@ export function register(r: Router): void {
     const until = minutes ? c.now + minutes * MIN : null;
     const changed = await run(c.db, 'UPDATE conversations SET paused_until = ?, pause_reason = ?, needs_reply_since = NULL WHERE id = ?', until, until ? 'Paused by you' : null, c.params.id!);
     if (!changed) throw new HttpError(404, 'not_found');
+    if (!until) {
+      // Handed back: if the customer is still waiting, the agent answers now instead of at their next message.
+      const last = await one<{ direction: string; status: string }>(c.db, 'SELECT direction, status FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 1', c.params.id!);
+      if (last?.direction === 'in' && last.status !== 'history') {
+        await run(c.db, 'UPDATE conversations SET needs_reply_since = ? WHERE id = ?', c.now, c.params.id!);
+        c.exec.waitUntil(processConversation(c.env, c.params.id!, null).catch((err) => console.error('resume failed', err)));
+      }
+    }
     return json({ ok: true, paused_until: until });
+  });
+
+  // Chats the agent is staying out of: taken over by the owner or paused, with when it may reply again.
+  r.get('/api/takeovers', 'owner', async (c) => {
+    const rows = await all<ConversationRow & { display_name: string; last_in: string | null }>(
+      c.db,
+      `SELECT cv.*, ct.display_name,
+         (SELECT direction FROM messages m WHERE m.conversation_id = cv.id ORDER BY ts DESC, created_at DESC LIMIT 1) AS last_in
+       FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
+       WHERE cv.paused_until IS NOT NULL AND cv.paused_until > ? ORDER BY cv.paused_until ASC LIMIT 50`,
+      c.now,
+    );
+    return json({
+      now: c.now,
+      chats: rows.map((cv) => ({
+        id: cv.id, channel: cv.channel, customer: cv.display_name || cv.title || 'Customer', preview: cv.last_preview,
+        paused_until: cv.paused_until, reason: cv.pause_reason || '', until_unpaused: (cv.paused_until ?? 0) - c.now > 30 * DAY,
+        customer_waiting: cv.last_in === 'in',
+      })),
+    });
   });
 
   // Send a message you typed yourself from the dashboard through the laptop.
