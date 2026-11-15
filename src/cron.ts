@@ -46,20 +46,24 @@ async function cleanup(env: Env): Promise<void> {
 }
 
 /** Refresh product and policy knowledge from the public store once a day. */
-async function dailyStoreSync(env: Env): Promise<void> {
+async function dailyStoreSync(env: Env): Promise<boolean> {
   const settings = await getSettings(env.DB);
-  if (!settings.store.sync_public || env.ACX_TEST_MODE === '1') return;
+  if (!settings.store.sync_public || env.ACX_TEST_MODE === '1') return false;
   const now = Date.now();
-  if (now - (await getState<number>(env.DB, 'store_sync_at', 0)) < DAY) return;
+  if (now - (await getState<number>(env.DB, 'store_sync_at', 0)) < DAY) return false;
   await setState(env.DB, 'store_sync_at', now);
   await syncStore(env);
+  return true;
 }
 
 export async function runCron(env: Env): Promise<void> {
   await safely('outbox', () => sweepOutbox(env.DB));
-  await safely('conversations', () => sweepConversations(env));
-  await safely('recovery', () => recoveryTick(env));
+  // One cron run may make 50 D1 queries and fetches on the free plan. A brain call for a chat takes
+  // about 20, so the sweeper answers one chat a minute, and none in the minute a daily job runs.
+  let busy = false;
+  await safely('recovery', async () => { busy = await recoveryTick(env); });
+  if (!busy) await safely('store-sync', async () => { busy = await dailyStoreSync(env); });
+  if (!busy) await safely('conversations', () => sweepConversations(env, 1));
   await safely('device', () => watchDevice(env));
-  await safely('store-sync', () => dailyStoreSync(env));
   await safely('cleanup', () => cleanup(env));
 }

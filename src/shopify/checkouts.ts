@@ -1,8 +1,7 @@
 // Turns Shopify's two shapes of a checkout (Admin API node, webhook payload) into one row shape and
 // keeps the checkouts table up to date. Used by the webhook route and by the daily recovery run.
 import type { CheckoutRow } from '../types';
-import { one, run } from '../lib/db';
-import { cancelJob } from '../pipeline/outbox';
+import { all, one, stmt } from '../lib/db';
 import type { AbandonedCheckoutNode } from './client';
 import { toE164 } from './phone';
 
@@ -151,49 +150,55 @@ function linkKey(url: string | null): string | null {
   return cut.length > 12 ? cut : null;
 }
 
+/** The statements that mark a checkout bought: a waiting reminder is cancelled, the row becomes recovered. */
+function completedStatements(db: D1Database, row: Pick<CheckoutRow, 'id' | 'status' | 'outbox_id'>, completedAt: number, now: number): D1PreparedStatement[] {
+  const list: D1PreparedStatement[] = [];
+  if (row.status === 'queued' && row.outbox_id) list.push(stmt(db, `UPDATE outbox SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'review')`, row.outbox_id));
+  list.push(stmt(db, `UPDATE checkouts SET completed_at = COALESCE(completed_at, ?), status = 'recovered', updated_at = ? WHERE id = ?`, completedAt, now, row.id));
+  return list;
+}
+
 /**
  * The customer finished buying. A waiting message is cancelled so they are never chased, and the
  * row becomes "recovered" (counted as a win only when we had already messaged them).
  */
 export async function markCompleted(db: D1Database, row: Pick<CheckoutRow, 'id' | 'status' | 'outbox_id'>, completedAt: number): Promise<void> {
-  const now = Date.now();
-  if (row.status === 'queued' && row.outbox_id) await cancelJob(db, row.outbox_id);
-  await run(
-    db,
-    `UPDATE checkouts SET completed_at = COALESCE(completed_at, ?), status = 'recovered', updated_at = ? WHERE id = ?`,
-    completedAt, now, row.id,
-  );
+  await db.batch(completedStatements(db, row, completedAt, Date.now()));
 }
 
-/** Insert or refresh one checkout. Returns what happened so callers can count. */
-export async function upsertCheckout(db: D1Database, c: NormalCheckout, source: 'api' | 'webhook'): Promise<'inserted' | 'updated' | 'stale'> {
-  const now = Date.now();
+/** The row this checkout already has here, by id, then token, then the recovery link (webhook token against API id). */
+async function findExisting(db: D1Database, c: NormalCheckout): Promise<CheckoutRow | null> {
   let existing = await one<CheckoutRow>(db, 'SELECT * FROM checkouts WHERE id = ?', c.id);
   if (!existing && c.token) existing = await one<CheckoutRow>(db, 'SELECT * FROM checkouts WHERE token = ?', c.token);
   if (!existing) {
-    // The same checkout may already be here under its other key (webhook token against API id).
     const key = linkKey(c.recovery_url);
     // (Compared with substr, not LIKE: D1 refuses LIKE patterns longer than 50 bytes.)
     if (key) existing = await one<CheckoutRow>(db, `SELECT * FROM checkouts WHERE recovery_url = ? OR substr(recovery_url, 1, ?) = ? LIMIT 1`, key, key.length + 1, `${key}?`);
   }
+  return existing;
+}
 
+/** What to write for one checkout, given the row it already has (or null). Nothing is run here. */
+function upsertStatements(db: D1Database, c: NormalCheckout, source: 'api' | 'webhook', existing: CheckoutRow | null, now: number): { result: 'inserted' | 'updated' | 'stale'; statements: D1PreparedStatement[] } {
   if (!existing) {
-    await run(
-      db,
-      `INSERT INTO checkouts (id, token, name, first_name, email, phone_raw, phone_e164, country, total, currency, items, recovery_url,
-         created_at_shop, updated_at_shop, completed_at, consent_sms, consent_email, source, status, first_seen_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
-      c.id, c.token, c.name, c.first_name, c.email, c.phone_raw, c.phone_e164, c.country, c.total, c.currency, JSON.stringify(c.items),
-      c.recovery_url, c.created_at_shop, c.updated_at_shop, c.completed_at, c.consent_sms ? 1 : 0, c.consent_email ? 1 : 0, source,
-      c.completed_at ? 'recovered' : 'new', now, now,
-    );
-    return 'inserted';
+    return {
+      result: 'inserted',
+      statements: [stmt(
+        db,
+        `INSERT INTO checkouts (id, token, name, first_name, email, phone_raw, phone_e164, country, total, currency, items, recovery_url,
+           created_at_shop, updated_at_shop, completed_at, consent_sms, consent_email, source, status, first_seen_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`,
+        c.id, c.token, c.name, c.first_name, c.email, c.phone_raw, c.phone_e164, c.country, c.total, c.currency, JSON.stringify(c.items),
+        c.recovery_url, c.created_at_shop, c.updated_at_shop, c.completed_at, c.consent_sms ? 1 : 0, c.consent_email ? 1 : 0, source,
+        c.completed_at ? 'recovered' : 'new', now, now,
+      )],
+    };
   }
-
+  const statements: D1PreparedStatement[] = [];
   // Webhooks can arrive out of order: an older snapshot never overwrites a newer one.
   const stale = existing.updated_at_shop !== null && c.updated_at_shop !== null && c.updated_at_shop < existing.updated_at_shop;
   if (!stale) {
-    await run(
+    statements.push(stmt(
       db,
       `UPDATE checkouts SET token = COALESCE(?, token), name = ?, first_name = COALESCE(?, first_name), email = COALESCE(?, email),
          phone_raw = COALESCE(?, phone_raw), phone_e164 = COALESCE(?, phone_e164), country = COALESCE(?, country),
@@ -204,11 +209,45 @@ export async function upsertCheckout(db: D1Database, c: NormalCheckout, source: 
       c.token, c.name || existing.name, c.first_name, c.email, c.phone_raw, c.phone_e164, c.country, c.total, c.currency,
       c.items.length ? JSON.stringify(c.items) : existing.items, c.recovery_url, c.created_at_shop, c.updated_at_shop,
       c.consent_sms ? 1 : 0, c.consent_email ? 1 : 0, now, existing.id,
-    );
+    ));
   }
   // Completion is a one way fact, so it is applied even from an out of order delivery.
-  if (c.completed_at && !existing.completed_at) await markCompleted(db, existing, c.completed_at);
-  return stale ? 'stale' : 'updated';
+  if (c.completed_at && !existing.completed_at) statements.push(...completedStatements(db, existing, c.completed_at, now));
+  return { result: stale ? 'stale' : 'updated', statements };
+}
+
+/** Insert or refresh one checkout. Returns what happened so callers can count. */
+export async function upsertCheckout(db: D1Database, c: NormalCheckout, source: 'api' | 'webhook'): Promise<'inserted' | 'updated' | 'stale'> {
+  const plan = upsertStatements(db, c, source, await findExisting(db, c), Date.now());
+  if (plan.statements.length) await db.batch(plan.statements);
+  return plan.result;
+}
+
+/**
+ * Insert or refresh many checkouts (the daily pull from the Admin API) in two D1 round trips: one
+ * read of the rows they may already have, one batch of writes. The free plan allows 50 queries per run.
+ */
+export async function upsertCheckouts(db: D1Database, list: NormalCheckout[], source: 'api' | 'webhook', since: number): Promise<void> {
+  if (!list.length) return;
+  const keys = JSON.stringify([...new Set(list.flatMap((c) => [c.id, c.token]).filter((x): x is string => Boolean(x)))]);
+  const rows = await all<CheckoutRow>(
+    db,
+    `SELECT * FROM checkouts WHERE id IN (SELECT value FROM json_each(?)) OR token IN (SELECT value FROM json_each(?))
+       OR COALESCE(created_at_shop, first_seen_at) >= ?`,
+    keys, keys, since,
+  );
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const byToken = new Map(rows.filter((r) => r.token).map((r) => [r.token!, r]));
+  const byLink = new Map<string, CheckoutRow>();
+  for (const r of rows) { const k = linkKey(r.recovery_url); if (k && !byLink.has(k)) byLink.set(k, r); }
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
+  for (const c of list) {
+    const key = linkKey(c.recovery_url);
+    const existing = byId.get(c.id) ?? (c.token ? byToken.get(c.token) : undefined) ?? (key ? byLink.get(key) : undefined) ?? null;
+    statements.push(...upsertStatements(db, c, source, existing, now).statements);
+  }
+  if (statements.length) await db.batch(statements);
 }
 
 /**

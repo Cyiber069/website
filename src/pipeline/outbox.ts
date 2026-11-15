@@ -1,5 +1,5 @@
 import type { AgentJob, Channel, DeviceRow, Env, JobTarget, OutboxRow, Settings } from '../types';
-import { all, clip, one, parseJson, run, uid } from '../lib/db';
+import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError } from '../lib/http';
 import { MIN } from '../lib/time';
@@ -28,23 +28,34 @@ export function emptyTarget(over: Partial<JobTarget> = {}): JobTarget {
 
 /** Queue a message for the extension. Returns the id, or null when the dedupe key was already used. */
 export async function enqueue(db: D1Database, input: EnqueueInput): Promise<string | null> {
+  const q = enqueueStatements(db, input);
+  const results = await db.batch(q.statements);
+  return (results[results.length - 1]?.meta?.changes ?? 0) > 0 ? q.id : null;
+}
+
+/**
+ * The statements that queue a message, for callers that queue many at once in one batch (one D1
+ * round trip). The insert is the last statement: its `meta.changes` is 0 when the dedupe key was used.
+ */
+export function enqueueStatements(db: D1Database, input: EnqueueInput): { id: string; statements: D1PreparedStatement[] } {
   const parts = input.parts.map((p) => p.trim()).filter(Boolean);
   if (!parts.length) throw new HttpError(400, 'empty_message', 'Nothing to send');
   const id = uid('ob');
   const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
   if (input.dedupe_key) {
     // A message that failed or was cancelled earlier must not block a fresh try with the same key.
-    await run(db, `UPDATE outbox SET dedupe_key = NULL WHERE dedupe_key = ? AND status IN ('failed', 'cancelled', 'expired')`, input.dedupe_key);
+    statements.push(stmt(db, `UPDATE outbox SET dedupe_key = NULL WHERE dedupe_key = ? AND status IN ('failed', 'cancelled', 'expired')`, input.dedupe_key));
   }
-  const changed = await run(
+  statements.push(stmt(
     db,
     `INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, ref_id, not_before, expires_at, dedupe_key, pacing, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING`,
     id, input.channel, input.kind, input.conversation_id ?? null, JSON.stringify(input.target), JSON.stringify(parts),
     input.status ?? 'pending', input.source, input.ref_id ?? null, input.not_before ?? now, input.expires_at ?? null,
     input.dedupe_key ?? null, JSON.stringify(input.pacing ?? {}), now,
-  );
-  return changed ? id : null;
+  ));
+  return { id, statements };
 }
 
 export function toJob(row: OutboxRow, settings: Settings): AgentJob {
@@ -258,4 +269,31 @@ export async function sweepOutbox(db: D1Database): Promise<void> {
 
 export async function cancelJob(db: D1Database, id: string): Promise<boolean> {
   return (await run(db, `UPDATE outbox SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'review')`, id)) > 0;
+}
+
+/**
+ * Throw away what the agent queued by itself in one chat (replies, holding lines, review drafts) that
+ * has not gone out yet. Used when the owner takes the chat over: those words no longer fit it.
+ */
+export async function cancelAgentJobs(db: D1Database, conversationId: string, reason: string, exceptId: string | null = null): Promise<number> {
+  return run(
+    db,
+    `UPDATE outbox SET status = 'cancelled', last_error = ? WHERE conversation_id = ? AND status IN ('pending', 'review') AND source IN ('auto', 'holding') AND id != ?`,
+    reason, conversationId, exceptId ?? '',
+  );
+}
+
+/**
+ * The contact asked not to be messaged: nothing the agent queued for them goes out any more, in any
+ * of their chats, recovery reminders to their number included. Messages the owner typed are kept.
+ */
+export async function cancelForOptOut(db: D1Database, contactId: string, phone: string | null): Promise<number> {
+  return run(
+    db,
+    `UPDATE outbox SET status = 'cancelled', last_error = 'opted_out: they asked not to be messaged'
+     WHERE status IN ('pending', 'review') AND source != 'manual' AND (
+       conversation_id IN (SELECT id FROM conversations WHERE contact_id = ?)
+       OR (source = 'recovery' AND ? IS NOT NULL AND ref_id IN (SELECT id FROM checkouts WHERE phone_e164 = ?)))`,
+    contactId, phone, phone,
+  );
 }

@@ -578,6 +578,9 @@
 
     const firstScan = !rowSeen.size;
     let earlyPicks = 0;
+    // One or two new rows is someone accepting a request. Many at once is the list being redrawn
+    // (layout switch, scrolling): not accepted requests, so nothing is flagged.
+    const newRows = firstScan ? 0 : rows.filter((r) => !rowSeen.has(r.key)).length;
     for (const row of rows) {
       // Unread went back to zero: the conversation was opened. Its next message starts a new signature.
       if ((lastUnread[row.key] || 0) > 0 && row.unread === 0) bump(row.key);
@@ -587,7 +590,7 @@
       // changed since the last look also counts. The server works out whether anything is unanswered.
       const rowSig = `${row.preview}|${row.time}`;
       // A row that was not in the list before is a message request the owner just accepted.
-      const accepted = !firstScan && !rowSeen.has(row.key);
+      const accepted = !firstScan && newRows <= 2 && !rowSeen.has(row.key);
       const changed = accepted || (rowSeen.has(row.key) ? rowSeen.get(row.key) !== rowSig : firstScan && withinMinutes(row.time, 10) && earlyPicks++ < 3);
       rowSeen.set(row.key, rowSig);
       if (changed && !row.unread && !isOpen) bump(row.key);

@@ -48,7 +48,7 @@ This file is the contract between the parts. Keep it true when you change code.
 | `public/` | dashboard | no build step |
 | `extension/` | Chrome extension | no build step, load unpacked |
 | `seed/knowledge/` | starter knowledge exported from the store | bundled into the Worker |
-| `test/` | unit tests (vitest) and end to end (Playwright) | |
+| `test/` | unit tests (vitest) and end to end (Playwright) | in test mode every API response carries `x-acx-d1-queries`; `test/api/limits.test.ts` keeps heavy paths under 50 |
 
 ## 3. Data model
 
@@ -221,7 +221,8 @@ Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the ow
 
 1. `storeInbound`: find or create contact + conversation, store unseen messages. An outgoing message
    the agent did not queue means the owner replied by hand: the conversation is paused for
-   `pacing.human_takeover_minutes`.
+   `pacing.human_takeover_minutes` and the agent's own unsent jobs in it (`auto`, `holding`, pending or review)
+   are cancelled (`cancelAgentJobs`). Pausing a chat from the dashboard does the same.
 2. `processConversation` gates: agent on, channel mode not `off`, contact not opted out, not paused,
    last message is from the customer, hourly reply cap, short lock.
 3. Creator code turn (`src/discounts/agent.ts handleCodeTurn`, skipped when `discounts.mode` is `off`). Group chats
@@ -240,10 +241,14 @@ Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the ow
    A turn that made or parked a code sends nothing else. Any normal reply that says a code is live or ready
    (`promisesLiveCode`) is parked for the owner instead of sent.
 4. `brain.decide(...)` returns a `Decision` (`src/types.ts`).
-5. Apply: `reply` goes to `outbox` (`pending`, or `review` when the channel is in review mode);
+5. Apply: `reply` goes to `outbox` (`pending`, or `review` when the channel is in review mode; a new review
+   draft cancels the older `auto` drafts of the same chat, so only one answer to the chat as it stands waits);
    low confidence or `needs_human` becomes an Urgent item that carries the draft; `escalate` creates
    or updates an Urgent item, optionally queues one holding line, and alerts the owner.
-6. Cron re-runs conversations whose live request died (`sweepConversations`).
+   An opt out (the brain's flag or `POST /api/contacts/:id/opt-out`) cancels everything not typed by the owner
+   still queued for that contact, recovery reminders to their number included (`cancelForOptOut`).
+6. Cron re-runs conversations whose live request died (`sweepConversations`), one a minute, and none in the
+   minute the daily recovery run or store sync starts (the free plan allows 50 D1 queries and fetches per run).
 
 Urgent: `answerUrgent` calls `brain.polishOwnerAnswer` (owner's rough words to a customer ready reply
 in the customer's tone), queues it, and stores a reusable fact through `kb.addLearnedFact`.

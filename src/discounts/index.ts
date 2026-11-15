@@ -2,7 +2,7 @@
 // the customer's chat. Used by the Discount codes screen (src/routes/discounts.ts), by the Urgent
 // "Approve code" button and by the agent itself when a customer asks for a code (./agent.ts).
 import type { Channel, ContactRow, ConversationRow, DiscountSettings, Env } from '../types';
-import { all, one, run, uid } from '../lib/db';
+import { all, one, run, stmt, uid } from '../lib/db';
 import { HttpError, bad } from '../lib/http';
 import { getState } from '../lib/settings';
 import { DAY } from '../lib/time';
@@ -71,6 +71,8 @@ export async function viewDiscounts(db: D1Database, rows: DiscountRow[]) {
   }
   const now = Date.now();
   const out = [];
+  // Status changes are saved in one batch: many messages may have gone out since the screen was last opened.
+  const changes: D1PreparedStatement[] = [];
   for (const r of rows) {
     const o = r.outbox_id ? outbox.get(r.outbox_id) : undefined;
     let status = r.status;
@@ -84,7 +86,7 @@ export async function viewDiscounts(db: D1Database, rows: DiscountRow[]) {
       error = null;
     }
     if (status !== r.status || error !== r.error) {
-      await run(db, 'UPDATE discount_codes SET status = ?, error = ?, updated_at = ? WHERE id = ?', status, error, now, r.id);
+      changes.push(stmt(db, 'UPDATE discount_codes SET status = ?, error = ?, updated_at = ? WHERE id = ?', status, error, now, r.id));
     }
     out.push({
       id: r.id, conversation_id: r.conversation_id, contact_id: r.contact_id, customer: r.contact_name || 'Customer', channel: r.channel,
@@ -94,6 +96,7 @@ export async function viewDiscounts(db: D1Database, rows: DiscountRow[]) {
       status, error, made_by: r.made_by ?? 'owner', created_at: r.created_at, updated_at: r.updated_at,
     });
   }
+  if (changes.length) await db.batch(changes);
   return out;
 }
 

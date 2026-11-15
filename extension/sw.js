@@ -94,7 +94,6 @@ async function ensureTab(channel, autoOpen) {
   return tab;
 }
 
-const reloadedAt = {};
 
 /** Ask a tab's adapter to do something. Resolves to { ok, data } or { ok:false, error_code, error, retryable }. */
 async function tabOp(channel, op, args, timeoutMs = 30_000) {
@@ -111,9 +110,13 @@ async function tabOp(channel, op, args, timeoutMs = 30_000) {
   const res = await Promise.race([call, timeout]);
   if (!res.ok && res.error_code === 'no_content_script' && tab.status === 'complete') {
     // The tab was open before the extension was installed or updated: reload it once so our script loads.
+    // Remembered in session storage: this worker is stopped and started again every few seconds, so an
+    // in-memory timestamp would let a page that never answers (offline error page) reload on every wake.
     const now = Date.now();
+    const reloadedAt = await store.sessionGet('reloaded_at', {});
     if (now - (reloadedAt[channel] || 0) > 5 * 60_000) {
       reloadedAt[channel] = now;
+      await store.sessionSet('reloaded_at', reloadedAt);
       try { await chrome.tabs.reload(tab.id); } catch { /* ignore */ }
     }
   }

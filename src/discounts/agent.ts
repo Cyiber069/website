@@ -198,7 +198,7 @@ async function parkCodeRequest(
     if (t.settings.voice.holding_reply && t.channel_mode === 'auto') {
       const hid = await enqueue(db, {
         channel: t.conv.channel, kind: 'reply', conversation_id: t.conv.id, target: t.target, parts: [HOLDING_CODE_LINE],
-        source: 'holding', ref_id: urgentId, pacing: t.pacing, dedupe_key: `holding:${urgentId}`,
+        source: 'holding', ref_id: urgentId, pacing: t.pacing, dedupe_key: `holding:${urgentId}`, expires_at: t.now + t.settings.pacing.ignore_older_than_hours * HOUR,
       });
       if (hid && t.device) {
         const job = await leaseById(db, t.device, hid, t.settings, t.pacing.delay_ms);

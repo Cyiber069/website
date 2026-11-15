@@ -4,7 +4,7 @@ import type {
 } from '../types';
 import { CHANNELS } from '../types';
 import { sha256Hex } from '../lib/crypto';
-import { all, clip, one, parseJson, run, uid } from '../lib/db';
+import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { bad } from '../lib/http';
 import { getSettings } from '../lib/settings';
@@ -14,7 +14,7 @@ import { promisesLiveCode } from '../discounts/rules';
 import { alertOwner } from './alerts';
 import { noReplyNeeded } from './noreply';
 export { noReplyNeeded };
-import { emptyTarget, enqueue, leaseById } from './outbox';
+import { cancelAgentJobs, cancelForOptOut, emptyTarget, enqueue, leaseById } from './outbox';
 
 const KINDS: MessageKind[] = ['text', 'image', 'voice', 'video', 'sticker', 'document', 'other'];
 const MAX_MESSAGES = 40;
@@ -203,6 +203,8 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
   let takeover = false;
   let lastTs = storedSeq.length ? storedSeq[storedSeq.length - 1]!.ts : 0;
   let lastInboundAt: number | null = null;
+  // Written in one batch below: a first look at a long chat is up to 40 rows, and the free plan allows 50 queries per request.
+  const writes: D1PreparedStatement[] = [];
 
   for (let i = 0; i < p.messages.length; i++) {
     const m = p.messages[i]!;
@@ -224,7 +226,10 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
     if (matched >= 0) {
       const st = storedSeq[matched]!;
       if (!st.external_id && m.external_id) {
-        await run(db, 'UPDATE messages SET external_id = ? WHERE id = ? AND external_id IS NULL', m.external_id, st.id).catch(() => 0);
+        writes.push(stmt(
+          db, 'UPDATE messages SET external_id = ? WHERE id = ? AND external_id IS NULL AND NOT EXISTS (SELECT 1 FROM messages WHERE conversation_id = ? AND external_id = ?)',
+          m.external_id, st.id, conv.id, m.external_id,
+        ));
         st.external_id = m.external_id;
       }
       pointer = matched + 1;
@@ -246,13 +251,14 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
       else { newInbound++; lastInboundAt = ts; }
     }
     if (created && m.direction === 'out') status = 'history';
-    await run(
+    writes.push(stmt(
       db,
       `INSERT INTO messages (id, conversation_id, direction, author, external_id, body, kind, status, ts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT DO NOTHING`,
       uid('m'), conv.id, m.direction, author, m.external_id, body, m.kind, status, ts, now,
-    );
+    ));
   }
+  if (writes.length) await db.batch(writes);
 
   const last = p.messages[p.messages.length - 1];
   if (last) {
@@ -271,6 +277,9 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
     const lastSeen = p.messages[p.messages.length - 1];
     const waiting = lastSeen?.direction === 'in' ? now : null;
     await run(db, `UPDATE conversations SET paused_until = ?, pause_reason = 'You replied yourself', needs_reply_since = ? WHERE id = ?`, until, waiting, conv.id);
+    // A reply or draft the agent queued before you wrote no longer fits the chat (for example one
+    // waiting to retry because the message box was busy while you typed).
+    await cancelAgentJobs(db, conv.id, 'takeover: you replied yourself');
     await logEvent(db, { type: 'takeover', channel: p.channel, conversation_id: conv.id, message: `You replied to ${contact.display_name || 'a customer'} yourself. Agent is staying out of that chat for ${settings.pacing.human_takeover_minutes} min.` });
   }
   if (newInbound > 0 && last) {
@@ -409,6 +418,7 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   if (decision.flags.opt_out) {
     await run(db, 'UPDATE contacts SET opted_out = 1, updated_at = ? WHERE id = ?', now, contact.id);
+    await cancelForOptOut(db, contact.id, contact.phone);
     await logEvent(db, { level: 'warn', type: 'opt_out', channel: conv.channel, conversation_id: convId, message: `${who} asked not to be messaged. They will not be contacted again.` });
   }
 
@@ -432,10 +442,14 @@ export async function processConversation(env: Env, convId: string, device: Devi
     const id = await enqueue(db, {
       channel: conv.channel, kind: 'reply', conversation_id: convId, target, parts: decision.parts,
       source: 'auto', status: mode === 'review' ? 'review' : 'pending', pacing,
+      // Not sent by then (laptop off, tab logged out): too late to fit the chat. A review draft gets its deadline when approved.
+      expires_at: mode === 'review' ? null : now + settings.pacing.ignore_older_than_hours * HOUR,
       dedupe_key: `auto:${convId}:${lastMsg.id}`,
     });
     if (id && mode === 'review') {
       action = 'review';
+      // Only the newest draft answers the chat as it stands. An older one approved later would reply out of context.
+      await run(db, `UPDATE outbox SET status = 'cancelled', last_error = 'replaced by a newer draft' WHERE conversation_id = ? AND status = 'review' AND source = 'auto' AND id != ?`, convId, id);
       await logEvent(db, { type: 'draft', channel: conv.channel, conversation_id: convId, message: `Draft ready for ${who}: ${clip(decision.parts.join(' '), 160)}`, data: { outbox_id: id } });
       await alertOwner(env, settings, { kind: 'review', title: 'Reply waiting for your OK', body: `${who}: ${clip(lastMsg.body, 90)}`, path: '/#/urgent' });
     } else if (id) {
@@ -467,7 +481,7 @@ export async function processConversation(env: Env, convId: string, device: Devi
       if (decision.parts.length && settings.voice.holding_reply && mode === 'auto') {
         const hid = await enqueue(db, {
           channel: conv.channel, kind: 'reply', conversation_id: convId, target, parts: decision.parts.slice(0, 1),
-          source: 'holding', ref_id: urgentId, pacing, dedupe_key: `holding:${urgentId}`,
+          source: 'holding', ref_id: urgentId, pacing, dedupe_key: `holding:${urgentId}`, expires_at: now + settings.pacing.ignore_older_than_hours * HOUR,
         });
         if (hid && device) {
           const job = await leaseById(db, device, hid, settings, pacing.delay_ms);
@@ -494,7 +508,14 @@ export async function handleInbound(env: Env, device: DeviceRow, payload: Inboun
   if (!stored.newInbound && !stored.conv.needs_reply_since) {
     // A message request the owner just accepted: the earlier reply could not be sent while it was a
     // request, so answer it now if the customer is still the last to speak.
-    if (payload.thread.just_accepted) return processConversation(env, stored.conv.id, device, 0);
+    if (payload.thread.just_accepted) {
+      // Only a chat that really was a request: first seen just now, or a reply failed in the last day
+      // because the request was not accepted yet. Anything else is an old chat and is left alone.
+      const wasRequest = stored.created || (await one<{ id: string }>(env.DB,
+        `SELECT id FROM outbox WHERE conversation_id = ? AND status = 'failed' AND last_error LIKE 'blocked%' AND created_at > ? LIMIT 1`,
+        stored.conv.id, Date.now() - 24 * HOUR)) !== null;
+      if (wasRequest) return processConversation(env, stored.conv.id, device, 0);
+    }
     return none(stored.conv.id, 'nothing_new');
   }
   return processConversation(env, stored.conv.id, device, stored.newInbound);

@@ -197,9 +197,11 @@ export default {
         paintTakeovers();
       } catch { /* the rest of the screen still works */ }
     }
+    let beat = 0;
     const timer = setInterval(() => {
       if (!view.isConnected) { clearInterval(timer); return; }
-      let ended = false;
+      // Every 15 s look again too, so a chat you take over while this screen is open shows up.
+      let ended = ++beat % 15 === 0;
       for (const el of view.querySelectorAll('[data-until]')) {
         const until = Number(el.dataset.until);
         if (!until) continue;

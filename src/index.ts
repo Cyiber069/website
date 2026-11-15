@@ -7,6 +7,37 @@ import type { Env } from './types';
 
 const router = buildRouter();
 
+/**
+ * Test mode only: a D1 binding that counts the queries one request makes, reported in the
+ * x-acx-d1-queries header so tests can hold request paths under the free plan's 50 queries.
+ * A batch is one round trip and counts once.
+ */
+function countingDb(db: D1Database, counter: { n: number }): D1Database {
+  const real = new WeakMap<object, D1PreparedStatement>();
+  const wrap = (st: D1PreparedStatement): D1PreparedStatement => {
+    const proxy = new Proxy(st, {
+      get(target, key) {
+        if (key === 'bind') return (...args: unknown[]) => wrap(target.bind(...args));
+        if (key === 'first' || key === 'all' || key === 'run' || key === 'raw') {
+          return (...args: unknown[]) => { counter.n++; return (target[key] as (...a: unknown[]) => unknown).apply(target, args); };
+        }
+        const v = Reflect.get(target, key, target);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    real.set(proxy, st);
+    return proxy;
+  };
+  return new Proxy(db, {
+    get(target, key) {
+      if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql));
+      if (key === 'batch') return (list: D1PreparedStatement[]) => { counter.n++; return target.batch(list.map((s) => real.get(s) ?? s)); };
+      const v = Reflect.get(target, key, target);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+}
+
 const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'same-origin',
@@ -41,9 +72,11 @@ export default {
     const url = new URL(req.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     let res: Response;
+    const queries = { n: 0 };
     try {
       await ensureSchema(env.DB);
-      res = await handleApi(req, env, exec, url);
+      const e = env.ACX_TEST_MODE === '1' ? { ...env, DB: countingDb(env.DB, queries) } : env;
+      res = await handleApi(req, e, exec, url);
     } catch (err) {
       if (err instanceof HttpError) {
         res = json({ error: err.code, message: err.message, ...err.extra }, err.status);
@@ -54,6 +87,16 @@ export default {
     }
     const headers = new Headers(res.headers);
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+    if (env.ACX_TEST_MODE === '1') {
+      headers.set('x-acx-d1-queries', String(queries.n));
+      // A streamed answer is still working when the headers go: its count is the stream's last line.
+      if (res.body && (res.headers.get('content-type') ?? '').includes('ndjson')) {
+        const tail = new TransformStream<Uint8Array, Uint8Array>({
+          flush(ctl) { ctl.enqueue(new TextEncoder().encode(JSON.stringify({ type: 'queries', n: queries.n }) + '\n')); },
+        });
+        return new Response(res.body.pipeThrough(tail), { status: res.status, headers });
+      }
+    }
     return new Response(res.body, { status: res.status, headers });
   },
 

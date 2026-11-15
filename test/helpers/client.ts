@@ -3,7 +3,7 @@ export const BASE = () => process.env.ACX_TEST_URL!;
 
 type As = 'owner' | 'device' | 'public';
 
-export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; as?: As; headers?: Record<string, string> } = {}): Promise<{ status: number; data: T }> {
+export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; as?: As; headers?: Record<string, string> } = {}): Promise<{ status: number; data: T; queries: number }> {
   const as = opts.as ?? 'owner';
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
   if (opts.body !== undefined) headers['content-type'] = 'application/json';
@@ -13,11 +13,12 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  return { status: res.status, data };
+  // D1 queries the request made (test mode header). The free plan allows 50 per request.
+  return { status: res.status, data, queries: Number(res.headers.get('x-acx-d1-queries') ?? 0) };
 }
 
 export interface Job { id: string; channel: string; kind: string; source: string; parts: string[]; target: Record<string, string | null>; pacing: { delay_ms: number; typing_cps: number } }
-export interface Outcome { type: 'decision'; conversation_id: string | null; action: string; reason: string; jobs: Job[]; new_inbound: number }
+export interface Outcome { type: 'decision'; conversation_id: string | null; action: string; reason: string; jobs: Job[]; new_inbound: number; queries?: number }
 
 let seq = 0;
 export const unique = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -38,7 +39,8 @@ export async function inbound(channel: string, threadId: string, messages: Msg[]
   const lines = (await res.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const decision = lines.find((l) => l.type === 'decision');
   if (!decision) throw new Error(`no decision in stream: ${JSON.stringify(lines)}`);
-  return decision as Outcome;
+  // D1 queries the whole request made (test mode adds this last line).
+  return { ...decision, queries: lines.find((l) => l.type === 'queries')?.n } as Outcome;
 }
 
 export const sync = (channels: string[] = ['whatsapp', 'gmail', 'tiktok']) =>

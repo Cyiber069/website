@@ -7,7 +7,7 @@ import { logEvent } from '../lib/events';
 import { HttpError, bad, bool, int, json, str, type Router } from '../lib/http';
 import { getSettings, getState, isSettingsGroup, patchSettings, secretHints, setState } from '../lib/settings';
 import { DAY, HOUR, MIN, londonTime, nextLondonHour } from '../lib/time';
-import { cancelJob, emptyTarget, enqueue } from '../pipeline/outbox';
+import { cancelAgentJobs, cancelForOptOut, cancelJob, emptyTarget, enqueue } from '../pipeline/outbox';
 import { processConversation } from '../pipeline/inbound';
 import { answerUrgent, answerUrgentWithNote, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
 import { currentDevice, pairingCodeRow, selectorPack } from './agent';
@@ -20,24 +20,53 @@ function startOfLondonDay(now: number): number {
   return now - (lt.hour * HOUR + lt.minute * MIN) - (now % MIN);
 }
 
+/** Rows of `sql` for every id in `ids`, in one query whatever the count (D1 caps bound parameters at 100). */
+const byIds = <T>(db: D1Database, sql: string, ids: string[]) => (ids.length ? all<T>(db, sql, JSON.stringify([...new Set(ids)])) : Promise.resolve([] as T[]));
+const IDS = 'SELECT value FROM json_each(?)';
+
+/** The last `n` messages of each conversation, oldest first. One query for all of them. */
+async function recentMessages(db: D1Database, convIds: string[], n: number, direction?: 'in'): Promise<Map<string, MessageRow[]>> {
+  const rows = await byIds<MessageRow>(
+    db,
+    `SELECT * FROM (SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.conversation_id ORDER BY m.ts DESC, m.created_at DESC) AS rn
+       FROM messages m WHERE m.conversation_id IN (${IDS})${direction ? ` AND m.direction = '${direction}'` : ''})
+     WHERE rn <= ${n} ORDER BY ts ASC, created_at ASC`,
+    convIds,
+  );
+  const out = new Map<string, MessageRow[]>();
+  for (const m of rows) { const list = out.get(m.conversation_id) ?? []; list.push(m); out.set(m.conversation_id, list); }
+  return out;
+}
+
+async function conversationsById(db: D1Database, ids: string[]): Promise<Map<string, ConversationRow & { display_name: string | null }>> {
+  const rows = await byIds<ConversationRow & { display_name: string | null }>(
+    db, `SELECT cv.*, ct.display_name FROM conversations cv LEFT JOIN contacts ct ON ct.id = cv.contact_id WHERE cv.id IN (${IDS})`, ids,
+  );
+  return new Map(rows.map((r) => [r.id, r]));
+}
+
 async function urgentView(db: D1Database, rows: UrgentRow[]) {
+  // A few queries for the whole list, not four per card: the free plan allows 50 per request.
+  const convIds = rows.map((u) => u.conversation_id);
+  const discountIds = rows.map((u) => u.discount_id).filter((x): x is string => Boolean(x));
+  const [convs, recentBy, discounts] = await Promise.all([
+    conversationsById(db, convIds),
+    recentMessages(db, convIds, 8),
+    byIds<{ id: string; code: string; amount: number; status: string; shopify_status: string; error: string | null; message_text: string }>(
+      db, `SELECT id, code, amount, status, shopify_status, error, message_text FROM discount_codes WHERE id IN (${IDS})`, discountIds),
+  ]);
+  const dcById = new Map(discounts.map((d) => [d.id, d]));
   const out = [];
   for (const u of rows) {
-    const conv = await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', u.conversation_id);
-    const contact = conv ? await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id) : null;
-    const recent = await all<MessageRow>(
-      db, 'SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 8) ORDER BY ts ASC, created_at ASC', u.conversation_id,
-    );
-    const dc = u.discount_id
-      ? await one<{ id: string; code: string; amount: number; status: string; shopify_status: string; error: string | null; message_text: string }>(
-          db, 'SELECT id, code, amount, status, shopify_status, error, message_text FROM discount_codes WHERE id = ?', u.discount_id)
-      : null;
+    const conv = convs.get(u.conversation_id) ?? null;
+    const recent = recentBy.get(u.conversation_id) ?? [];
+    const dc = u.discount_id ? dcById.get(u.discount_id) ?? null : null;
     out.push({
       id: u.id, channel: u.channel, status: u.status, question: u.question, customer_message: u.customer_message,
       reason: u.reason, category: u.category, draft: u.status === 'open' ? u.polished_answer : null,
       owner_answer: u.owner_answer, owner_note: u.owner_note, sent_text: u.status !== 'open' ? u.polished_answer : null,
       created_at: u.created_at, answered_at: u.answered_at, sent_at: u.sent_at,
-      conversation_id: u.conversation_id, customer: contact?.display_name || conv?.title || 'Customer',
+      conversation_id: u.conversation_id, customer: conv?.display_name || conv?.title || 'Customer',
       recent: recent.map((m) => ({ direction: m.direction, author: m.author, body: m.body, ts: m.ts })),
       discount: dc ? { id: dc.id, code: dc.code, amount: dc.amount, status: dc.status, shopify_status: dc.shopify_status, error: dc.error, message_text: dc.message_text } : null,
     });
@@ -142,16 +171,17 @@ export function register(r: Router): void {
     const rows = status === 'open'
       ? await all<UrgentRow>(c.db, `SELECT * FROM urgent WHERE status = 'open' ORDER BY created_at ASC LIMIT 100`)
       : await all<UrgentRow>(c.db, `SELECT * FROM urgent WHERE status != 'open' ORDER BY COALESCE(answered_at, created_at) DESC LIMIT 50`);
-    const review = await all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status = 'review' ORDER BY created_at ASC LIMIT 100`);
     const reviewOut = [];
-    for (const row of review) {
-      const conv = row.conversation_id ? await one<ConversationRow>(c.db, 'SELECT * FROM conversations WHERE id = ?', row.conversation_id) : null;
-      const lastIn = row.conversation_id
-        ? await one<{ body: string }>(c.db, `SELECT body FROM messages WHERE conversation_id = ? AND direction = 'in' ORDER BY ts DESC, created_at DESC LIMIT 1`, row.conversation_id)
-        : null;
-      reviewOut.push(reviewView(row, conv, lastIn?.body ?? ''));
+    if (status === 'open') {
+      const review = await all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status = 'review' ORDER BY created_at ASC LIMIT 100`);
+      const convIds = review.map((r) => r.conversation_id).filter((x): x is string => Boolean(x));
+      const [convs, lastIn] = await Promise.all([conversationsById(c.db, convIds), recentMessages(c.db, convIds, 1, 'in')]);
+      for (const row of review) {
+        const conv = row.conversation_id ? convs.get(row.conversation_id) ?? null : null;
+        reviewOut.push(reviewView(row, conv, (row.conversation_id && lastIn.get(row.conversation_id)?.[0]?.body) || ''));
+      }
     }
-    return json({ urgent: await urgentView(c.db, rows), review: status === 'open' ? reviewOut : [] });
+    return json({ urgent: await urgentView(c.db, rows), review: reviewOut });
   });
 
   r.post('/api/urgent/:id/answer', 'owner', async (c) => {
@@ -189,8 +219,9 @@ export function register(r: Router): void {
     let parts = parseJson<string[]>(row.parts, []);
     if (typeof body.text === 'string' && body.text.trim()) parts = body.text.split('\n').map((p) => p.trim()).filter(Boolean).slice(0, 3);
     if (!parts.length) throw bad('empty_message', 'Nothing to send');
-    await run(c.db, `UPDATE outbox SET status = 'pending', source = 'review', parts = ?, not_before = ?, pacing = ? WHERE id = ?`,
-      JSON.stringify(parts), c.now, JSON.stringify({ delay_ms: 1500 }), row.id);
+    // Like a message typed on the dashboard: if the laptop cannot send it within a day it is dropped, not sent late.
+    await run(c.db, `UPDATE outbox SET status = 'pending', source = 'review', parts = ?, not_before = ?, pacing = ?, expires_at = ? WHERE id = ? AND status = 'review'`,
+      JSON.stringify(parts), c.now, JSON.stringify({ delay_ms: 1500 }), c.now + DAY, row.id);
     await logEvent(c.db, { level: 'good', type: 'approved', channel: row.channel, conversation_id: row.conversation_id, message: `You approved a reply: ${clip(parts.join(' '), 160)}` });
     return json({ ok: true });
   });
@@ -246,6 +277,8 @@ export function register(r: Router): void {
     const until = minutes ? c.now + minutes * MIN : null;
     const changed = await run(c.db, 'UPDATE conversations SET paused_until = ?, pause_reason = ?, needs_reply_since = NULL WHERE id = ?', until, until ? 'Paused by you' : null, c.params.id!);
     if (!changed) throw new HttpError(404, 'not_found');
+    // Paused: what the agent queued for this chat and has not sent yet stays unsent.
+    if (until) await cancelAgentJobs(c.db, c.params.id!, 'paused by you');
     if (!until) {
       // Handed back: if the customer is still waiting, the agent answers now instead of at their next message.
       const last = await one<{ direction: string; status: string }>(c.db, 'SELECT direction, status FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 1', c.params.id!);
@@ -294,7 +327,13 @@ export function register(r: Router): void {
 
   r.post('/api/contacts/:id/opt-out', 'owner', async (c) => {
     const body = await c.body<{ opted_out?: unknown }>();
-    await run(c.db, 'UPDATE contacts SET opted_out = ?, updated_at = ? WHERE id = ?', bool(body.opted_out, true) ? 1 : 0, c.now, c.params.id!);
+    const optedOut = bool(body.opted_out, true);
+    const changed = await run(c.db, 'UPDATE contacts SET opted_out = ?, updated_at = ? WHERE id = ?', optedOut ? 1 : 0, c.now, c.params.id!);
+    if (!changed) throw new HttpError(404, 'not_found');
+    if (optedOut) {
+      const contact = await one<ContactRow>(c.db, 'SELECT * FROM contacts WHERE id = ?', c.params.id!);
+      await cancelForOptOut(c.db, c.params.id!, contact?.phone ?? null);
+    }
     return json({ ok: true });
   });
 

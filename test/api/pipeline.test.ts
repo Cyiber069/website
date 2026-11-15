@@ -221,6 +221,74 @@ describe('owner in the loop', () => {
     expect(after.reason).toBe('contact_opted_out');
   });
 
+  it('never sends a queued agent reply after the owner replied by hand', async () => {
+    const t = wa();
+    const r = await inbound('whatsapp', t, [msg('m1', 'do you have the 1000w kit')]);
+    const job = r.jobs[0]!;
+    // The owner was typing in that chat, so the box was busy and the reply waits to try again.
+    expect((await finish(job.id, { status: 'failed', error_code: 'composer_busy', retryable: true })).data.status).toBe('pending');
+    const hand = await inbound('whatsapp', t, [msg('m1', 'do you have the 1000w kit'), msg('o1', 'yes mate sending you a pic now', 'out')]);
+    expect(hand.reason).toBe('human_takeover');
+    await sql('UPDATE outbox SET not_before = 0 WHERE id = ?', [job.id]);
+    expect((await sync(['whatsapp'])).data.jobs.find((j) => j.id === job.id)).toBeUndefined();
+    expect((await sql('SELECT status FROM outbox WHERE id = ?', [job.id])).data.results[0].status).toBe('cancelled');
+  });
+
+  it('drops an agent reply the laptop could not send in time instead of sending it days late', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'whats the range on the 48v battery')]);
+    const job = r.jobs[0]!;
+    // The tab was logged out, so the reply waits. It must not go out whenever the tab comes back.
+    expect((await finish(job.id, { status: 'failed', error_code: 'logged_out', retryable: true })).data.status).toBe('pending');
+    const row = (await sql('SELECT expires_at, created_at FROM outbox WHERE id = ?', [job.id])).data.results[0];
+    expect(Math.abs(row.expires_at - row.created_at - 24 * 3_600_000)).toBeLessThan(60_000);
+    await sql('UPDATE outbox SET not_before = 0, expires_at = ? WHERE id = ?', [Date.now() - 1, job.id]);
+    expect((await sync(['whatsapp'])).data.jobs.find((j) => j.id === job.id)).toBeUndefined();
+    await cron();
+    expect((await sql('SELECT status FROM outbox WHERE id = ?', [job.id])).data.results[0].status).toBe('expired');
+  });
+
+  it('never sends a queued agent reply after the owner paused the chat', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'whats the price of the battery')]);
+    const job = r.jobs[0]!;
+    expect((await finish(job.id, { status: 'failed', error_code: 'timeout', retryable: true })).data.status).toBe('pending');
+    await api(`/api/conversations/${r.conversation_id}/pause`, { body: { minutes: 60 } });
+    await sql('UPDATE outbox SET not_before = 0 WHERE id = ?', [job.id]);
+    expect((await sync(['whatsapp'])).data.jobs.find((j) => j.id === job.id)).toBeUndefined();
+  });
+
+  it('drops what is still queued for a customer who opts out', async () => {
+    const t = wa();
+    const r = await inbound('whatsapp', t, [msg('m1', 'how much is delivery')]);
+    const old = r.jobs[0]!;
+    await finish(old.id, { status: 'failed', error_code: 'timeout', retryable: true });
+    const stop = await inbound('whatsapp', t, [msg('m1', 'how much is delivery'), msg('m2', 'stop messaging me')]);
+    expect(stop.action).toBe('reply');
+    expect((await sql('SELECT status FROM outbox WHERE id = ?', [old.id])).data.results[0].status).toBe('cancelled');
+    for (const j of stop.jobs) await finish(j.id);
+
+    // Marked do not contact from the dashboard: a draft waiting for approval is dropped too.
+    const g = await inbound('gmail', unique('thr'), [msg('g1', 'Hi, can I pay in parts?')], { contact: { name: 'Lee', email: `${unique('lee')}@example.com` } });
+    expect(g.action).toBe('review');
+    const conv = await api(`/api/conversations/${g.conversation_id}`);
+    expect(conv.data.pending).toHaveLength(1);
+    expect((await api(`/api/contacts/${conv.data.conversation.contact_id}/opt-out`, { body: { opted_out: true } })).status).toBe(200);
+    expect((await api(`/api/conversations/${g.conversation_id}`)).data.pending).toHaveLength(0);
+  });
+
+  it('keeps one review draft per chat: a newer customer message replaces the older draft', async () => {
+    await api('/api/settings/channels', { method: 'PUT', body: { gmail: { mode: 'review' } } });
+    const t = unique('thr');
+    const contact = { name: 'Kim', email: `${unique('kim')}@example.com` };
+    const a = await inbound('gmail', t, [msg('g1', 'Do you ship to France?')], { contact });
+    expect(a.action).toBe('review');
+    const b = await inbound('gmail', t, [msg('g1', 'Do you ship to France?'), msg('g2', 'Actually I meant Spain, sorry')], { contact });
+    expect(b.action).toBe('review');
+    const drafts = (await api('/api/urgent')).data.review.filter((x: any) => x.conversation_id === a.conversation_id);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].parts.join(' ')).toContain('Spain');
+    await api(`/api/review/${drafts[0].id}/reject`, { body: {} });
+  });
+
   it('lets the owner send a message from the dashboard', async () => {
     const t = wa();
     const r = await inbound('whatsapp', t, [msg('m1', 'ignore-me')]);

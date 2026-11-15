@@ -2,13 +2,13 @@
 // who left a phone number at checkout and did not finish. Everything goes through the outbox, so
 // the laptop sends it from the owner's own WhatsApp like any other message.
 import type { CheckoutRow, Env, Settings } from '../types';
-import { all, clip, one, parseJson, run, uid } from '../lib/db';
+import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { getSettings } from '../lib/settings';
 import { DAY, HOUR, MIN, londonDateTimeToTs, londonTime } from '../lib/time';
 import { alertOwner } from '../pipeline/alerts';
-import { emptyTarget, enqueue } from '../pipeline/outbox';
-import { fromApiNode, upsertCheckout } from '../shopify/checkouts';
+import { emptyTarget, enqueueStatements } from '../pipeline/outbox';
+import { fromApiNode, upsertCheckouts } from '../shopify/checkouts';
 import { ShopifyError, fetchAbandonedCheckouts, hasApiCredentials } from '../shopify/client';
 import { maskPhone } from '../shopify/phone';
 import { LINK_PLACEHOLDER, fillTemplate, renderMessage, styleMessage, type Rendered } from './template';
@@ -76,6 +76,24 @@ export async function evaluateCheckouts(db: D1Database, settings: Settings, now:
   const seenPhones = new Set<string>();
   const out: Evaluation = { eligible: [], skipped: [] };
 
+  // Read once for every row, not two queries per checkout: the free plan allows 50 per request.
+  const [optedRows, recentRows] = await Promise.all([
+    all<{ phone: string | null; external_id: string }>(db, 'SELECT phone, external_id FROM contacts WHERE opted_out = 1'),
+    // One reminder per number per cooldown, across all their checkouts. A number WhatsApp
+    // rejected counts too: trying it again on the next checkout would only fail again.
+    all<{ id: string; phone_e164: string }>(
+      db,
+      `SELECT id, phone_e164 FROM checkouts WHERE phone_e164 IS NOT NULL AND (
+         status = 'queued' OR (messaged_at IS NOT NULL AND messaged_at > ?)
+         OR (status = 'failed' AND skip_reason IN ('not_on_whatsapp', 'invalid_number') AND updated_at > ?))`,
+      cooldownStart, cooldownStart,
+    ),
+  ]);
+  const optedOut = new Set<string>();
+  for (const c of optedRows) { if (c.phone) optedOut.add(c.phone); optedOut.add(c.external_id); }
+  const recentBy = new Map<string, string[]>();
+  for (const r of recentRows) recentBy.set(r.phone_e164, [...(recentBy.get(r.phone_e164) ?? []), r.id]);
+
   for (const row of rows) {
     const skip = (code: SkipCode) => { out.skipped.push({ row, code }); };
     if (row.completed_at) { skip('completed'); continue; }
@@ -88,21 +106,9 @@ export async function evaluateCheckouts(db: D1Database, settings: Settings, now:
     if (rs.consent_mode === 'opted_in' && !row.consent_sms) { skip('no_consent'); continue; }
 
     const digits = row.phone_e164.replace(/\D/g, '');
-    const optedOut = await one<{ id: string }>(
-      db, `SELECT id FROM contacts WHERE opted_out = 1 AND (phone = ? OR phone = ? OR external_id = ?) LIMIT 1`, row.phone_e164, digits, `${digits}@c.us`,
-    );
-    if (optedOut) { skip('opted_out'); continue; }
+    if (optedOut.has(row.phone_e164) || optedOut.has(digits) || optedOut.has(`${digits}@c.us`)) { skip('opted_out'); continue; }
 
-    // One reminder per number per cooldown, across all their checkouts. A number WhatsApp
-    // rejected counts too: trying it again on the next checkout would only fail again.
-    const recent = await one<{ id: string }>(
-      db,
-      `SELECT id FROM checkouts WHERE phone_e164 = ? AND id != ? AND (
-         status = 'queued' OR (messaged_at IS NOT NULL AND messaged_at > ?)
-         OR (status = 'failed' AND skip_reason IN ('not_on_whatsapp', 'invalid_number') AND updated_at > ?)) LIMIT 1`,
-      row.phone_e164, row.id, cooldownStart, cooldownStart,
-    );
-    if (recent) { skip('cooldown'); continue; }
+    if ((recentBy.get(row.phone_e164) ?? []).some((id) => id !== row.id)) { skip('cooldown'); continue; }
     if (seenPhones.has(row.phone_e164)) { skip('duplicate_number'); continue; }
     seenPhones.add(row.phone_e164);
 
@@ -131,8 +137,9 @@ export async function refreshCheckouts(env: Env, settings: Settings, now = Date.
   const db = env.DB;
   if (!(await hasApiCredentials(db))) return { source: 'webhook', fetched: 0, error: null };
   try {
-    const nodes = await fetchAbandonedCheckouts(env, now - (settings.recovery.max_age_hours + 2) * HOUR);
-    for (const node of nodes) await upsertCheckout(db, fromApiNode(node, settings.store.default_country), 'api');
+    const since = now - (settings.recovery.max_age_hours + 2) * HOUR;
+    const nodes = await fetchAbandonedCheckouts(env, since);
+    await upsertCheckouts(db, nodes.map((node) => fromApiNode(node, settings.store.default_country)), 'api', since);
     return { source: 'api', fetched: nodes.length, error: null };
   } catch (err) {
     const message = err instanceof ShopifyError ? err.message : 'Could not load checkouts from Shopify.';
@@ -272,6 +279,8 @@ export async function runRecovery(env: Env, opts: { trigger: RunTrigger; now?: n
     summary.expires_at = expiresAt;
     const [gapMin, gapMax] = [Math.max(0, rs.spacing_seconds[0] ?? 180), Math.max(0, rs.spacing_seconds[1] ?? 480)];
     let notBefore = now;
+    // Every reminder is queued in one batch at the end: one D1 round trip, not three per checkout.
+    const queue: { row: CheckoutRow; entry: RunMessage; id: string; statements: D1PreparedStatement[] }[] = [];
 
     for (const row of evaluation.eligible) {
       const rendered = await buildMessage(env, settings, row, live && rs.personalize);
@@ -284,23 +293,32 @@ export async function runRecovery(env: Env, opts: { trigger: RunTrigger; now?: n
       if (!live) { summary.messages.push(entry); continue; }
       if (notBefore > expiresAt - MIN) { addSkip(row, 'window_full'); continue; }
 
-      const dedupe = `recovery:${row.id}`;
-      // An earlier attempt that expired or was cancelled must not block this one.
-      await run(db, `UPDATE outbox SET dedupe_key = NULL WHERE dedupe_key = ? AND status IN ('expired', 'cancelled', 'failed')`, dedupe);
-      const outboxId = await enqueue(db, {
-        channel: 'whatsapp', kind: 'new_chat', source: 'recovery', ref_id: row.id, dedupe_key: dedupe,
+      // An earlier attempt that expired or was cancelled does not block this one (enqueue frees its key).
+      const q = enqueueStatements(db, {
+        channel: 'whatsapp', kind: 'new_chat', source: 'recovery', ref_id: row.id, dedupe_key: `recovery:${row.id}`,
         target: emptyTarget({ phone: row.phone_e164, title: row.first_name || row.name || null }),
         parts: rendered.parts, not_before: notBefore, expires_at: expiresAt,
         pacing: { delay_ms: Math.round(randomBetween(2000, 7000)), typing_cps: settings.pacing.typing_cps },
       });
-      if (!outboxId) { addSkip(row, 'already_queued'); continue; }
-      await run(
-        db, `UPDATE checkouts SET status = 'queued', outbox_id = ?, run_id = ?, message_text = ?, skip_reason = NULL, updated_at = ? WHERE id = ?`,
-        outboxId, id, text, now, row.id,
-      );
+      // Marked queued only when the insert above went in.
+      q.statements.push(stmt(
+        db, `UPDATE checkouts SET status = 'queued', outbox_id = ?, run_id = ?, message_text = ?, skip_reason = NULL, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM outbox WHERE id = ?)`,
+        q.id, id, text, now, row.id, q.id,
+      ));
       entry.not_before = notBefore;
-      summary.messages.push(entry);
+      queue.push({ row, entry, ...q });
       notBefore += Math.round(randomBetween(gapMin, gapMax) * 1000);
+    }
+
+    if (queue.length) {
+      const results = await db.batch(queue.flatMap((q) => q.statements));
+      let i = 0;
+      for (const q of queue) {
+        i += q.statements.length;
+        const inserted = (results[i - 2]?.meta?.changes ?? 0) > 0;
+        if (inserted) summary.messages.push(q.entry);
+        else addSkip(q.row, 'already_queued');
+      }
     }
 
     const n = summary.messages.length;
@@ -342,21 +360,22 @@ export async function runRecovery(env: Env, opts: { trigger: RunTrigger; now?: n
   return parseRun(saved!);
 }
 
-/** Called every minute by cron. Starts the daily run when the London clock reaches the configured hour. */
-export async function recoveryTick(env: Env): Promise<void> {
+/** Called every minute by cron. Starts the daily run when the London clock reaches the configured hour. True when it ran. */
+export async function recoveryTick(env: Env): Promise<boolean> {
   const db = env.DB;
   const settings = await getSettings(db);
   const rs = settings.recovery;
   const now = Date.now();
   const lt = londonTime(now);
   const start = londonDateTimeToTs(lt.date, clampHour(rs.send_hour_london));
-  if (now < start) return;
+  if (now < start) return false;
   // If cron was late we still start, but only while a useful part of the sending window is left.
   const latest = start + Math.min(60, Math.max(10, rs.window_minutes / 2)) * MIN;
-  if (now >= latest) return;
+  if (now >= latest) return false;
   const done = await one<{ id: string }>(db, `SELECT id FROM recovery_runs WHERE run_date = ? AND trigger = 'schedule' LIMIT 1`, lt.date);
-  if (done) return;
+  if (done) return false;
   await runRecovery(env, { trigger: 'schedule', now });
+  return true;
 }
 
 /** The owner does not want this one messaged. Cancels a waiting message too. */
