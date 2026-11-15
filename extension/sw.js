@@ -26,7 +26,8 @@ async function gmailAccount() {
 }
 
 function homeUrl(channel, account) {
-  if (channel === 'gmail' && account) return `https://mail.google.com/mail/u/${encodeURIComponent(account)}/#inbox`;
+  // Gmail picks the signed-in account from ?authuser=<address> (a /u/<address>/ path gives a 404).
+  if (channel === 'gmail' && account) return `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#inbox`;
   return CHANNELS[channel].home;
 }
 
