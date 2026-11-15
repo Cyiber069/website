@@ -7,7 +7,7 @@ const DEFAULT_AMOUNT = 20;
 const DEFAULT_APPLIES = 'kits, bundles and batteries';
 
 const pounds = (n) => `£${Number.isInteger(Number(n)) ? Number(n) : Number(n).toFixed(2)}`;
-const cleanCode = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const cleanCode = (s) => String(s || '').replace(/[^A-Za-z0-9._-]/g, '').replace(/^[._-]+|[._-]+$/g, '');
 const dateOnly = (ts) => new Date(ts).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/London' });
 
 /** Handle if there is one, else the first name, upper case, letters and digits only, plus the amount. */
@@ -261,7 +261,7 @@ export default {
       const code = cleanCode(form.code);
       const amount = Number(form.amount);
       if (!form.conv) return fail('Pick who the code is for first.', $('#dc-q', view));
-      if (code.length < 3 || code.length > 30 || code !== String(form.code).trim().toUpperCase()) return fail('The code should be 3 to 30 letters or numbers, no spaces or symbols.', f.elements.code);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,28}[A-Za-z0-9]$/.test(code) || code !== String(form.code).trim()) return fail('The code should be 3 to 30 letters or numbers. Dots, underscores and dashes are fine in the middle, spaces are not.', f.elements.code);
       if (!(amount >= 1 && amount <= 500)) return fail('The amount should be between £1 and £500.', f.elements.amount);
       if (form.uses && !(Number.isInteger(Number(form.uses)) && Number(form.uses) >= 1)) return fail('Times it can be used should be a whole number, or empty for no limit.', f.elements.uses);
       const message = (form.msgTouched ? form.message : messageFor(code, amount, form.applies)).trim();
@@ -341,8 +341,8 @@ export default {
       if (!form || !t.closest('#dc-form')) return;
       t.removeAttribute('aria-invalid');
       if (t.id === 'dc-code') {
-        const at = t.selectionStart; const v = t.value.toUpperCase();
-        if (v !== t.value) { t.value = v; try { t.setSelectionRange(at, at); } catch { /* number inputs */ } }
+        const v = t.value.replace(/\s+/g, '');
+        if (v !== t.value) t.value = v;
         form.code = v; form.codeTouched = Boolean(v);
       }
       if (t.id === 'dc-amount') {

@@ -147,7 +147,8 @@ describe('discount codes', () => {
     await bad({ code: 'AB' }, 'invalid_code');
     await bad({ code: 'A'.repeat(31) }, 'invalid_code');
     await bad({ code: 'JAKE 20' }, 'invalid_code');
-    await bad({ code: 'JAKE-20' }, 'invalid_code');
+    await bad({ code: 'JAKE20!' }, 'invalid_code');
+    await bad({ code: '.JAKE' }, 'invalid_code');
     await bad({ amount: 0 }, 'invalid_amount');
     await bad({ amount: 501 }, 'invalid_amount');
     await bad({ amount: 'lots' }, 'invalid_amount');
@@ -156,10 +157,10 @@ describe('discount codes', () => {
     await bad({ conversation_id: 'cv_nope' }, 'conversation_not_found');
     await bad({ code: undefined }, 'missing_field');
 
-    // Lower case is fine and saved upper case; the same code twice is refused.
+    // The code is saved exactly as typed; the same code twice (in any case) is refused.
     const ok = await make({ conversation_id: c.id, code: 'zedcode1', amount: '12.5', usage_limit: 1, expires_at: '2099-06-30' });
     expect(ok.status).toBe(201);
-    expect(ok.data.discount).toMatchObject({ code: 'ZEDCODE1', amount: 12.5, usage_limit: 1 });
+    expect(ok.data.discount).toMatchObject({ code: 'zedcode1', amount: 12.5, usage_limit: 1 });
     expect(ok.data.discount.message_text).toContain('£12.50 off');
     expect(ok.data.discount.expires_at).toBeGreaterThan(Date.now());
     await bad({}, 'code_taken');
@@ -427,5 +428,18 @@ describe('code request rules (no server)', async () => {
     expect(promisesLiveCode('your discount code is ready')).toBe(true);
     expect(promisesLiveCode('once your code is live put it in your bio')).toBe(false);
     expect(promisesLiveCode('delivery is 2 to 4 days')).toBe(false);
+  });
+});
+
+describe('creator style codes', () => {
+  it('keeps the code exactly as the customer wrote it', async () => {
+    const { normaliseCode } = await import('../../src/discounts/index');
+    expect(normaliseCode('User_1.5kw')).toBe('User_1.5kw');
+    expect(normaliseCode('"amzz.5kw"')).toBe('amzz.5kw');
+    expect(normaliseCode('5kwkilla')).toBe('5kwkilla');
+    expect(normaliseCode('CarlitoACX')).toBe('CarlitoACX');
+    expect(normaliseCode('MACCA5.')).toBe('MACCA5');
+    expect(normaliseCode('ab')).toBeNull();
+    expect(normaliseCode('bad code')).toBe('badcode');
   });
 });

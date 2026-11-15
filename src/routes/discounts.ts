@@ -15,8 +15,8 @@ import { approveCodeRequest } from '../discounts/agent';
 const MAX_MESSAGE_CHARS = 1000;
 
 function codeOf(v: unknown): string {
-  const code = str(v, 'code', { max: 60 }).toUpperCase();
-  if (!/^[A-Z0-9]{3,30}$/.test(code)) throw bad('invalid_code', 'The code should be 3 to 30 letters or numbers, with no spaces or symbols.', { field: 'code' });
+  const code = str(v, 'code', { max: 60 });
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,28}[A-Za-z0-9]$/.test(code)) throw bad('invalid_code', 'The code should be 3 to 30 letters or numbers. Dots, underscores and dashes are fine in the middle, spaces are not.', { field: 'code' });
   return code;
 }
 

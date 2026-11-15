@@ -90,7 +90,7 @@ export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnRes
   const code = normaliseCode(request.code);
   const [taken, contactCode, today] = code
     ? await Promise.all([
-        one<{ id: string }>(db, 'SELECT id FROM discount_codes WHERE code = ?', code),
+        one<{ id: string }>(db, 'SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE', code),
         one<{ code: string }>(db, `SELECT code FROM discount_codes WHERE contact_id = ? AND status != 'draft' ORDER BY created_at DESC LIMIT 1`, t.contact.id),
         one<{ n: number }>(db, `SELECT COUNT(*) AS n FROM discount_codes WHERE made_by = 'agent' AND shopify_status = 'created' AND created_at >= ?`, startOfLondonDay(t.now)),
       ])
@@ -159,7 +159,7 @@ async function parkCodeRequest(
     // Asked again with a different code while the first is still waiting: change the waiting draft.
     const waiting = open?.discount_id ? await one<DiscountRow>(db, `SELECT * FROM discount_codes WHERE id = ? AND status = 'draft'`, open.discount_id) : null;
     if (waiting && waiting.code !== p.code) {
-      const changed = await run(db, `UPDATE discount_codes SET code = ?, message_text = ?, updated_at = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM discount_codes WHERE code = ?)`,
+      const changed = await run(db, `UPDATE discount_codes SET code = ?, message_text = ?, updated_at = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM discount_codes WHERE code = ? COLLATE NOCASE)`,
         p.code, messageFor(s, p.code, waiting.amount, waiting.applies_to), t.now, waiting.id, p.code).catch(() => 0);
       if (changed) draft = await loadDiscount(db, waiting.id);
     } else if (waiting) {

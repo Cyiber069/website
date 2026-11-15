@@ -29,7 +29,7 @@ export const DISCOUNT_REQUEST_SCHEMA: Record<string, unknown> = {
 const SYSTEM = `You read the end of a chat between an ebike shop and one of its customers.
 Decide one thing: in their newest messages, is the customer asking the shop to make them their own personal discount code, creator code or sponsorship code (for example a creator who wants a code for their followers)?
 wants_code is true only for that. It is false when they ask whether a sale is on, ask for a generic discount for themselves, ask about a code that already exists, or just mention a code.
-code is the exact code they want, when they name one (for example "I would like to make my discount code MACCA5" gives "MACCA5"). Use null when they did not name one, or when it is unclear which word is the code.
+code is the exact code they want, copied exactly as they typed it, keeping upper and lower case, dots, underscores and dashes (for example "User_1.5kw" stays "User_1.5kw"), when they name one (for example "I would like to make my discount code MACCA5" gives "MACCA5"). Use null when they did not name one, or when it is unclear which word is the code.
 confidence is how sure you are of both answers, from 0 to 1.
 Reply with the JSON object only.`;
 
@@ -42,7 +42,7 @@ export function mockDiscountRequest(history: HistoryMessage[]): DiscountRequest 
   const lower = text.toLowerCase();
   const wants = /\b(discount|creator|sponsor(ship)?|promo|affiliate)\s+code\b|\bcoupon\b|\bmy own code\b|\bmake (me )?a code\b/.test(lower);
   if (!wants) return { wants_code: false, code: null, confidence: 0.9 };
-  const quoted = /["'“‘]([A-Za-z0-9]{3,30})["'”’]/.exec(text)?.[1] ?? null;
+  const quoted = /["'“‘]([A-Za-z0-9][A-Za-z0-9._-]{1,28}[A-Za-z0-9])["'”’]/.exec(text)?.[1] ?? null;
   const upper = (text.match(/\b[A-Z][A-Z0-9]{2,29}\b/g) ?? []).filter((t) => !STOP.has(t));
   const code = quoted ?? upper.find((t) => /\d/.test(t)) ?? upper[0] ?? null;
   return { wants_code: true, code, confidence: lower.includes('lowconf') ? 0.4 : 0.95 };

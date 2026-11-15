@@ -41,10 +41,13 @@ export function messageFor(s: DiscountSettings, code: string, amount: number, ap
   return defaultMessage(code, amount, appliesTo);
 }
 
-/** Upper case, spaces and symbols gone. Null unless 3 to 30 of A to Z and 0 to 9 are left. */
+/**
+ * The code exactly as the customer wrote it (creators use codes like User_1.5kw or amzz.5kw), with
+ * quotes and spaces removed. Letters, numbers, dot, underscore and dash, 3 to 30 long. Null otherwise.
+ */
 export function normaliseCode(raw: string | null | undefined): string | null {
-  const code = String(raw ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  return /^[A-Z0-9]{3,30}$/.test(code) ? code : null;
+  const code = String(raw ?? '').trim().replace(/^["'“‘`]+|["'”’`.,!?]+$/g, '').replace(/\s+/g, '');
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{1,28}[A-Za-z0-9]$/.test(code) ? code : null;
 }
 
 export const isLive = (row: Pick<DiscountRow, 'shopify_status'>) => row.shopify_status === 'created' || row.shopify_status === 'owner_confirmed';
@@ -132,7 +135,7 @@ export interface NewDiscount {
 
 /** Save a draft row. Throws 409 code_taken when the code is already here. */
 export async function insertDiscount(db: D1Database, d: NewDiscount): Promise<DiscountRow> {
-  if (await one(db, 'SELECT id FROM discount_codes WHERE code = ?', d.code)) {
+  if (await one(db, 'SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE', d.code)) {
     throw new HttpError(409, 'code_taken', `You already made the code ${d.code}. Pick another one.`, { field: 'code' });
   }
   const id = uid('dc');

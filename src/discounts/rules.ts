@@ -36,7 +36,8 @@ export function brandWords(settings: Pick<Settings, 'voice' | 'store'>): string[
 }
 
 /** Why a code should not be made without the owner, or null when it is fine. */
-export function codeProblem(code: string, brands: string[]): string | null {
+export function codeProblem(rawCode: string, brands: string[]): string | null {
+  const code = rawCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (OFFENSIVE.some((w) => code.includes(w))) return 'The code may contain a rude or offensive word';
   const letters = code.replace(/[0-9]+/g, '');
   if (!letters) return 'The code is only numbers';
