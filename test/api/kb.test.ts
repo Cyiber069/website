@@ -360,12 +360,10 @@ describe('learning from the owner', () => {
 });
 
 describe('messages the agent cannot open', () => {
-  it('passes a lone voice note to the owner with an honest holding line, without guessing', async () => {
+  it('passes a lone voice note to the owner silently, so the customer never sees a bot style line', async () => {
     const r = await inbound('whatsapp', `${unique('4479')}@c.us`, [{ external_id: 'v1', direction: 'in', body: '', kind: 'voice' }]);
     expect(r.action).toBe('escalate');
-    expect(r.jobs).toHaveLength(1);
-    expect(r.jobs[0]!.parts.join(' ')).toMatch(/voice notes/);
-    for (const p of r.jobs[0]!.parts) expect(violations(p)).toEqual([]);
+    expect(r.jobs).toHaveLength(0);
     const item = (await api('/api/urgent')).data.urgent.find((u: any) => u.conversation_id === r.conversation_id);
     expect(item.question).toMatch(/voice note/);
     expect(item.category).toBe('media');

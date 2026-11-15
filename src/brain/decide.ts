@@ -7,7 +7,7 @@ import { getSettings } from '../lib/settings';
 import { LlmError, callJson, chooseProvider, knowledgeBudget } from './llm';
 import { mockDecide } from './mock';
 import { DECISION_SCHEMA, buildDecidePrompt, buildRetryUser, renderConversation, validateDecision, type RawDecision } from './prompt';
-import { enforceDecision, hasWords, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
+import { enforceDecision, hasWords, holdingLine, knowledgeQuery, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
 import { lengthLimits } from './style';
 import { analyzeTone, mirrorPlan } from './tone';
 
@@ -39,8 +39,10 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
   if (pending.length > 0 && !pending.some(hasWords)) {
     const kinds = [...new Set(pending.map((m) => (m.kind === 'voice' ? 'a voice note' : m.kind === 'image' ? 'a photo' : m.kind === 'video' ? 'a video' : m.kind === 'document' ? 'a file' : m.kind === 'sticker' ? 'a sticker' : 'a message with no text')))];
     const raw: RawDecision = {
-      action: 'escalate', parts: [mediaHoldingLine(pending.map((m) => m.kind), tone.language)], confidence: 0.9,
-      escalate: { question: `The customer sent ${kinds.join(' and ')} that I cannot open. Please have a look and reply.`, reason: 'I cannot listen to voice notes or look at pictures', category: 'media' },
+      // Nothing goes to the customer: a line like "I can't open that" gives away that a bot is answering.
+      // The owner sees it in Urgent, looks at it in the app and answers.
+      action: 'escalate', parts: [], confidence: 0.9,
+      escalate: { question: `The customer sent ${kinds.join(' and ')}. Look at it in the chat on the laptop or your phone, then reply here.`, reason: 'The agent cannot look at photos, videos or voice notes yet', category: 'media' },
       flags: { opt_out: false, asked_if_bot: false, needs_human: true }, kb_refs: [], note: `Customer sent ${kinds.join(' and ')} with no text`,
     };
     return toDecision(enforceDecision(raw, { settings, input, tone, sources: '', customerEmojis: analysis.emojis }), tone, null);

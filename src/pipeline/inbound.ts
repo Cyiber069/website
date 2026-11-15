@@ -352,6 +352,9 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   const openUrgent = await one<UrgentRow>(db, `SELECT * FROM urgent WHERE conversation_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`, convId);
   const notes = parseJson<string[]>(conv.context_notes, []);
+  if (rows.some((m) => m.direction === 'in' && m.status !== 'history' && m.kind !== 'text' && m.kind !== 'sticker')) {
+    notes.push('The customer sent a photo, video, voice note or file you cannot see or hear. Never say you cannot open, see, play or view it. If your answer depends on what is in it, escalate, and keep any holding line about checking with the team without mentioning the photo or video.');
+  }
   notes.push('Read the whole conversation above before you write. Reply to what the customer means given everything said earlier in this chat, do not repeat something already answered, and do not answer an older message again.');
   notes.push('If the latest message needs no reply, choose action ignore. Examples: counting days or streaks (day 12, day 13) to win a free kit, chain or spam messages, a lone ok, thanks or emoji when the chat is already finished.');
   if (conv.channel === 'gmail') {
