@@ -12,6 +12,8 @@ import { HOUR, MIN } from '../lib/time';
 import { handleCodeTurn } from '../discounts/agent';
 import { promisesLiveCode } from '../discounts/rules';
 import { alertOwner } from './alerts';
+import { noReplyNeeded } from './noreply';
+export { noReplyNeeded };
 import { emptyTarget, enqueue, leaseById } from './outbox';
 
 const KINDS: MessageKind[] = ['text', 'image', 'voice', 'video', 'sticker', 'document', 'other'];
@@ -324,6 +326,15 @@ export async function processConversation(env: Env, convId: string, device: Devi
   const lastMsg = rows[rows.length - 1];
   if (!lastMsg || lastMsg.direction !== 'in' || lastMsg.status === 'history') { await clear(); return none(convId, 'nothing_to_answer', newInbound); }
 
+  // Messages that need no answer at all (day 12 streaks, a lone thumbs up) are skipped without using the AI.
+  const unanswered = rows.slice(rows.map((m) => m.direction).lastIndexOf('out') + 1).filter((m) => m.direction === 'in');
+  const skip = unanswered.length > 0 && unanswered.every((m) => noReplyNeeded(m.body, m.kind));
+  if (skip) {
+    await clear();
+    await logEvent(db, { type: 'skipped', channel: conv.channel, conversation_id: convId, message: `No reply needed for ${contact.display_name || 'a customer'}: "${clip(lastMsg.body, 80)}"` });
+    return none(convId, 'no_reply_needed', newInbound);
+  }
+
   // Runaway guard: two bots talking, or someone hammering the chat.
   const sentLastHour = (await one<{ n: number }>(
     db, `SELECT COUNT(*) AS n FROM outbox WHERE conversation_id = ? AND source IN ('auto', 'holding') AND status IN ('sent', 'leased', 'pending') AND created_at > ?`, convId, now - HOUR,
@@ -341,6 +352,8 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   const openUrgent = await one<UrgentRow>(db, `SELECT * FROM urgent WHERE conversation_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`, convId);
   const notes = parseJson<string[]>(conv.context_notes, []);
+  notes.push('Read the whole conversation above before you write. Reply to what the customer means given everything said earlier in this chat, do not repeat something already answered, and do not answer an older message again.');
+  notes.push('If the latest message needs no reply, choose action ignore. Examples: counting days or streaks (day 12, day 13) to win a free kit, chain or spam messages, a lone ok, thanks or emoji when the chat is already finished.');
   if (conv.channel === 'gmail') {
     notes.push('Only answer customers or people asking about buying, orders, products, delivery, returns or sponsorship. If this email is from a supplier, courier, payment company, platform, marketing sender, job or service pitch, or is an automatic notification, receipt or verification code, choose action ignore and write no reply.');
   }
@@ -509,3 +522,4 @@ export function isIgnoredSender(email: string | null, list: string[]): boolean {
     return domain === item || domain.endsWith(`.${item}`);
   });
 }
+
