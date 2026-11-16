@@ -423,3 +423,16 @@ describe('tiktok message requests', () => {
     expect(done.action).toBe('none');
   });
 });
+
+describe('tiktok accepted requests seen earlier', () => {
+  it('answers an accepted request that was seen before but never answered', async () => {
+    await api('/api/settings/channels', { method: 'PUT', body: { tiktok: { mode: 'auto' } } });
+    const t = unique('req2_');
+    // First seen while still a request: the agent's reply was dropped (here: ignored by the brain).
+    expect((await inbound('tiktok', t, [{ direction: 'in', body: 'ignore-me price of the 2000w' }])).action).toBe('none');
+    await sql(`UPDATE messages SET body = 'price of the 2000w' WHERE body LIKE 'ignore-me%'`);
+    const r = await inbound('tiktok', t, [{ direction: 'in', body: 'price of the 2000w' }], { just_accepted: true });
+    expect(r.action).toBe('reply');
+    await finish(r.jobs[0]!.id);
+  });
+});

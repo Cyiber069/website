@@ -554,7 +554,11 @@
 
   /** True when a list time like "20:14" is today and no more than `mins` minutes ago. */
   function withinMinutes(time, mins) {
-    const m = /^(\d{1,2}):(\d{2})/.exec(String(time || '').trim());
+    const t = String(time || '').trim().toLowerCase();
+    if (/^(now|just now)$/.test(t)) return true;
+    const rel = /^(\d{1,3})\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b/.exec(t);
+    if (rel) return /^s/.test(rel[2]) || Number(rel[1]) <= mins;
+    const m = /^(\d{1,2}):(\d{2})/.exec(t);
     if (!m) return false;
     const now = new Date();
     const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(m[1]), Number(m[2]));
@@ -589,8 +593,14 @@
       // Reading a message on the phone clears the badge everywhere, so a row whose preview or time
       // changed since the last look also counts. The server works out whether anything is unanswered.
       const rowSig = `${row.preview}|${row.time}`;
-      // A row that was not in the list before is a message request the owner just accepted.
-      const accepted = !firstScan && newRows <= 2 && !rowSeen.has(row.key);
+      // A request the owner just accepted. TikTok labels these rows "Message request accepted"; that
+      // label is trusted on its own, however many arrive at once. Without it, one or two rows that
+      // were not in the list before also count. At startup only labels from the last 10 minutes count.
+      const labelled = /message request accept/i.test(String(row.preview || ''));
+      const unseen = !rowSeen.has(row.key) || rowSeen.get(row.key) !== rowSig;
+      const accepted = labelled
+        ? (firstScan ? withinMinutes(row.time, 10) : unseen)
+        : !firstScan && newRows <= 2 && !rowSeen.has(row.key);
       const changed = accepted || (rowSeen.has(row.key) ? rowSeen.get(row.key) !== rowSig : firstScan && withinMinutes(row.time, 10) && earlyPicks++ < 3);
       rowSeen.set(row.key, rowSig);
       if (changed && !row.unread && !isOpen) bump(row.key);

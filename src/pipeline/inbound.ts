@@ -511,9 +511,12 @@ export async function handleInbound(env: Env, device: DeviceRow, payload: Inboun
     if (payload.thread.just_accepted) {
       // Only a chat that really was a request: first seen just now, or a reply failed in the last day
       // because the request was not accepted yet. Anything else is an old chat and is left alone.
-      const wasRequest = stored.created || (await one<{ id: string }>(env.DB,
-        `SELECT id FROM outbox WHERE conversation_id = ? AND status = 'failed' AND last_error LIKE 'blocked%' AND created_at > ? LIMIT 1`,
-        stored.conv.id, Date.now() - 24 * HOUR)) !== null;
+      const wasRequest = stored.created
+        || (await one<{ id: string }>(env.DB,
+          `SELECT id FROM outbox WHERE conversation_id = ? AND status = 'failed' AND last_error LIKE 'blocked%' AND created_at > ? LIMIT 1`,
+          stored.conv.id, Date.now() - 24 * HOUR)) !== null
+        // Never answered at all: a request seen earlier while it could not be replied to.
+        || (await one<{ id: string }>(env.DB, `SELECT id FROM messages WHERE conversation_id = ? AND direction = 'out' LIMIT 1`, stored.conv.id)) === null;
       if (wasRequest) return processConversation(env, stored.conv.id, device, 0);
     }
     return none(stored.conv.id, 'nothing_new');
