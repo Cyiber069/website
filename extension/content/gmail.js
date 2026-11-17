@@ -652,7 +652,7 @@
         }
       }
       await ACX.captureMedia(messages); // never throws, at most about 5 s
-      await ACX.captureVideo(messages, (msg) => ({ url: msg._media.video.url, mime: msg._media.video.mime })); // never throws, at most about 15 s
+      await ACX.captureVideo(messages, (msg) => ({ url: msg._media.video.url, mime: msg._media.video.mime })); // never throws, at most about 8 s
       for (const msg of messages) {
         // A photo with no words is a photo, not a file. Without a copy and without words there is nothing to report.
         if (msg.media && !msg.body) msg.kind = msg.media.kind === 'video_frame' ? 'video' : 'image';

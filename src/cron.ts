@@ -2,7 +2,7 @@
 import type { Env } from './types';
 import { stmt } from './lib/db';
 import { MEDIA_KEEP_DAYS } from './lib/media';
-import { VISION_FILES_KEEP_MS } from './vision';
+import { VISION_FILES_KEEP_MS, tidyVisionFiles } from './vision';
 import { getSettings, getState, setState } from './lib/settings';
 import { DAY } from './lib/time';
 import { watchHealth } from './pipeline/monitor';
@@ -59,6 +59,8 @@ export async function runCron(env: Env): Promise<void> {
   // One follow up for warm leads, and the daily cleanup. Skipped in a minute the sweeper answered a
   // chat (that alone can be about 40 queries) or a recovery run or store sync started.
   if (!busy) await safely('sales', () => salesTick(env));
+  // Customer videos Google still holds that nothing described: deleted a few at a time (a few fetches).
+  if (!busy) await safely('vision-files', () => tidyVisionFiles(env));
   await safely('health', () => watchHealth(env));
   if (!busy) await safely('cleanup', () => cleanup(env));
 }

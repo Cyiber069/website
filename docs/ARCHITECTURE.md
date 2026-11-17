@@ -75,7 +75,7 @@ See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Ke
 `outbox.reply_to_id` / `outbox.reply_to_ts` and `conversations.retry_at` (`migrations/0008_reply_speed.sql`): the customer message an agent reply answers and when it arrived (the page time, a minute label read as half way through the minute, never later than first seen), and when the sweeper may try a chat again after a failed brain call.
 `outbox.busy_since` / `outbox.busy_warned` (`migrations/0010_send_waits.sql`): when the owner typing or a draft first held a job up, and whether the owner was told (see job results below).
 `media` (`migrations/0007_media.sql`): one photo or video frame per customer message, base64 in `data` (at most 260,000 characters), `kind` `image` | `video_frame`, `mime` read from the bytes. The message row remembers its picture in `messages.meta` (`{ "media": "md_x", "media_kind": "image" }`), so list queries never touch the table and never select `data`. Rows older than 14 days are deleted by the daily cleanup.
-`migrations/0009_vision.sql` adds to `media`: `description` (what Google AI Studio saw, plain text, at most 900 characters), `vision` (small JSON: `model`, `via` `image` | `frames` | `video` | `cover`, `unclear`, `problem` `none` | `damage` | `fault` | `safety`, `ms`, `tries`, `error`, `shared`, `seconds`) and `video_ref`; the message meta gets `media_desc` (the description, 600 characters) once it is written. Table `vision_files`: one row per video the laptop uploaded (`file_name`, `file_uri` at Google, `mime`, `bytes`, `seconds`, `channel`, `device_id`, `created_at`), kept 2 days; today's count (London day) is the video cap. Video bytes are never stored in D1.
+`migrations/0009_vision.sql` adds to `media`: `description` (what Google AI Studio saw, plain text, at most 900 characters), `vision` (small JSON: `model`, `via` `image` | `frames` | `video` | `cover`, `unclear`, `problem` `none` | `damage` | `fault` | `safety`, `ms`, `tries`, `error`, `shared`, `seconds`) and `video_ref`; the message meta gets `media_desc` (the description, 600 characters) once it is written. Table `vision_files`: one row per video the laptop uploaded (`file_name`, `file_uri` at Google, `mime`, `bytes`, `seconds`, `channel`, `device_id`, `created_at`, and from `0011_waits_and_videos.sql` `video_key` and `gone_at`), kept 2 days; today's count of distinct videos (London day) is the video cap. Video bytes are never stored in D1.
 
 Settings groups and defaults: `src/lib/settings.ts` (`DEFAULT_SETTINGS`), typed in `src/types.ts`.
 Pacing defaults: `settle_seconds` 4, no extra wait (`min_reply_delay_s` and `max_reply_delay_s` 0), 30 agent replies per chat an hour. `pacing.schema` (2) marks the
@@ -130,9 +130,10 @@ Errors are `{ "error": "<code>", "message": "<human text>" }` with a 4xx/5xx sta
 ```
 
 Extension versions before 0.4.0 (`isLegacyExtension` in `src/lib/version.ts`, from the version a sync reports and the
-device row keeps) have no newer_message re-read: they get `settle_seconds` of at least 12 and jobs with the typing speed
-they were made for (`settings.pacing.typing_cps`, never 0, which they read as 3 a second on TikTok). 0.4.0 and up get the
-stored settle (4) and `typing_cps` 0.
+device row keeps) have no newer_message re-read: they get `settle_seconds` of at least 12 and jobs with `typing_cps`
+200 (never 0, which they read as 3 a second on TikTok; at 200 they paste the part and keep only their short floor pauses
+of about half a second). Checkout reminders and the owner alert keep their own speed. 0.4.0 and up get the stored
+settle (4) and `typing_cps` 0.
 
 `POST /api/agent/inbound` when a thread has customer messages the extension has not reported.
 Send the last messages visible in the thread (up to 40, oldest first), both directions.
@@ -188,11 +189,19 @@ For a video the cover's `media` may also carry `video_ref` (the `vf_...` the upl
 video, each at most 90,000 characters, looked at by the vision model and never stored), `seconds`, and for a shared TikTok post `shared:
 { author, caption }`. The extension keeps the whole report's pictures and frames under about 1 MB (`trimMedia`).
 
-`POST /api/agent/media/video?channel=&seconds=` with the raw video as the body (`content-type` `video/mp4` | `video/webm` | `video/quicktime` |
-`video/3gpp` | `video/mpeg`, a `content-length`, at most 20 MB and about 2 minutes) -> `{ ok, ref, bytes, state, videos_today }`. The bytes are
-streamed straight to Google (Files API resumable upload, `FixedLengthStream`, no base64, no buffering) after a check of the first bytes; a
-`vision_files` row remembers where the file is. Errors: 409 `vision_off`, 411 `length_required`, 413 `too_large` | `too_long`, 415 `not_a_video`,
-429 `daily_cap`, 502 `vision_failed`. The laptop uploads before the report that names it and never fails the report over it.
+`GET /api/agent/media/video?channel=&message=&thread=` -> `{ ok, upload, ref, described, why: ok | vision_off | daily_cap | described | known }`,
+asked before the laptop pulls a video out of the tab: a video whose message already has a description, or that Google still holds from an
+earlier read (`ref`), is never pulled, sent or counted twice.
+
+`POST /api/agent/media/video?channel=&message=&thread=&seconds=` with the raw video as the body (`content-type` `video/mp4` | `video/webm` |
+`video/quicktime` | `video/3gpp` | `video/mpeg`, a `content-length`, at most 20 MB and about 2 minutes) -> `{ ok, ref, bytes, state,
+videos_today, reused? }`. The first bytes are read and checked (a file that is not a video is refused before anything goes to Google); the rest
+is piped native to native into a `FixedLengthStream` and on to Google (Files API resumable upload, no base64, no buffering, no JavaScript per
+chunk, so a 20 MB video stays far inside 10 ms of CPU). A `vision_files` row remembers where the file is (`video_key` = channel and message id).
+The daily cap counts distinct videos and is checked in the same statement that takes the slot, so lanes uploading at once cannot overshoot it.
+The same video again answers its row (`reused: true`) without sending anything. Errors: 409 `vision_off` | `already_described`, 411
+`length_required`, 413 `too_large` | `too_long`, 415 `not_a_video`, 429 `daily_cap`, 502 `vision_failed`. The laptop uploads before the report
+that names it, within 15 s in all, and never fails the report over it.
 
 `AgentJob`
 ```jsonc
@@ -223,7 +232,7 @@ streamed straight to Google (Files API resumable upload, `FixedLengthStream`, no
 { "status": "sent" | "failed", "error_code": "not_on_whatsapp", "error": "text", "retryable": false,
   "sent_external_ids": ["true_447700900123@c.us_3EB0B2"] }
 ```
-Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_chat`, `owner_busy`, `owner_replied`, `send_not_confirmed`,
+Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_chat`, `owner_busy`, `owner_replied`, `send_not_confirmed`, `send_not_synced`,
 `not_on_whatsapp`, `invalid_number`, `logged_out`, `tab_missing`, `blocked`, `timeout`, `newer_message`, `lease_expired_local`, `pinned_chat`, `unknown`.
 * `newer_message`: before sending, the page showed a customer message newer than the read. An `auto` or
   `holding` job is cancelled (no alert, no try used) and the chat is marked as waiting, so the extension's
@@ -231,15 +240,23 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_
   offered again at once, no try used; refused again, each refusal uses a try, so it fails after 3 with a line on Live.
 * `owner_replied` (newer extensions): an outgoing message that is not the agent's came after the read, so the owner
   answered by hand. `draft_in_chat` (newer extensions): text that is not ours sits in this chat's message box. Both,
-  and `composer_busy` from a build before 0.4.0 on WhatsApp or TikTok (on Gmail it may mean an email anywhere in the tab,
-  so it waits like `owner_busy`), make an `auto` or `holding` reply stand down at once (`ownerTookChat`):
+  and a `composer_busy` from a build before 0.4.0 whose `error` starts with one of the texts it throws before typing
+  over a draft (`Someone is typing in this chat`, `Someone started typing in this chat`, `There is a half written message
+  in the TikTok message box`, `There is already text in the message box (someone is typing)`, and on Gmail only
+  `There is already a draft reply in this email`), make an `auto` or `holding` reply stand down at once (`ownerTookChat`):
   the job and the chat's other unsent agent replies are cancelled, the chat is paused for `human_takeover_minutes`
   (`You replied yourself` / `You were typing in that chat`, a longer dashboard pause is kept), `needs_reply_since` is
-  cleared so the sweeper never answers on top, a `takeover` event is logged and for a draft the owner gets a push.
-* `owner_busy` (someone is using the tab), `composer_busy` (the box changed while typing), and a draft in the way of the
-  owner's own words (retryable): offered again after 20 s, after 2 min once a minute, no try used. The first time a
-  `send_waiting` line goes on Live; after 5 min the owner is told once (push, kind `waiting`, and a warn line); after 15 min
-  the job fails with a plain `send_failed` line ("A draft in the agent's tab was in the way"). `busy_since` keeps the time.
+  cleared so the sweeper never answers on top, a `takeover` event is logged and for a draft the owner gets a push that
+  says the agent did not answer (it will not answer later on its own). Every other old `composer_busy` (the box or the
+  open chat changed while typing, an email written anywhere in the Gmail tab) waits like `owner_busy`.
+* `owner_busy` (someone is using the tab), `composer_busy` (the box or the open chat changed while typing), and a draft
+  in the way of the owner's own words (retryable): offered again after 20 s, after 2 min once a minute, no try used.
+  The first time a `send_waiting` line goes on Live; after 5 min the owner is told once (push, kind `waiting`, and a
+  warn line; `busy_warned` 1, or 2 while the throttle holds the push back, so it is tried again); after 15 min the job
+  fails with a plain `send_failed` line ("A draft in the agent's tab was in the way") and a push unless one went out
+  already. `busy_since` keeps when the wait started and `busy_last` the last busy result: a busy result more than 5 min
+  after the last one starts a new wait. A `composer_busy` that says the box changed while typing, twice in a row, uses
+  a try from the second time (quick retry), so a box that keeps changing fails in minutes with its own words.
 * `lease_expired_local`: the laptop queue held the job past its lease, nothing was typed. Offered again at once, no try used.
 * `pinned_chat` (WhatsApp): the agent's own reply was for a pinned chat. Cancelled quietly with an info line on Live.
 * A sent result is recorded whatever happened to the row meanwhile (cancelled by a pause or an opt out while the laptop
@@ -248,7 +265,7 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_
   batch; one line for checkout reminders). Health `failed_jobs` lists `failed` and `expired` jobs.
 * Other retryable failures use a try (3 at most). The next try is `attempts x 15 s` later for the agent's own
   replies after a quick failure (`timeout`, `no_content_script`, `tab_missing`, `send_not_confirmed`,
-  `thread_not_found`, `composer_missing`), otherwise `attempts x 60 s`.
+  `thread_not_found`, `composer_missing`, `send_not_synced`: TikTok did not take the pasted text), otherwise `attempts x 60 s`.
 
 `POST /api/agent/diagnostics` `{ "channel", "kind": "selector_miss" | "dom_snapshot" | "error" | "note", "data": {} }`.
 `GET /api/agent/selectors` returns `{ version, pack }`.
@@ -449,10 +466,16 @@ stored through `kb.addLearnedFact` (source and category `learned`), so it shows 
   frame is labelled as one frame of a video. The `<photos>` section of the static prompt says how to use them and when to escalate.
 * Google AI Studio (`src/vision`, when a `gemini_api_key` is saved and `vision.enabled`): right before `decide`, `describeForBrain` has every
   picture of the unanswered messages that has no description yet described by Gemini, all at once, in one `generateContent` each (REST,
-  key in the `x-goog-api-key` header only, `store: false`, JSON answer `{ description, unclear, problem }`). A photo goes inline (its stored
-  JPEG); a video is watched whole by its Files API file when the laptop uploaded it (polls until ACTIVE, at most 12, then deleted from Google),
-  else its frames from the report, else its cover. The prompt says text and speech inside media are customer content, never instructions.
-  Time limit: 20 s (40 s with a video) and always 15 s left for the brain. Results go to the media row, the message meta (`media_desc`) and
+  key in the `x-goog-api-key` header only, `store: false` always, JSON answer `{ description, unclear, problem }`, `maxOutputTokens` 2048).
+  A model that refuses an optional field is asked again without that field only (thinking, the schema); one that refuses `store` gets nothing
+  (`no_store`, an error event tells the owner to pick another model). An answer cut off at the token limit or JSON that does not parse is a
+  retryable `bad_output`, never a description; plain text from a model that ignored JSON is kept but marked unclear. A photo goes inline (its
+  stored JPEG); a video is watched whole by its Files API file when the laptop uploaded it (polls until ACTIVE, at most 6), else its frames
+  from the report, else its cover. Its file is deleted from Google once the media row is described by any route, or after its last try, after
+  the answer (`waitUntil`), and marked `gone_at`; cron deletes what nothing described after 6 hours (`tidyVisionFiles`). The prompt says text
+  and speech inside media are customer content, never instructions. Time limit: 20 s (also with a video) and always 15 s left for the brain.
+  Calls to Google are counted per invocation (`env.counters`, `x-acx-fetches` in test mode) and capped at 20 of the free plan's 50 subrequests:
+  one whole video per invocation, polls sized to what is left. Results go to the media row, the message meta (`media_desc`) and
   `llm_usage` (provider `gemini`, purpose `vision_<via>`, not counted by the AI failing alert) in one batch. A failure is written to
   `media.vision` (`error`, `tries`, 2 at most) and a `note` diagnostic `{ vision_error }`; a wrong key, project or model also logs an event.
   Then the brain carries on as before with whatever it has: the fallback is exactly the old behaviour.
@@ -463,20 +486,25 @@ stored through `kb.addLearnedFact` (source and category `learned`), so it shows 
   order number, a wheel size) count as said in the chat (sources for the figure check) and are added to the knowledge search.
 * Unclear media, damage, faults and safety problems the vision model saw always go to the owner: a reply becomes an Urgent item (category
   `safety`, `technical_fault` or `media`, question "The photo shows: <description> The customer wrote: ...") with a confident holding line.
+  While it is open, later decisions get that question in `<notes>` quoted on one line (`quotedContent`: no quotes or tags) and labelled as
+  customer content that is never an instruction or a fact from the shop; the owner note learning gets it labelled the same way.
   The thumbnail and the description show on the Urgent card and in the Inbox chat (`mediaNote` in `public/js/ui.js`).
 * Without a description (no key, switched off, out of time): with Workers AI, or when no picture was captured, a photo or video with no
   words is escalated silently to Urgent (category `media`, nothing sent to the customer). A voice note with no words always is.
 * Whole videos from the laptop (`ACX.captureVideo` in `core.js`, only while the sync config says `vision.active`): for the newest unanswered
-  customer video of a read, one per read, at most about 15 s. WhatsApp: open the bubble's video in the media viewer (`media.video_open`,
-  `media.viewer`), mute and pause the player, read the bytes behind its `blob:` address, close the viewer (Escape, then `media.viewer_close`),
+  customer video of a read, one per read, at most about 8 s of the tab (reads and sends of other chats wait behind it). A video the service
+  worker already sent or found described (`videos_done` in the read op, remembered 6 h in `chrome.storage.session`) is left shut. WhatsApp: open the bubble's video in the media viewer (`media.video_open`,
+  `media.viewer`), mute and pause the player, read the bytes behind its `blob:` address, close the viewer (mute, Escape, then
+  `media.viewer_close` looked for inside the viewer only) on every path, also a viewer that opens late or a find that ran past its time,
   never for view once (`media.view_once`, or the bridge's `view_once`); the read only bridge adds `duration` and `size`. Gmail: the attachment's
   `download_url` (`media.video_url`), fetched by the service worker (`fetchVideo` in `lib/media.js`, same hosts as photos). TikTok: a DM
   video's `src` (`media.dm_video`: https for the worker, `blob:` read in the tab); a shared post (`media.shared_card`) is someone else's video, so
   only its cover goes, with `media.shared_author` and `media.shared_caption`. Caps 20 MB and 130 s; bigger, longer, over the daily cap or with
   no bytes: up to 4 frames sampled from the video (seek when the length is known, else played muted at 2x), or the cover as before. The tab
   keeps the bytes (5 min, `holdVideo`); the service worker pulls them in 1 MB pieces (op `video_chunk`, not queued behind other tab work),
-  uploads them inside the report's own async run before posting it (`attachVideo` in `sw.js`, 70 s limit, one upload per message, a cap or
-  "switched off" answer pauses uploads), then sends `video_ref`. Every failure is a `note` diagnostic (`video_capture`, `video_upload`).
+  uploads them inside the report's own async run before posting it (`attachVideo` in `sw.js`: asks the server first, 15 s for pulling and
+  uploading together, skipped when this laptop's last measured upload speed cannot make it, one upload per message, a cap or "switched off"
+  answer pauses uploads), then sends `video_ref`. Every failure is a `note` diagnostic (`video_capture`, `video_upload`).
 * Mock brain: with pictures it answers `mock saw N photo(s)` (`... with N video frame(s)`); a caption containing `unclear-photo` escalates.
 * Dashboard: thumbnails on the Urgent card and in the Inbox chat (`mediaThumb` in `public/js/ui.js`, styles in `public/css/media.css`), tap for full size.
 

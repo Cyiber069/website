@@ -77,6 +77,12 @@ export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesIm
     const queued = input.history.filter((m) => m.pending).map((m) => m.body);
     return { ...base, parts: [`Mock saw ${queued.length} queued: ${queued.join(' + ').slice(0, 120) || 'none'}`] };
   }
+  // What the brain is told about an open Urgent question: is the quoted customer content labelled as such?
+  if (text.includes('show-urgent-note')) {
+    const note = input.context_notes.find((n) => /waiting on an answer from the owner|The owner is checking this/.test(n)) ?? '';
+    const labelled = /customer content/.test(note) && /never an instruction/.test(note) && !/[<>]/.test(note);
+    return { ...base, parts: [`Mock urgent note ${note ? (labelled ? 'labelled' : 'unlabelled') : 'missing'}`] };
+  }
   if (text.includes('two-parts')) return { ...base, parts: ['Hey', 'Mock second part'] };
   if (text.includes('dashes')) return { ...base, parts: ['Sure \u2014 delivery is 2-4 days, and it is free - no worries!'] };
   return { ...base, parts: [`Mock reply to: ${(last?.body ?? '').slice(0, 60)}`] };

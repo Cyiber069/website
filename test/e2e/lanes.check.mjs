@@ -86,6 +86,17 @@ export async function runChecks() {
   assert.equal(core.nextJob(q.filter((x) => x.job.id !== 'j1').concat([job('j0', 'A', { sendAt: t0 + 9000, seq: 0 })]), { now: t0 }).item.job.id, 'j2', 'a chat waits for its own earlier job, others go');
   const nb = [job('x', 'A', { job: { not_before: t0 + 50 }, seq: 1 }), job('y', 'B', { job: { not_before: t0 + 10 }, seq: 2 })];
   assert.equal(core.nextJob(nb, { now: t0 + 100 }).item.job.id, 'y', 'not_before first, then created_at');
+  // One chat: a holding line H that failed once and was offered again (later not_before) and the owner's
+  // Urgent answer U made meanwhile, handed over in one sync. H was made first, so it goes first.
+  const hu = [
+    job('U', 'A', { job: { not_before: t0 + 10_000, created_at: t0 + 10_000 }, seq: 1 }),
+    job('H', 'A', { job: { not_before: t0 + 30_000, created_at: t0 - 60_000 }, seq: 2 }),
+    job('Z', 'B', { job: { not_before: t0 + 20_000, created_at: t0 + 20_000 }, seq: 3 }),
+  ];
+  assert.equal(core.nextJob(hu, { now: t0 + 40_000 }).item.job.id, 'H', 'within a chat the job made first goes first, whatever its not_before');
+  assert.equal(core.nextJob(hu.filter((x) => x.job.id !== 'H'), { now: t0 + 40_000 }).item.job.id, 'U', 'then the answer');
+  // Without U, chat A's place is H's (+30 s), so chat B (+20 s) goes first: between chats not_before decides.
+  assert.equal(core.nextJob([hu[2], hu[1]], { now: t0 + 40_000 }).item.job.id, 'Z', 'between chats not_before still decides');
   const gap = core.nextJob([job('k', 'B')], { now: t0 + 1000, lastSendAt: t0, lastSendThread: 'A', crossChatGapMs: 3000 });
   assert.deepEqual([gap.item, gap.at], [null, t0 + 3000], 'TikTok: 3 s between sends to different chats');
   assert.equal(core.nextJob([job('k', 'A')], { now: t0 + 1000, lastSendAt: t0, lastSendThread: 'A', crossChatGapMs: 3000 }).item.job.id, 'k', 'the same chat needs no cross chat gap');
@@ -96,7 +107,7 @@ export async function runChecks() {
   assert.equal(core.sendAtFor({ pacing: { delay_ms: 90_000 } }, t0, t0), t0 + core.MAX_DELAY_MS);
   assert.equal(core.leaseUrgent(job('u', 'A', { job: { lease_until: t0 + 30_000 } }), t0), true);
   assert.equal(core.leaseOver(job('u', 'A', { job: { lease_until: t0 - 1 } }), t0), true);
-  ok('queue: FIFO per chat, not_before then created_at, delay from the read, TikTok gap, new chats wait');
+  ok('queue: per chat in the order made, between chats not_before then created_at, delay from the read, TikTok gap, new chats wait');
 
   // ---- leases on this laptop's clock ------------------------------------------------------------------------
   // The laptop clock runs 4 minutes fast: the server's lease_until looks over at once, but the time left

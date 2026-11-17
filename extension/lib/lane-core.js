@@ -144,7 +144,7 @@ export function readDecision(decision) {
 
 // ---- the send queue ---------------------------------------------------------------------------------
 
-/** Queue order: not_before, then created_at (arrival when the server sends neither), then arrival. */
+/** Queue order between chats: not_before, then created_at (arrival when the server sends neither), then arrival. */
 export function sortQueue(items) {
   const key = (it) => [num(it.job && it.job.not_before) ?? it.arrived, num(it.job && it.job.created_at) ?? it.arrived, it.seq || 0];
   return [...items].sort((a, b) => {
@@ -154,9 +154,28 @@ export function sortQueue(items) {
   });
 }
 
+/** Order within one chat: when the server made the job (arrival when it does not say), then arrival. */
+const madeKey = (it) => [num(it.job && it.job.created_at) ?? it.arrived ?? 0, it.seq || 0];
+
+/** The first job of each chat: the one made first, whatever its not_before (a retried holding line before the answer). */
+export function threadHeads(items) {
+  const heads = new Map();
+  for (const it of items) {
+    const thread = it.thread || `job:${it.job.id}`;
+    const cur = heads.get(thread);
+    if (!cur) { heads.set(thread, it); continue; }
+    const x = madeKey(it);
+    const y = madeKey(cur);
+    if (x[0] - y[0] < 0 || (x[0] === y[0] && x[1] < y[1])) heads.set(thread, it);
+  }
+  return heads;
+}
+
 /**
  * The queued job to send now, or when the next one becomes possible.
- *   - Within one conversation jobs go strictly in queue order (a holding line before the answer).
+ *   - Within one conversation jobs go strictly in the order they were made (a holding line before the
+ *     answer, also when the holding line failed once and was offered again later).
+ *   - Between chats: not_before, then created_at (sortQueue).
  *   - A job waits for its own time (`sendAt`: read time plus the pacing delay).
  *   - On TikTok two sends to different chats are at least `crossChatGapMs` apart.
  *   - A new chat job (it may reload the tab) waits while customer replies are pending.
@@ -164,12 +183,14 @@ export function sortQueue(items) {
  */
 export function nextJob(items, { now, lastSendAt = 0, lastSendThread = null, crossChatGapMs = 0, holdNewChat = false }) {
   const order = sortQueue(items);
+  const heads = threadHeads(items);
   const seenThreads = new Set();
   let at = Infinity;
-  for (const it of order) {
-    const thread = it.thread || `job:${it.job.id}`;
-    if (seenThreads.has(thread)) continue; // an earlier job of this chat goes first
+  for (const first of order) {
+    const thread = first.thread || `job:${first.job.id}`;
+    if (seenThreads.has(thread)) continue; // this chat already had its turn in the order
     seenThreads.add(thread);
+    const it = heads.get(thread) || first; // the chat's place comes from its most urgent job, the job sent is its oldest
     if (it.job.kind === 'new_chat' && holdNewChat && !newChatDue(it, now)) continue;
     let when = it.sendAt || 0;
     if (crossChatGapMs && lastSendAt && thread !== lastSendThread) when = Math.max(when, lastSendAt + crossChatGapMs);

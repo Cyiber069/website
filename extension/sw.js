@@ -412,7 +412,8 @@ async function readThread(lane, k) {
   saveSeen(lane);
   let posted = false;
   try {
-    const read = await laneOp(lane, 'read', { key: k }, 45_000);
+    // Videos already sent or described for this channel: the tab does not open them again.
+    const read = await laneOp(lane, 'read', { key: k, videos_done: await videosDone(lane.channel).catch(() => []) }, 45_000);
     const cur = lane.seen[k];
     if (!read.ok || !read.data) { readFailed(lane, k, read); return; }
     if (read.data.skipped) { if (cur) cur.reported = readSig; return; } // automated mail, found when opened
@@ -531,12 +532,60 @@ function postInbound(lane, k, readSig, payload, meta) {
 // The tab keeps the bytes of the newest customer video (WhatsApp) or names its https address (Gmail,
 // TikTok). Here they are pulled or fetched and sent to the server, which streams them to Google AI
 // Studio and answers a ref; the report then carries media.video_ref next to the video's cover. Any
-// failure (a cap, the switch off, no connection) is a diagnostic note: the frames and the cover still go.
+// failure (a cap, the switch off, no connection, too slow) is a diagnostic note: the frames and the
+// cover still go.
+// A video never holds the reply up for long: pulling and uploading it has VIDEO_WAIT_MS in all (the
+// customer's typed question waits in the same report), and a video this laptop's upload speed cannot
+// send in that time is not tried. The server is asked first, so a video already described, or still
+// held by Google from an earlier read, is never pulled, sent or counted twice. What was sent or found
+// described is remembered in chrome.storage.session for VIDEO_REMEMBER_MS (it survives the worker
+// stopping), and the read op is told those message ids so the tab does not open the video again.
 
-const VIDEO_UPLOAD_MS = 70_000;
+const VIDEO_WAIT_MS = 15_000;
 const VIDEO_CHUNK = 1024 * 1024;
-const videoRefs = new Map(); // `${channel}:${message id}` -> { ref, at }: one upload per video
+const VIDEO_REMEMBER_MS = 6 * 3600_000;
+const VIDEO_REFS_KEY = 'video_refs';
+const VIDEO_UPLINK_KEY = 'video_uplink';
+let videoRefs = null; // `${channel}:${message id}` -> { ref?, described?, at }, loaded from session storage once
 let videoPauseUntil = 0; // after a daily cap or "switched off" answer: no pulling 20 MB for nothing
+
+async function loadVideoRefs() {
+  if (videoRefs) return videoRefs;
+  let saved = {};
+  try { saved = (await store.sessionGet(VIDEO_REFS_KEY, {})) || {}; } catch { saved = {}; }
+  const now = Date.now();
+  videoRefs = new Map(Object.entries(saved).filter(([, e]) => e && now - (e.at || 0) < VIDEO_REMEMBER_MS));
+  return videoRefs;
+}
+
+async function rememberVideo(key, entry) {
+  const refs = await loadVideoRefs();
+  refs.set(key, { ...entry, at: Date.now() });
+  const now = Date.now();
+  for (const [k, e] of refs) if (now - (e.at || 0) > VIDEO_REMEMBER_MS) refs.delete(k);
+  while (refs.size > 300) refs.delete(refs.keys().next().value);
+  try { await store.sessionSet(VIDEO_REFS_KEY, Object.fromEntries(refs)); } catch { /* memory copy still works */ }
+}
+
+/** Message ids of this channel's videos that are sent or described already: the tab leaves them shut. */
+async function videosDone(channel) {
+  const refs = await loadVideoRefs();
+  const out = [];
+  for (const k of refs.keys()) if (k.startsWith(`${channel}:`)) out.push(k.slice(channel.length + 1));
+  return out.slice(-100);
+}
+
+/** Bytes a second this laptop last managed to upload a video at (null before the first one). */
+async function uplinkBps() {
+  try {
+    const u = (await chrome.storage.local.get(VIDEO_UPLINK_KEY))[VIDEO_UPLINK_KEY];
+    return u && Number.isFinite(u.bps) && u.bps > 0 && Date.now() - (u.at || 0) < 7 * 86400_000 ? u.bps : null;
+  } catch { return null; }
+}
+async function noteUplink(bps) {
+  if (!Number.isFinite(bps) || bps <= 0) return;
+  try { await chrome.storage.local.set({ [VIDEO_UPLINK_KEY]: { bps: Math.round(bps), at: Date.now() } }); } catch { /* ignore */ }
+}
 
 function bytesOf(b64) {
   const bin = atob(b64);
@@ -567,36 +616,73 @@ async function pullVideo(lane, tabId, token, deadline) {
 /** Upload the newest customer video of a report (at most one) and put its ref on the media. Never throws. */
 async function attachVideo(lane, payload, tabId) {
   const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+  const refs = await loadVideoRefs();
+  // A video sent on an earlier read that the tab left shut this time: its ref still goes with its cover.
+  for (const m of msgs) {
+    if (!m || m.direction !== 'in' || !m.media || m.media.video || m.media.video_ref || !m.external_id) continue;
+    const had = refs.get(`${lane.channel}:${m.external_id}`);
+    if (had && had.ref) m.media.video_ref = had.ref;
+  }
   const target = [...msgs].reverse().find((m) => m && m.direction === 'in' && m.media && m.media.video);
   if (!target) return;
   const v = target.media.video;
-  const now = Date.now();
-  for (const [k, e] of videoRefs) if (now - e.at > 3600_000) videoRefs.delete(k);
-  const key = `${lane.channel}:${target.external_id || v.url || v.token}`;
-  const known = videoRefs.get(key);
-  if (known) { target.media.video_ref = known.ref; return; }
-  if (now < videoPauseUntil || config?.vision?.whole_videos === false) return;
-  const deadline = now + VIDEO_UPLOAD_MS;
-  let step = 'bytes';
+  const started = Date.now();
+  const deadline = started + VIDEO_WAIT_MS;
+  const message = target.external_id ? String(target.external_id) : '';
+  const thread = payload?.thread?.external_id ? String(payload.thread.external_id) : '';
+  const key = `${lane.channel}:${message || v.url || v.token}`;
+  const known = refs.get(key);
+  if (known) { if (known.ref) target.media.video_ref = known.ref; return; }
+  if (Date.now() < videoPauseUntil || config?.vision?.whole_videos === false) return;
+  let step = 'check';
   try {
+    // Needed at all? One small call, before 20 MB are pulled out of the tab.
+    if (message) {
+      const chk = await api.checkVideo({ channel: lane.channel, message, thread }).catch(() => null);
+      if (chk && chk.ref) { target.media.video_ref = chk.ref; await rememberVideo(key, { ref: chk.ref }); return; }
+      if (chk && chk.described) { await rememberVideo(key, { described: true }); return; }
+      if (chk && chk.upload === false) {
+        if (chk.why === 'daily_cap' || chk.why === 'vision_off') videoPauseUntil = Date.now() + (chk.why === 'daily_cap' ? 3600_000 : 600_000);
+        throw Object.assign(new Error(chk.why || 'not_needed'), { code: chk.why || 'not_needed' });
+      }
+    }
+    // This laptop's upload speed says it cannot be sent in time: the frames and the cover go instead.
+    const bps = await uplinkBps();
+    const size = Number(v.bytes) || 0;
+    if (bps && size && (size / bps) * 1000 > deadline - Date.now() - 1000) throw Object.assign(new Error('too_slow'), { code: 'too_slow' });
+    step = 'bytes';
     let blob = null;
     if (v.token && tabId != null) blob = await pullVideo(lane, tabId, v.token, deadline);
     else if (v.url) {
-      const got = await fetchVideo(lane.channel, v.url, Math.min(40_000, deadline - Date.now()));
+      const got = await fetchVideo(lane.channel, v.url, Math.max(1000, deadline - Date.now()));
       if (!got.ok) throw new Error(got.error);
       blob = got.blob;
     }
     if (!blob || !blob.size) throw new Error('no_bytes');
+    const left = deadline - Date.now();
+    if (bps && (blob.size / bps) * 1000 > left - 500) throw Object.assign(new Error('too_slow'), { code: 'too_slow' });
+    if (left < 1500) throw Object.assign(new Error('timeout'), { code: 'timeout' });
     step = 'upload';
-    const res = await api.uploadVideo(blob, { mime: v.mime || blob.type, seconds: v.seconds ?? target.media.seconds, channel: lane.channel, timeoutMs: Math.max(5000, deadline - Date.now()) });
+    const upAt = Date.now();
+    let res;
+    try {
+      res = await api.uploadVideo(blob, { mime: v.mime || blob.type, seconds: v.seconds ?? target.media.seconds, channel: lane.channel, message, thread, timeoutMs: left });
+    } catch (err) {
+      // Cut off at the time limit: this laptop sends slower than that, so a video this big is not tried again soon.
+      if (err?.code === 'timeout') await noteUplink((blob.size / Math.max(1, Date.now() - upAt)) * 1000 * 0.9);
+      throw err;
+    }
+    // A small clip says more about the delay than the speed: only a bigger one updates the estimate.
+    if (!res?.reused && blob.size >= 1024 * 1024) await noteUplink((blob.size / Math.max(1, Date.now() - upAt)) * 1000);
     if (res && typeof res.ref === 'string') {
       target.media.video_ref = res.ref;
-      videoRefs.set(key, { ref: res.ref, at: Date.now() });
+      await rememberVideo(key, { ref: res.ref });
     }
   } catch (err) {
     const code = String(err?.code || err?.message || 'failed').slice(0, 60);
     if (code === 'daily_cap' || code === 'vision_off') videoPauseUntil = Date.now() + (code === 'daily_cap' ? 3600_000 : 600_000);
-    api.diagnostics(lane.channel, 'note', { video_upload: code, step, bytes: v.bytes || null }).catch(() => {});
+    if (code === 'already_described') { await rememberVideo(key, { described: true }); return; }
+    api.diagnostics(lane.channel, 'note', { video_upload: code, step, bytes: v.bytes || null, ms: Date.now() - started }).catch(() => {});
   }
 }
 

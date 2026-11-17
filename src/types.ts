@@ -8,6 +8,13 @@ export interface Env {
   ACX_TEST_MODE?: string;
   /** Optional overrides, normally configured from the dashboard and stored in D1. */
   ANTHROPIC_API_KEY?: string;
+  /**
+   * Set per invocation by src/index.ts. `fetches` counts the calls to Google AI Studio (src/vision), which
+   * keeps them inside a budget: the free plan allows 50 subrequests per invocation for everything.
+   */
+  counters?: { fetches: number; videos: number };
+  /** Work that may finish after the answer (deleting a watched video from Google). Awaited when missing. */
+  waitUntil?: (p: Promise<unknown>) => void;
 }
 
 export type Channel = 'whatsapp' | 'gmail' | 'tiktok';
@@ -355,6 +362,8 @@ export interface OutboxRow {
   reply_to_id?: string | null; reply_to_ts?: number | null;
   /** Migration 0010: when a busy owner or a draft first held this job up, and whether the owner was told. */
   busy_since?: number | null; busy_warned?: number;
+  /** Migration 0011: when the last busy result came (a long gap starts a new wait). */
+  busy_last?: number | null;
 }
 
 export interface UrgentRow {

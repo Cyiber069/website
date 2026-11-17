@@ -445,9 +445,11 @@
       const prev = rowSeen.get(r.title);
       const typing = isTypingPreview(r.preview);
       const preview = typing && prev ? prev.preview : r.preview;
+      // The first scan after a page load takes up to 5 chats from today as changed (read on the phone
+      // while the tab was down). A pinned chat never uses one of those picks: it is never read.
       const changed = prev
         ? prev.preview !== preview || ACX.timeMoved(prev.time, r.time)
-        : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
+        : firstScan && !r.pinned && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
       const sig = rowThreadSig(r);
       rowSeen.set(r.title, { time: r.time, preview, stamp: ACX.stableTime(prev && prev.stamp, r.time) });
       if (r.pinned) continue; // the owner's own chat: never read by the agent
@@ -762,12 +764,28 @@
   /** The open media viewer, when one shows. */
   const viewerOpen = () => { const v = Q('media.viewer'); return v && visible(v) ? v : null; };
 
-  /** Close the media viewer the way a person would: Escape, then its close button. The chat stays as it was. */
+  /** Mute and pause whatever plays in the viewer, so a customer's clip never plays aloud on the owner's laptop. */
+  function muteViewer() {
+    const v = viewerOpen();
+    if (!v) return;
+    for (const el of [Q('media.viewer_video', v), ...v.querySelectorAll('video')]) {
+      if (!el) continue;
+      try { el.muted = true; if (!el.paused) el.pause(); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Close the media viewer the way a person would: Escape, then its close button, looked for only inside
+   * the viewer (never a close button elsewhere on the page). The chat stays as it was.
+   */
   async function closeViewer(title) {
     for (let round = 0; round < 2 && viewerOpen(); round++) {
+      muteViewer();
       ACX.key(document.activeElement || document.body, 'Escape', { keyCode: 27, which: 27 });
       if (await waitFor(() => !viewerOpen(), { timeout: 1200, interval: 150 })) break;
-      const btn = Q('media.viewer_close', viewerOpen() || document);
+      const v = viewerOpen();
+      if (!v) break;
+      const btn = Q('media.viewer_close', v);
       if (btn) ACX.click(btn);
       await waitFor(() => !viewerOpen(), { timeout: 1200, interval: 150 });
     }
@@ -790,11 +808,17 @@
     const opener = Q('media.video_open', bubble);
     if (!opener) return { why: 'no_opener' };
     const title = currentChat()?.title || '';
-    const done = () => closeViewer(title);
+    // Mute and close on every path. After no viewer showed in time, one that opens a moment later (a slow
+    // laptop) is waited for briefly and closed too.
+    const done = async ({ late = false } = {}) => {
+      if (late && !viewerOpen()) await waitFor(() => viewerOpen(), { timeout: 1500, interval: 150 });
+      muteViewer();
+      await closeViewer(title);
+    };
     if (viewerOpen()) await closeViewer(title); // left over from before: start clean
     ACX.click(opener);
     const viewer = await waitFor(() => viewerOpen(), { timeout: Math.max(300, Math.min(4000, left())), interval: 200 });
-    if (!viewer) return { why: 'no_viewer', done };
+    if (!viewer) return { why: 'no_viewer', done: () => done({ late: true }) };
     const quiet = (v) => { try { v.muted = true; if (!v.paused) v.pause(); } catch { /* ignore */ } return v; };
     const video = await waitFor(() => {
       const v = Q('media.viewer_video', viewerOpen() || viewer);
@@ -841,7 +865,7 @@
     if (messages.length) lastSeen[cur.title] = messages[messages.length - 1].external_id;
     // Photos and video previews of the newest customer messages ride along. Never throws, at most about 5 s.
     await ACX.captureMedia(messages);
-    // The newest customer video itself, when Google AI Studio is connected. Never throws, at most about 15 s.
+    // The newest customer video itself, when Google AI Studio is connected. Never throws, at most about 8 s.
     await ACX.captureVideo(messages, findVideo);
     const out = messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts }));
     // What the end of the chat looked like: send() refuses the reply if the customer wrote again since.

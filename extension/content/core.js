@@ -29,7 +29,7 @@
 //   typing pauses at all (each part goes in whole).
 //
 // Throw new ACX.Fail(code, message, retryable) for expected failures. Codes the server understands:
-// thread_not_found, composer_missing, composer_busy (the box changed while typing), draft_in_chat (text that is not ours in this chat's box), owner_busy (the owner is using the tab), owner_replied (the owner answered by hand after the read), send_not_confirmed, not_on_whatsapp, invalid_number,
+// thread_not_found, composer_missing, composer_busy (the box changed while typing), draft_in_chat (text that is not ours in this chat's box), owner_busy (the owner is using the tab), owner_replied (the owner answered by hand after the read), send_not_confirmed, send_not_synced (TikTok did not take the pasted text), not_on_whatsapp, invalid_number,
 // logged_out, blocked, timeout, newer_message, unknown.
 //
 // Everything site specific (selectors, text patterns) comes from the selector pack: ACX.q('group.name').
@@ -738,10 +738,13 @@
   // about 2 minutes), keeps the bytes in this page until the service worker pulls them (op video_chunk),
   // and samples a few small frames as the fallback. A video too big or too long, or one whose bytes cannot
   // be had, gets the frames (or only its cover, as before). Never throws, never runs past its time limit.
-  const VIDEO = { max_bytes: 20 * 1024 * 1024, max_seconds: 130, budget_ms: 15_000, frames: 4, frame_max_base64: 80_000, keep_ms: 5 * 60_000, chunk_max: 2 * 1024 * 1024 };
+  // budget_ms: how long finding a video may hold the tab (reads and sends of other chats wait behind it).
+  const VIDEO = { max_bytes: 20 * 1024 * 1024, max_seconds: 130, budget_ms: 8000, frames: 4, frame_max_base64: 80_000, keep_ms: 5 * 60_000, chunk_max: 2 * 1024 * 1024 };
   const FRAME_STEPS = [[512, 0.55], [448, 0.5], [384, 0.45], [320, 0.4]];
   const heldVideos = new Map(); // token -> { blob, at }
   const capturedVideos = new Map(); // message id -> { at, video, frames, seconds } of a video already captured
+  // Message ids of videos the worker already sent or found described (it says so with each read): left shut.
+  let doneVideos = new Set();
 
   /** Keep a video's bytes in this page for a few minutes and return the token the worker asks for. */
   function holdVideo(blob) {
@@ -923,6 +926,8 @@
       // Read again before it was answered (a retry): the same video is not opened twice. The worker
       // remembers the upload by message id, so a token already pulled does not matter.
       const id = pick.external_id ? String(pick.external_id) : '';
+      // Sent or described already (the worker's list): never opened again, the cover is enough.
+      if (id && doneVideos.has(id)) return false;
       for (const [k, v] of capturedVideos) if (Date.now() - v.at > VIDEO.keep_ms * 2) capturedVideos.delete(k);
       const again = id ? capturedVideos.get(id) : null;
       if (again) {
@@ -932,7 +937,14 @@
       }
       const deadline = started + VIDEO.budget_ms;
       let found = null;
-      try { found = await withLimit(find(pick, deadline), deadline - Date.now() + 500); } catch (err) { fails.push(`find:${errName(err)}`); }
+      // Kept: when the find runs past its time, what it opened (a media viewer) is still closed once it ends.
+      const finding = Promise.resolve().then(() => find(pick, deadline)).catch((err) => { fails.push(`find:${errName(err)}`); return null; });
+      const LATE = Symbol('late');
+      const first = await Promise.race([finding, sleep(Math.max(0, deadline - Date.now() + 500)).then(() => LATE)]);
+      if (first === LATE) {
+        fails.push('find_timeout');
+        await withLimit(finding.then((late) => (late && typeof late.done === 'function' ? late.done() : null)), 5000);
+      } else found = first;
       try {
         if (!found || (!found.blob && !found.url && !found.el)) fails.push(found && found.why ? found.why : 'no_file');
         else {
@@ -1086,7 +1098,10 @@
       }
       case 'scan': return adapter.scan(args || {});
       case 'sweep': return adapter.sweep ? adapter.sweep(args || {}) : { threads: [] };
-      case 'read': return adapter.read(args || {});
+      case 'read': {
+        doneVideos = new Set(Array.isArray(args && args.videos_done) ? args.videos_done.map(String).slice(0, 200) : []);
+        return adapter.read(args || {});
+      }
       case 'send': return adapter.send(args || {});
       case 'prepare': return adapter.prepare ? adapter.prepare(args || {}) : { ready: true };
       case 'selftest': return adapter.selftest ? adapter.selftest(args || {}) : { checks: [] };

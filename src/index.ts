@@ -100,11 +100,12 @@ export default {
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     let res: Response;
     const queries = { n: 0, rows: 0, written: 0 };
+    const counters = { fetches: 0, videos: 0 };
     try {
       await ensureSchema(env.DB);
       // Every request counts the D1 rows it uses for the Health screen's estimate (src/lib/usage.ts).
       const metered = meteredDb(env.DB);
-      const e = { ...env, DB: env.ACX_TEST_MODE === '1' ? countingDb(metered, queries) : metered };
+      const e: Env = { ...env, DB: env.ACX_TEST_MODE === '1' ? countingDb(metered, queries) : metered, counters, waitUntil: (p) => exec.waitUntil(p.catch(() => undefined)) };
       res = await handleApi(req, e, exec, url);
       exec.waitUntil(flushUsage(env.DB));
     } catch (err) {
@@ -121,10 +122,11 @@ export default {
       headers.set('x-acx-d1-queries', String(queries.n));
       headers.set('x-acx-d1-rows', String(queries.rows));
       headers.set('x-acx-d1-rows-written', String(queries.written));
+      headers.set('x-acx-fetches', String(counters.fetches));
       // A streamed answer is still working when the headers go: its count is the stream's last line.
       if (res.body && (res.headers.get('content-type') ?? '').includes('ndjson')) {
         const tail = new TransformStream<Uint8Array, Uint8Array>({
-          flush(ctl) { ctl.enqueue(new TextEncoder().encode(JSON.stringify({ type: 'queries', n: queries.n, rows: queries.rows, written: queries.written }) + '\n')); },
+          flush(ctl) { ctl.enqueue(new TextEncoder().encode(JSON.stringify({ type: 'queries', n: queries.n, rows: queries.rows, written: queries.written, fetches: counters.fetches }) + '\n')); },
         });
         return new Response(res.body.pipeThrough(tail), { status: res.status, headers });
       }
@@ -133,7 +135,7 @@ export default {
   },
 
   async scheduled(_event: ScheduledController, env: Env, exec: ExecutionContext): Promise<void> {
-    const e = { ...env, DB: meteredDb(env.DB) };
+    const e: Env = { ...env, DB: meteredDb(env.DB), counters: { fetches: 0, videos: 0 }, waitUntil: (p) => exec.waitUntil(p.catch(() => undefined)) };
     exec.waitUntil(ensureSchema(env.DB).then(() => runCron(e)).finally(() => flushUsage(env.DB)));
   },
 } satisfies ExportedHandler<Env>;

@@ -8,8 +8,9 @@
 // Rules:
 //   * The key only ever travels in the x-goog-api-key header, never in a URL (URLs end up in logs).
 //   * Every call has a time limit. A call that runs out of time is a retryable `timeout`.
-//   * Video bytes are streamed straight through (FixedLengthStream in the Worker): never base64, never
-//     buffered, so a 20 MB video costs the Worker almost no CPU.
+//   * Video bytes are streamed straight through (FixedLengthStream in the Worker, piped native to
+//     native): never base64, never buffered, never a JavaScript callback per chunk, so a 20 MB video
+//     costs the Worker almost no CPU.
 //   * The upload address Google hands back must be on the same host as the API, so the key can never be
 //     sent anywhere else.
 //   * Errors become GeminiError with a stable `code` and a message fit to show the owner.
@@ -27,7 +28,11 @@ export interface GeminiConfig {
 
 export type GeminiErrorCode =
   | 'no_key' | 'auth' | 'forbidden' | 'region' | 'not_found' | 'rate_limited' | 'bad_request' | 'too_large'
-  | 'blocked' | 'timeout' | 'network' | 'server' | 'file_failed' | 'file_timeout' | 'bad_output';
+  | 'blocked' | 'timeout' | 'network' | 'server' | 'file_failed' | 'file_timeout' | 'bad_output'
+  /** The model refused store: false, so it could keep customer media in Google's logs: nothing is sent to it. */
+  | 'no_store'
+  /** This invocation used up its calls to Google (the free plan allows 50 subrequests per invocation). */
+  | 'budget';
 
 export class GeminiError extends Error {
   constructor(
@@ -140,6 +145,7 @@ async function call(cfg: GeminiConfig, method: string, url: string, opts: CallOp
   try {
     res = await f(url, { method, headers: { 'x-goog-api-key': cfg.apiKey, ...(opts.headers ?? {}) }, body: opts.body ?? null, signal, ...(opts.extra ?? {}) });
   } catch (err) {
+    if (err instanceof GeminiError) throw err; // our own call budget (src/vision countedFetch)
     const name = (err as Error)?.name ?? '';
     if (name === 'TimeoutError' || name === 'AbortError' || signal.aborted) throw new GeminiError('timeout', 'Google took too long to answer.', true);
     throw new GeminiError('network', 'Could not reach Google.', true);
@@ -197,9 +203,13 @@ function readFile(raw: unknown): GeminiFile {
   };
 }
 
-/** A body of known length for fetch: streamed as is in the Worker (FixedLengthStream), else as given. */
-function sizedBody(body: ReadableStream<Uint8Array> | Blob | ArrayBuffer | Uint8Array, bytes: number): { body: BodyInit; extra: RequestInit } {
+/**
+ * A body of known length for fetch: streamed as is in the Worker (FixedLengthStream), else as given.
+ * `sized`: the stream already is a FixedLengthStream's readable side (src/vision checkedVideoBody).
+ */
+function sizedBody(body: ReadableStream<Uint8Array> | Blob | ArrayBuffer | Uint8Array, bytes: number, sized = false): { body: BodyInit; extra: RequestInit } {
   if (!(body instanceof ReadableStream)) return { body: body as BodyInit, extra: {} };
+  if (sized) return { body, extra: {} };
   const Fixed = (globalThis as unknown as { FixedLengthStream?: new (n: number) => TransformStream<Uint8Array, Uint8Array> }).FixedLengthStream;
   if (typeof Fixed === 'function') {
     const fixed = new Fixed(bytes);
@@ -217,6 +227,8 @@ export interface UploadInput {
   displayName: string;
   /** For the two calls together. */
   timeoutMs: number;
+  /** The body is a FixedLengthStream's readable side already: passed to fetch as it is. */
+  sized?: boolean;
 }
 
 /**
@@ -243,7 +255,7 @@ export async function uploadFile(cfg: GeminiConfig, input: UploadInput): Promise
   // Never follow an upload address to another host: the key goes with it.
   if (!target || target.origin !== new URL(base(cfg)).origin) throw new GeminiError('bad_output', 'Google did not give a usable upload address.', true);
   try { await start.body?.cancel(); } catch { /* nothing to read */ }
-  const sized = sizedBody(input.body, input.bytes);
+  const sized = sizedBody(input.body, input.bytes, input.sized === true);
   const res = await call(cfg, 'POST', target.toString(), {
     timeoutMs: left(),
     headers: { 'x-goog-upload-command': 'upload, finalize', 'x-goog-upload-offset': '0', 'content-type': input.mime },

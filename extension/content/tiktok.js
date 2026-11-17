@@ -771,7 +771,7 @@
       await ACX.captureMedia(shown);
       // A shared post is someone else's video: its cover goes with who posted it and its caption, never the clip.
       for (const m of shown) if (m.media && m._media && m._media.shared) m.media.shared = sharedPost(m.el);
-      // A video the customer sent in the chat itself, when Google AI Studio is connected. At most about 15 s.
+      // A video the customer sent in the chat itself, when Google AI Studio is connected. At most about 8 s.
       const own = shown.map((m) => (m._media && m._media.shared ? { ...m, _media: null } : m));
       await ACX.captureVideo(own, dmVideo);
       own.forEach((m, i) => { if (m.media) shown[i].media = m.media; });
@@ -877,9 +877,13 @@
     const button = await waitFor(sendButton, { timeout: 2500, interval: 150 });
     if (!button || !same(editorText(), text)) {
       ACX.snapshot('tiktok.send.not_synced', q('chat.bottom', document, QUIET));
+      // More than our text in the box: someone typed while we waited (the owner in the way). Anything
+      // else is TikTok's editor not taking the text: a quick retry with a try used, never a 15 min wait.
+      const typedMore = Boolean(button) && editorText().length > squash(text).length + 2;
       await ACX.clearComposer(editor);
       if (!button) throw new Fail('composer_missing', 'TikTok did not take the text (the Send button never appeared)', true);
-      throw new Fail('composer_busy', 'The TikTok message box changed while typing', true);
+      if (typedMore) throw new Fail('composer_busy', 'The TikTok message box changed while typing', true);
+      throw new Fail('send_not_synced', 'TikTok did not take the text (the message box did not match it)', true);
     }
     await sleep(rand(400, 1100));
 

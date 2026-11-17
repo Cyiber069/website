@@ -40,14 +40,15 @@ afterAll(async () => {
 });
 
 describe('the old 0.3.2 extension keeps the pacing and settle it was made for', () => {
-  it('0.3.2 gets settle 12 and its own typing speed; 0.4.0 and up get settle 4 and paste at once', async () => {
+  it('0.3.2 gets settle 12 and pastes at 200 a second; 0.4.0 and up get settle 4 and paste at once', async () => {
     const old = await syncAs('0.3.2');
     expect(old.data.config.pacing.settle_seconds).toBe(12);
     const r = await inbound('whatsapp', wa(), [msg('m1', 'how heavy is the 1000w kit')]);
-    expect(r.jobs[0]!.pacing).toEqual({ delay_ms: 0, typing_cps: 11 }); // never 0: 0.3.2 reads 0 as 3 a second on TikTok
+    // Never 0: 0.3.2 reads 0 as 3 a second on TikTok. At 200 it keeps only its floor pauses (about half a second a part).
+    expect(r.jobs[0]!.pacing).toEqual({ delay_ms: 0, typing_cps: 200 });
     await api(`/api/conversations/${r.conversation_id}/send`, { body: { text: 'owner note for the old laptop' } });
     const manual = (await syncAs('0.3.2')).data.jobs.find((j) => j.source === 'manual')!;
-    expect(manual.pacing.typing_cps).toBe(11);
+    expect(manual.pacing.typing_cps).toBe(200); // never slower than the 30 it had before the speed change
     for (const version of ['0.4.0', '0.5.1']) {
       const s = await syncAs(version);
       expect(s.data.config.pacing.settle_seconds, version).toBe(4);
@@ -125,6 +126,149 @@ describe('the owner in the way', () => {
     expect((await row(gm)).busy_since).toBeGreaterThan(0);
     await sql(`UPDATE outbox SET status = 'cancelled' WHERE id = ?`, [gm]);
     await syncAs('test');
+  });
+
+  it('0.3.2 composer_busy that is not a draft (the box or the open chat changed while typing) waits instead of standing down', async () => {
+    await syncAs('0.3.2');
+    const device = (await api('/api/devices')).data.devices[0].id;
+    for (const [channel, error] of [['tiktok', 'The TikTok message box changed while typing'], ['whatsapp', 'The open chat changed while typing'], ['whatsapp', 'The message box changed while typing']] as const) {
+      const r = await inbound('whatsapp', wa(), [msg('m1', `ignore-me ${channel} ${error}`)]);
+      await sql('UPDATE conversations SET needs_reply_since = ? WHERE id = ?', [Date.now(), r.conversation_id]);
+      const id = unique('ob_c');
+      await sql(`INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, lease_until, lease_device, attempts, pacing, created_at)
+        VALUES (?, ?, 'reply', ?, '{"title":"Cal"}', '["the kit fits 26 inch wheels"]', 'leased', 'auto', 0, ?, ?, 1, '{}', ?)`, [id, channel, r.conversation_id, Date.now() + MIN, device, Date.now()]);
+      const res = await finish(id, { status: 'failed', error_code: 'composer_busy', error, retryable: true });
+      expect(res.data.status, error).toBe('pending');
+      const o = await row(id);
+      expect(o.attempts, error).toBe(0); // no try used
+      expect(o.busy_since).toBeGreaterThan(0);
+      expect(o.not_before - Date.now()).toBeLessThanOrEqual(20_500);
+      const c = await conv(r.conversation_id!);
+      expect(c.paused_until ?? 0, error).toBeLessThan(Date.now()); // no pause
+      expect(c.needs_reply_since, error).toBeGreaterThan(0); // still waiting for an answer
+      expect(await events('takeover', id), error).toHaveLength(0);
+      await sql(`UPDATE outbox SET status = 'cancelled' WHERE id = ?`, [id]);
+    }
+    await syncAs('test');
+  });
+
+  it('a box that keeps changing while typing uses a try from the second time and fails with its own words', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')]);
+    const id = unique('ob_k');
+    const device = (await api('/api/devices')).data.devices[0].id;
+    await sql(`INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, lease_until, lease_device, attempts, pacing, created_at)
+      VALUES (?, 'whatsapp', 'reply', ?, '{"title":"Kim"}', '["yes we ship to jersey"]', 'leased', 'auto', 0, ?, ?, 1, '{}', ?)`, [id, r.conversation_id, Date.now() + MIN, device, Date.now()]);
+    const changed = () => finish(id, { status: 'failed', error_code: 'composer_busy', error: 'The message box changed while typing', retryable: true });
+    expect((await changed()).data.status).toBe('pending');
+    expect((await row(id)).attempts).toBe(0);
+    let status = '';
+    let tries = 0;
+    for (; tries < 6 && status !== 'failed'; tries++) {
+      await lease(id);
+      status = (await changed()).data.status;
+    }
+    expect(status).toBe('failed');
+    expect(tries).toBe(3); // three counted tries, not 15 minutes
+    const failed = await events('send_failed', id);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.message).toMatch(/kept changing/);
+    expect(failed[0]!.message).not.toMatch(/draft|[–—]/);
+  });
+
+  it('0.3.2 Gmail with the owner’s saved draft in this email: the agent reply stands down; an email anywhere in the tab waits', async () => {
+    await syncAs('0.3.2');
+    const device = (await api('/api/devices')).data.devices[0].id;
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')]);
+    const gm = unique('ob_gd');
+    await sql(`INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, lease_until, lease_device, attempts, pacing, created_at)
+      VALUES (?, 'gmail', 'reply', ?, '{"title":"Mail"}', '["hello"]', 'leased', 'auto', 0, ?, ?, 1, '{}', ?)`, [gm, r.conversation_id, Date.now() + MIN, device, Date.now()]);
+    expect((await finish(gm, { status: 'failed', error_code: 'composer_busy', error: 'There is already a draft reply in this email', retryable: true })).data.status).toBe('cancelled');
+    expect((await conv(r.conversation_id!)).pause_reason).toBe('You were typing in that chat');
+    const ev = await events('takeover', gm);
+    expect(ev[0]!.message).toMatch(/unsent message in your email/);
+    for (const error of ['Someone is typing in this tab', 'An email is being written in this tab']) {
+      const other = await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')]);
+      const id = unique('ob_gt');
+      await sql(`INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, lease_until, lease_device, attempts, pacing, created_at)
+        VALUES (?, 'gmail', 'reply', ?, '{"title":"Mail"}', '["hello"]', 'leased', 'auto', 0, ?, ?, 1, '{}', ?)`, [id, other.conversation_id, Date.now() + MIN, device, Date.now()]);
+      expect((await finish(id, { status: 'failed', error_code: 'composer_busy', error, retryable: true })).data.status, error).toBe('pending');
+      expect(await events('takeover', id)).toHaveLength(0);
+      await sql(`UPDATE outbox SET status = 'cancelled' WHERE id = ?`, [id]);
+    }
+    await syncAs('test');
+  });
+
+  it('after a draft takeover the words never promise the agent will answer later', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'do you sell 48v batteries')]);
+    const job = r.jobs[0]!;
+    expect((await finish(job.id, { status: 'failed', error_code: 'draft_in_chat', error: 'There is an unsent message in this chat', retryable: true })).data.status).toBe('cancelled');
+    const ev = await events('takeover', job.id);
+    expect(ev[0]!.message).toMatch(/The agent did not send its reply\. Answer them yourself\./);
+    expect(ev[0]!.message).not.toMatch(/staying out|[–—]/);
+  });
+
+  it('an old busy_since from a wait long ago starts a new wait instead of failing the job at once', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'how long is delivery to wales')]);
+    let job = r.jobs[0]!;
+    const busy = () => finish(job.id, { status: 'failed', error_code: 'owner_busy', error: 'Someone is typing in this tab', retryable: true });
+    expect((await busy()).data.status).toBe('pending');
+    // The lease of a later try was lost (the result never arrived) and the cron put it back: 40 min later it is busy again.
+    await sql('UPDATE outbox SET busy_since = ?, busy_last = ?, busy_warned = 0 WHERE id = ?', [Date.now() - 40 * MIN, Date.now() - 39 * MIN, job.id]);
+    job = await lease(job.id);
+    expect((await busy()).data.status).toBe('pending');
+    const o = await row(job.id);
+    expect(o.busy_since).toBeGreaterThan(Date.now() - MIN); // a new wait
+    expect(o.busy_warned).toBe(0);
+    expect(await events('send_failed', job.id)).toHaveLength(0);
+    expect((await events('send_waiting', job.id)).map((e) => e.level)).toEqual(['info', 'info']);
+    // Inside one wait (busy results a minute apart) the start is kept, so it still gives up after 15 min.
+    await sql('UPDATE outbox SET busy_since = ?, busy_last = ? WHERE id = ?', [Date.now() - 16 * MIN, Date.now() - MIN, job.id]);
+    job = await lease(job.id);
+    expect((await busy()).data.status).toBe('failed');
+  });
+
+  it('a 5 min warning held back by the push throttle is tried again, and the failure push still goes', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'can i collect from the shop')]);
+    let job = r.jobs[0]!;
+    const slot = async () => (await sql(`SELECT value FROM settings WHERE key = 'state:alert_last:waiting'`)).data.results[0]?.value ?? null;
+    const busy = () => finish(job.id, { status: 'failed', error_code: 'draft_in_chat', error: 'There is an unsent message in this chat', retryable: true });
+    // An Urgent answer (manual words) waits behind a draft: not an agent reply, so it does not stand down.
+    await sql(`UPDATE outbox SET source = 'urgent' WHERE id = ?`, [job.id]);
+    expect((await busy()).data.status).toBe('pending');
+    // Another chat's push went out a moment ago: the throttle holds this one back.
+    await sql(`INSERT INTO settings (key, value, updated_at) VALUES ('state:alert_last:waiting', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(Date.now()), Date.now()]);
+    await sql('UPDATE outbox SET busy_since = ? WHERE id = ?', [Date.now() - 6 * MIN, job.id]);
+    job = await lease(job.id);
+    expect((await busy()).data.status).toBe('pending');
+    expect((await row(job.id)).busy_warned).toBe(2); // the line is on Live, the push is still owed
+    expect((await events('send_waiting', job.id)).map((e) => e.level)).toEqual(['info', 'warn']);
+    // 15 min: it fails, and the owner gets the failure push since the warning never reached them.
+    await sql(`DELETE FROM settings WHERE key = 'state:alert_last:waiting'`);
+    await sql('UPDATE outbox SET busy_since = ? WHERE id = ?', [Date.now() - 16 * MIN, job.id]);
+    job = await lease(job.id);
+    expect((await busy()).data.status).toBe('failed');
+    expect(await slot()).not.toBeNull();
+    expect((await events('send_waiting', job.id)).map((e) => e.level)).toEqual(['info', 'warn']); // the warn line once
+  });
+
+  it('a held back warning goes on the next busy result once the throttle allows it', async () => {
+    const r = await inbound('whatsapp', wa(), [msg('m1', 'is the 36v kit in stock')]);
+    let job = r.jobs[0]!;
+    await sql(`UPDATE outbox SET source = 'manual' WHERE id = ?`, [job.id]);
+    const busy = () => finish(job.id, { status: 'failed', error_code: 'owner_busy', error: 'Someone is typing in this tab', retryable: true });
+    expect((await busy()).data.status).toBe('pending');
+    await sql(`INSERT INTO settings (key, value, updated_at) VALUES ('state:alert_last:waiting', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(Date.now()), Date.now()]);
+    await sql('UPDATE outbox SET busy_since = ? WHERE id = ?', [Date.now() - 6 * MIN, job.id]);
+    job = await lease(job.id);
+    await busy();
+    expect((await row(job.id)).busy_warned).toBe(2);
+    await sql(`DELETE FROM settings WHERE key = 'state:alert_last:waiting'`);
+    job = await lease(job.id);
+    await busy();
+    expect((await row(job.id)).busy_warned).toBe(1);
+    expect((await sql(`SELECT value FROM settings WHERE key = 'state:alert_last:waiting'`)).data.results).toHaveLength(1);
+    expect((await events('send_waiting', job.id)).filter((e) => e.level === 'warn')).toHaveLength(1);
+    await sql(`UPDATE outbox SET status = 'cancelled' WHERE id = ?`, [job.id]);
   });
 
   it('the owner already replied by hand: the queued reply is dropped and the agent stays out', async () => {

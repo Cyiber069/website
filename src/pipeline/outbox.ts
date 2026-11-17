@@ -19,14 +19,51 @@ export const BUSY_SLOW_AFTER_MS = 2 * MIN;
 export const BUSY_ALERT_MS = 5 * MIN;
 /** Still busy after this long: the job fails with a plain reason, instead of waiting silently for a day. */
 export const BUSY_GIVE_UP_MS = 15 * MIN;
-/** Failures that are over in seconds (a slow page, a reloading tab): an agent reply is tried again quickly. */
-const QUICK_RETRY_CODES = new Set(['timeout', 'no_content_script', 'tab_missing', 'send_not_confirmed', 'thread_not_found', 'composer_missing']);
+/** Still busy, but long after the last busy result (a lost lease, the laptop away): a new wait starts. */
+export const BUSY_EPISODE_GAP_MS = 5 * MIN;
+/**
+ * Failures that are over in seconds (a slow page, a reloading tab, TikTok not taking the pasted text):
+ * an agent reply is tried again quickly.
+ */
+const QUICK_RETRY_CODES = new Set(['timeout', 'no_content_script', 'tab_missing', 'send_not_confirmed', 'thread_not_found', 'composer_missing', 'send_not_synced']);
 /**
  * The owner is in the way, not the job: owner_busy (typing somewhere in the tab), composer_busy (the
- * message box changed while typing; older builds also use it for a draft) and draft_in_chat (newer
- * builds: text that is not ours sits in this chat's message box).
+ * message box or the open chat changed while typing; older builds also use it for a draft) and
+ * draft_in_chat (newer builds: text that is not ours sits in this chat's message box).
  */
 const BUSY_CODES = new Set(['owner_busy', 'composer_busy', 'draft_in_chat']);
+/**
+ * What builds before 0.4.0 say with composer_busy when text that is not theirs sits in this chat's
+ * message box before they type: a draft. Matched on the start of the error text. Their other
+ * composer_busy texts mean the box or the open chat changed while they typed (TikTok did not take the
+ * text, the owner clicked another chat), which is not a draft.
+ */
+const LEGACY_DRAFT_ERRORS = [
+  'Someone is typing in this chat', 'Someone started typing in this chat',
+  'There is a half written message in the TikTok message box', 'There is already text in the message box (someone is typing)',
+];
+/** Gmail before 0.4.0: a saved draft in this customer's email. Its other composer_busy texts are about the whole tab. */
+const LEGACY_GMAIL_DRAFT_ERRORS = ['There is already a draft reply in this email'];
+/** Gmail before 0.4.0, composer_busy for the whole tab: someone is writing or typing there (newer builds say owner_busy). */
+const LEGACY_GMAIL_TAB_ERRORS = ['An email is being written in this tab', 'Someone is typing in this tab', 'Gmail settings are open in this tab', 'The new email already has text in it'];
+/** Typing speed for builds before 0.4.0: they read 0 as their slowest typing, and at 200 a second they only keep short floor pauses. */
+export const LEGACY_FAST_CPS = 200;
+
+const startsWithAny = (text: string, list: string[]) => { const t = text.trim(); return list.some((x) => t.startsWith(x)); };
+
+/** A composer_busy from a build before 0.4.0 that means a draft of the owner's in this chat or email. */
+export function legacyDraftError(channel: Channel, error: string): boolean {
+  return startsWithAny(error, channel === 'gmail' ? LEGACY_GMAIL_DRAFT_ERRORS : LEGACY_DRAFT_ERRORS);
+}
+
+/**
+ * What holds a busy job up, for the owner's words: text in the way (a draft, someone writing in the
+ * tab) or the message box changing while the agent typed (composer_busy with any other text).
+ */
+function busyKind(code: string, error: string): 'draft' | 'changed' {
+  if (code !== 'composer_busy') return 'draft';
+  return startsWithAny(error, [...LEGACY_DRAFT_ERRORS, ...LEGACY_GMAIL_DRAFT_ERRORS, ...LEGACY_GMAIL_TAB_ERRORS]) ? 'draft' : 'changed';
+}
 /** The agent's own replies: they may carry an extra wait the owner set. */
 const AGENT_SOURCES = new Set(['auto', 'holding', 'discount']);
 /** Replies the agent wrote by itself: dropped when the owner takes the chat over. */
@@ -91,12 +128,13 @@ export function enqueueStatements(db: D1Database, input: EnqueueInput): { id: st
  * default, and never more than the current setting, so a job queued under the old slow pacing is not
  * slow). The checkout reminders and the owner alert keep their own pacing.
  * `legacy`: an extension before 0.4.0 (src/lib/version.ts). It reads typing_cps 0 as its slowest
- * typing (3 a second on TikTok), so it gets the typing speed it always had (settings.pacing.typing_cps).
+ * typing (3 a second on TikTok), so it gets 200 a second: it pastes the part and keeps only its short
+ * floor pauses (about half a second a part).
  */
 export function jobPacing(row: Pick<OutboxRow, 'source' | 'pacing'>, settings: Settings, legacy = false): { delay_ms: number; typing_cps: number } {
   const stored = parseJson<{ delay_ms?: number; typing_cps?: number }>(row.pacing, {});
   if (row.source === 'recovery' || row.source === 'alert') return { delay_ms: stored.delay_ms ?? 0, typing_cps: stored.typing_cps ?? settings.pacing.typing_cps };
-  const typing_cps = legacy ? settings.pacing.typing_cps : 0;
+  const typing_cps = legacy ? LEGACY_FAST_CPS : 0;
   if (!AGENT_SOURCES.has(row.source)) return { delay_ms: 0, typing_cps };
   const max = Math.max(0, settings.pacing.max_reply_delay_s * 1000);
   return { delay_ms: Math.min(Math.max(0, stored.delay_ms ?? 0), max), typing_cps };
@@ -283,17 +321,20 @@ const whoOf = (t: JobTarget) => t.title ?? t.phone ?? t.email ?? t.handle ?? 'a 
 function failWords(code: string): string {
   switch (code) {
     case 'newer_message': return 'the laptop kept refusing it because the customer wrote again';
-    case 'owner_busy': case 'composer_busy': case 'draft_in_chat': return 'a draft or a half written message in the agent’s tab was in the way';
+    case 'owner_busy': case 'draft_in_chat': return 'a draft or a half written message in the agent’s tab was in the way';
+    case 'composer_busy': return 'the message box was in use or kept changing while the agent typed';
+    case 'send_not_synced': return 'TikTok did not take the text';
     default: return code.replace(/_/g, ' ');
   }
 }
 
 /**
  * The owner took the chat: they replied by hand (owner_replied), or text that is not ours sits in that
- * chat's message box (draft_in_chat, and composer_busy from builds before 0.4.0 that cannot tell a draft
- * apart). The agent's own unsent words for the chat are dropped, it stays out of the chat for
+ * chat's message box (draft_in_chat, and the draft texts of composer_busy from builds before 0.4.0).
+ * The agent's own unsent words for the chat are dropped, it stays out of the chat for
  * pacing.human_takeover_minutes, and nothing is answered later from the stored messages (the owner may
- * have answered already). A draft also tells the owner, in case it was left behind.
+ * have answered already). A draft also tells the owner that the customer was not answered, so a draft
+ * that was left behind does not leave them waiting.
  */
 async function ownerTookChat(env: Env, row: OutboxRow, target: JobTarget, why: 'replied' | 'draft', error: string): Promise<{ ok: true; status: string }> {
   const db = env.DB;
@@ -318,17 +359,20 @@ async function ownerTookChat(env: Env, row: OutboxRow, target: JobTarget, why: '
   }
   await db.batch(statements);
   const who = whoOf(target);
+  const place = row.channel === 'gmail' ? 'email' : 'chat';
+  // A draft: the agent will not answer later on its own (the message was marked as dealt with), so
+  // the words never promise that it will once the draft is gone or the pause ends.
   await logEvent(db, {
     level: why === 'draft' ? 'warn' : 'info', type: 'takeover', channel: row.channel, conversation_id: row.conversation_id,
     message: why === 'replied'
       ? `You replied to ${who} yourself. The agent did not send its reply and is staying out of that chat for ${minutes} min.`
-      : `There is an unsent message in your chat with ${who}. The agent did not send its reply and is staying out of that chat for ${minutes} min.`,
+      : `There is an unsent message in your ${place} with ${who}. The agent did not send its reply. Answer them yourself.`,
     data: { outbox_id: row.id, source: row.source, code },
   });
   if (why === 'draft') {
     await alertOwner(env, settings, {
-      kind: 'waiting', title: 'A draft is in a customer chat',
-      body: `${who}: there is an unsent message in that chat. Send it or delete it. The agent is staying out for ${minutes} min.`, path: '/#/live',
+      kind: 'waiting', title: `A draft is in a customer ${place}`,
+      body: `${who}: you have an unsent message in that ${place}. The agent did not answer. Send your message or answer from Inbox.`, path: '/#/live',
     });
   }
   return { ok: true, status: 'cancelled' };
@@ -347,7 +391,7 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
   const parts = parseJson<string[]>(row.parts, []);
 
   if (result.status === 'sent') {
-    await run(db, `UPDATE outbox SET status = 'sent', sent_at = ?, lease_until = NULL, last_error = NULL, busy_since = NULL, busy_warned = 0 WHERE id = ?`, now, id);
+    await run(db, `UPDATE outbox SET status = 'sent', sent_at = ?, lease_until = NULL, last_error = NULL, busy_since = NULL, busy_last = NULL, busy_warned = 0 WHERE id = ?`, now, id);
     let convId = row.conversation_id;
     if (!convId && row.source !== 'alert') {
       convId = await conversationForNewChat(db, row, target);
@@ -418,10 +462,11 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
   // The owner already answered this customer by hand (newer extensions see their message after the read).
   if (code === 'owner_replied') return ownerTookChat(env, row, target, 'replied', result.error ?? '');
   // Text that is not ours in this chat's message box: the owner is writing to this customer. The
-  // agent's own reply stands down at once. Builds before 0.4.0 say composer_busy for a draft in the
-  // chat on WhatsApp and TikTok; on Gmail they also say it for an email written anywhere in the tab,
-  // which is not this customer's, so there it waits like owner_busy.
-  const legacyDraft = code === 'composer_busy' && row.channel !== 'gmail' && isLegacyExtension(device.version);
+  // agent's own reply stands down at once. Builds before 0.4.0 say composer_busy for that, but only
+  // the texts they throw before typing mean a draft (on Gmail: a saved draft in this email). Their
+  // other composer_busy texts (the box or the open chat changed while typing, an email written
+  // anywhere in the tab) wait like any busy result below, so a passing glitch still gets through.
+  const legacyDraft = code === 'composer_busy' && isLegacyExtension(device.version) && legacyDraftError(row.channel, result.error ?? '');
   if (TAKEOVER_SOURCES.has(row.source) && (code === 'draft_in_chat' || legacyDraft)) {
     return ownerTookChat(env, row, target, 'draft', result.error ?? '');
   }
@@ -449,48 +494,65 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
 
   // The owner is typing in that tab or a draft is in the way: not the job's fault. Offered again soon
   // without using a try, then less often; the owner is told after a few minutes, and after 15 minutes
-  // it fails with a plain reason instead of waiting silently until it expires.
-  const busy = BUSY_CODES.has(code) && result.retryable !== false;
-  const busySince = row.busy_since ?? now;
+  // it fails with a plain reason instead of waiting silently until it expires. A busy result long after
+  // the last one (a lost lease, the laptop away) starts a new wait: an old busy_since never fails a job
+  // at once. The message box changing while the agent typed, twice in a row, is not the owner waiting
+  // to send: from the second time it uses a try like any quick failure, so it fails in minutes.
+  const kind = busyKind(code, result.error ?? '');
+  const lastKind = (row.last_error ?? '').startsWith('composer_busy:') ? busyKind('composer_busy', (row.last_error ?? '').slice('composer_busy:'.length)) : null;
+  const repeatChanged = kind === 'changed' && lastKind === 'changed';
+  const busy = BUSY_CODES.has(code) && result.retryable !== false && !repeatChanged;
+  const lastBusy = row.busy_last ?? row.busy_since ?? null;
+  const freshWait = row.busy_since == null || lastBusy == null || now - lastBusy > BUSY_EPISODE_GAP_MS;
+  const busySince = freshWait ? now : row.busy_since!;
+  const warned = freshWait ? 0 : row.busy_warned ?? 0;
+  const who = whoOf(target);
   if (busy && now - busySince < BUSY_GIVE_UP_MS) {
     const elapsed = now - busySince;
     const delay = elapsed < BUSY_SLOW_AFTER_MS ? BUSY_RETRY_MS : MIN;
-    const warn = elapsed >= BUSY_ALERT_MS && !row.busy_warned;
-    await run(
-      db,
-      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ?, busy_since = ?, busy_warned = ? WHERE id = ?`,
-      now + delay, why, busySince, warn || row.busy_warned ? 1 : 0, id,
-    );
-    const who = whoOf(target);
-    if (row.busy_since == null) {
+    if (freshWait) {
       await logEvent(db, {
         level: 'info', type: 'send_waiting', channel: row.channel, conversation_id: row.conversation_id,
         message: `Waiting to send to ${who}: ${clip(result.error || 'someone is typing in the agent’s tab', 160)}.`,
         data: { outbox_id: id, source: row.source, code },
       });
     }
-    if (warn) {
-      const settings = await getSettings(db);
-      await logEvent(db, {
-        level: 'warn', type: 'send_waiting', channel: row.channel, conversation_id: row.conversation_id,
-        message: `A reply to ${who} has waited ${Math.round(elapsed / MIN)} min. There is a draft or a half written message in the agent’s tab. Send it or delete it.`,
-        data: { outbox_id: id, source: row.source, code },
-      });
-      await alertOwner(env, settings, {
+    // 1: the owner got the push. 2: the line is on Live but the throttle held the push back (it was
+    // used for another chat a moment ago), so it is tried again and the failure push still goes.
+    let nextWarned = warned;
+    if (elapsed >= BUSY_ALERT_MS && warned !== 1) {
+      if (warned === 0) {
+        await logEvent(db, {
+          level: 'warn', type: 'send_waiting', channel: row.channel, conversation_id: row.conversation_id,
+          message: kind === 'draft'
+            ? `A reply to ${who} has waited ${Math.round(elapsed / MIN)} min. There is a draft or a half written message in the agent’s tab. Send it or delete it.`
+            : `A reply to ${who} has waited ${Math.round(elapsed / MIN)} min. The message box kept changing while the agent typed. Check the agent’s tab.`,
+          data: { outbox_id: id, source: row.source, code },
+        });
+      }
+      const pushed = await alertOwner(env, await getSettings(db), {
         kind: 'waiting', title: 'A reply is waiting to send',
-        body: `${who}: a draft in the agent’s tab is in the way. Send it or delete it.`, path: '/#/live',
+        body: kind === 'draft' ? `${who}: a draft in the agent’s tab is in the way. Send it or delete it.` : `${who}: the message box in the agent’s tab kept changing. Check the tab.`,
+        path: '/#/live',
       });
+      nextWarned = pushed ? 1 : 2;
     }
+    await run(
+      db,
+      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ?, busy_since = ?, busy_last = ?, busy_warned = ? WHERE id = ?`,
+      now + delay, why, busySince, now, nextWarned, id,
+    );
     return { ok: true, status: 'pending' };
   }
 
   const retry = !busy && result.retryable !== false && row.attempts < MAX_ATTEMPTS;
   if (retry) {
     // A quick failure of the agent's own reply is tried again in seconds: the customer is waiting.
-    const step = AGENT_SOURCES.has(row.source) && QUICK_RETRY_CODES.has(code) ? 15_000 : MIN;
+    const quick = QUICK_RETRY_CODES.has(code) || repeatChanged;
+    const step = AGENT_SOURCES.has(row.source) && quick ? 15_000 : MIN;
     await run(
       db,
-      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, last_error = ?, busy_since = NULL WHERE id = ?`,
+      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, last_error = ?, busy_since = NULL, busy_last = NULL WHERE id = ?`,
       now + row.attempts * step, why, id,
     );
     return { ok: true, status: 'pending' };
@@ -500,16 +562,22 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
     await run(db, `UPDATE checkouts SET status = 'failed', skip_reason = ?, updated_at = ? WHERE id = ?`, code, now, row.ref_id);
   }
   if (row.source !== 'alert') {
+    const mins = Math.round((now - busySince) / MIN);
     await logEvent(db, {
       level: code === 'not_on_whatsapp' ? 'warn' : 'error', type: 'send_failed', channel: row.channel, conversation_id: row.conversation_id,
-      message: busy
-        ? `Could not send to ${whoOf(target)}. A draft in the agent’s tab was in the way for ${Math.round((now - busySince) / MIN)} min. Send or delete it, then answer from Inbox.`
-        : `Could not send to ${target.title ?? target.phone ?? target.email ?? 'customer'} (${failWords(code)})`,
+      message: !busy
+        ? `Could not send to ${target.title ?? target.phone ?? target.email ?? 'customer'} (${failWords(code)})`
+        : kind === 'draft'
+          ? `Could not send to ${who}. A draft in the agent’s tab was in the way for ${mins} min. Send or delete it, then answer from Inbox.`
+          : `Could not send to ${who}. The message box in the agent’s tab kept changing for ${mins} min. Answer from Inbox.`,
       data: { outbox_id: id, source: row.source, error: result.error ?? '' },
     });
-    if (busy && !row.busy_warned) {
+    // Unless the owner already got the push about this wait (busy_warned 1), they get this one.
+    if (busy && warned !== 1) {
       await alertOwner(env, await getSettings(db), {
-        kind: 'waiting', title: 'A reply could not be sent', body: `${whoOf(target)}: a draft in the agent’s tab was in the way. Answer from Inbox.`, path: '/#/live',
+        kind: 'waiting', title: 'A reply could not be sent',
+        body: kind === 'draft' ? `${who}: a draft in the agent’s tab was in the way. Answer from Inbox.` : `${who}: the message box in the agent’s tab kept changing. Answer from Inbox.`,
+        path: '/#/live',
       });
     }
   }

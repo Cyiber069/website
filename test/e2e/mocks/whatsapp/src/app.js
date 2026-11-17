@@ -299,8 +299,9 @@ function renderViewer() {
       video)));
 }
 function openViewer(msg) {
-  viewer = { msgId: msg.id, opened_at: Date.now(), audible: false, chat: state.openJid };
-  renderViewer();
+  // state.viewerDelayMs: a slow laptop, where the viewer shows a while after the click.
+  const show = () => { viewer = { msgId: msg.id, opened_at: Date.now(), audible: false, chat: state.openJid }; renderViewer(); };
+  if (state.viewerDelayMs > 0) setTimeout(show, state.viewerDelayMs); else show();
 }
 function closeViewer(how) {
   if (!viewer) return;

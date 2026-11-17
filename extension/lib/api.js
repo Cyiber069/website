@@ -73,16 +73,31 @@ export const jobResult = (jobId, result) => json(`/api/agent/jobs/${encodeURICom
 
 export const diagnostics = (channel, kind, data) => json('/api/agent/diagnostics', { body: { channel, kind, data } });
 
+/** Which customer message a video belongs to, for the server's checks: channel, message id, thread id. */
+function videoQuery({ channel, message, thread, seconds } = {}) {
+  const q = new URLSearchParams();
+  if (channel) q.set('channel', channel);
+  if (message) q.set('message', String(message).slice(0, 200));
+  if (thread) q.set('thread', String(thread).slice(0, 300));
+  if (Number.isFinite(seconds) && seconds > 0) q.set('seconds', String(Math.round(seconds * 10) / 10));
+  return q;
+}
+
+/**
+ * Before a customer video is pulled out of the tab: is it needed? Answers { upload, ref, described, why }.
+ * A video already described, or still held by Google from an earlier read, is never sent or counted twice.
+ */
+export const checkVideo = (who) => json(`/api/agent/media/video?${videoQuery(who)}`, { method: 'GET', timeoutMs: 8000 });
+
 /**
  * One customer video, sent whole before the report that names it. The server streams the bytes to
  * Google AI Studio and answers { ref } (a vision_files id) for the report's media.video_ref.
- * Throws ApiError: 409 vision_off, 413 too_large or too_long, 415 not_a_video, 429 daily_cap, 502 vision_failed.
+ * Throws ApiError: 409 vision_off or already_described, 413 too_large or too_long, 415 not_a_video,
+ * 429 daily_cap, 502 vision_failed. `signal` stops the upload (the time for it ran out).
  */
-export function uploadVideo(blob, { mime, seconds, channel, timeoutMs = 75_000 } = {}) {
-  const q = new URLSearchParams();
-  if (channel) q.set('channel', channel);
-  if (Number.isFinite(seconds) && seconds > 0) q.set('seconds', String(Math.round(seconds * 10) / 10));
-  return json(`/api/agent/media/video?${q}`, { raw: blob, contentType: mime || blob.type || 'video/mp4', timeoutMs });
+export function uploadVideo(blob, { mime, seconds, channel, message, thread, timeoutMs = 15_000, signal } = {}) {
+  const q = videoQuery({ channel, message, thread, seconds });
+  return json(`/api/agent/media/video?${q}`, { raw: blob, contentType: mime || blob.type || 'video/mp4', timeoutMs, signal });
 }
 
 /**

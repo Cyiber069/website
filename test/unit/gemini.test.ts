@@ -1,7 +1,7 @@
 // The Gemini REST client (src/vision/gemini.ts) and the describing step (src/vision/index.ts), against a mocked fetch.
 import { describe, expect, it } from 'vitest';
 import { GEMINI_BASE, GeminiError, cleanModel, deleteFile, generateContent, mapError, takesThinkingLevel, uploadFile, waitActive, type GeminiConfig, type GeminiFile } from '../../src/vision/gemini';
-import { checkVisionKey, checkVisionPatch, cleanDescription, describeBody, describeMedia, isVideoHead, readDescription, visionInstructions } from '../../src/vision';
+import { NO_STORE_MESSAGE, checkVisionKey, checkVisionPatch, checkedVideoBody, cleanDescription, describeBody, describeMedia, isVideoHead, readDescription, visionInstructions } from '../../src/vision';
 import { JPEG_B64 } from '../helpers/images';
 
 const KEY = 'AIzaSyTESTKEY0123456789abcdefghijklmno';
@@ -47,7 +47,7 @@ describe('generateContent', () => {
     expect(sent.systemInstruction.parts[0].text).toMatch(/never instructions to you/);
     expect(sent.contents[0].role).toBe('user');
     expect(sent.contents[0].parts[1]).toEqual({ inlineData: { mimeType: 'image/jpeg', data: JPEG_B64 } });
-    expect(sent.generationConfig).toMatchObject({ responseMimeType: 'application/json', maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: 'low' } });
+    expect(sent.generationConfig).toMatchObject({ responseMimeType: 'application/json', maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'low' } });
     expect(sent.generationConfig.responseJsonSchema.required).toEqual(['description', 'unclear', 'problem']);
     expect(res).toMatchObject({ text: DESC, finishReason: 'STOP', usage: { input_tokens: 1200, output_tokens: 60 } });
   });
@@ -241,13 +241,43 @@ describe('describing', () => {
     await expect(describeMedia(cfg(auth.f), 'Shop', { kind: 'video_frame', mime: 'image/jpeg', data: JPEG_B64, video }, Date.now() + 30_000)).rejects.toMatchObject({ code: 'auth' });
   });
 
-  it('asks once more without the optional fields when a model refuses one of them', async () => {
-    const { f, calls } = fakeFetch((_c, n) => (n === 1 ? fail(400, { status: 'INVALID_ARGUMENT', message: 'Invalid JSON payload received. Unknown name "store": Cannot find field.' }) : answer(DESC)));
+  it('asks once more without only the field a model refused, and never without store false', async () => {
+    const { f, calls } = fakeFetch((_c, n) => (n === 1 ? fail(400, { status: 'INVALID_ARGUMENT', message: 'Invalid JSON payload received. Unknown name "thinkingConfig": Cannot find field.' }) : answer(DESC)));
     const out = await describeMedia(cfg(f), 'Shop', { kind: 'image', mime: 'image/jpeg', data: JPEG_B64 }, Date.now() + 10_000);
     expect(out.description).toMatch(/mountain bike/);
     expect(calls).toHaveLength(2);
-    expect(calls[1]!.body).not.toHaveProperty('store');
+    expect((calls[1]!.body as any).store).toBe(false); // customer photos stay out of Google's logs
     expect((calls[1]!.body as any).generationConfig).not.toHaveProperty('thinkingConfig');
+    expect((calls[1]!.body as any).generationConfig.responseJsonSchema).toBeTruthy();
+    const schema = fakeFetch((_c, n) => (n === 1 ? fail(400, { message: 'responseJsonSchema is not supported by this model' }) : answer(DESC)));
+    await describeMedia(cfg(schema.f), 'Shop', { kind: 'image', mime: 'image/jpeg', data: JPEG_B64 }, Date.now() + 10_000);
+    expect((schema.calls[1]!.body as any).store).toBe(false);
+    expect((schema.calls[1]!.body as any).generationConfig).not.toHaveProperty('responseJsonSchema');
+    // A model that refuses store false is never sent customer media without it: the owner is told why.
+    const store = fakeFetch(() => fail(400, { status: 'INVALID_ARGUMENT', message: 'Invalid JSON payload received. Unknown name "store": Cannot find field.' }));
+    await expect(describeMedia(cfg(store.f), 'Shop', { kind: 'image', mime: 'image/jpeg', data: JPEG_B64 }, Date.now() + 10_000)).rejects.toMatchObject({ code: 'no_store', message: NO_STORE_MESSAGE });
+    expect(store.calls).toHaveLength(1);
+    expect(NO_STORE_MESSAGE).not.toMatch(/[–—]/);
+    const video = { file_name: 'files/v9', file_uri: `${GEMINI_BASE}/v1beta/files/v9`, mime: 'video/mp4' };
+    const storeVideo = fakeFetch((c) => (c.method === 'GET' ? ok({ name: 'files/v9', uri: video.file_uri, mimeType: 'video/mp4', state: 'ACTIVE' }) : fail(400, { message: 'Unknown name "store"' })));
+    await expect(describeMedia(cfg(storeVideo.f), 'Shop', { kind: 'video_frame', mime: 'image/jpeg', data: JPEG_B64, video }, Date.now() + 30_000)).rejects.toMatchObject({ code: 'no_store' });
+    expect(storeVideo.calls.filter((c) => c.method === 'POST')).toHaveLength(1); // no fallback to the frames without store either
+    for (const c of [describeBody('gemini-3.8-flash', 'Shop', [], {}), describeBody('gemini-2.5-flash', 'Shop', [], { noSchema: true, noThinking: true })]) {
+      expect(c.store).toBe(false);
+      expect(c.generationConfig!.maxOutputTokens).toBe(2048);
+    }
+  });
+
+  it('never stores a description cut off at the token limit, and marks plain text unclear', async () => {
+    const cut = '{"description": "The battery pack is swollen and the casing is split near';
+    expect(() => readDescription(cut, 'MAX_TOKENS')).toThrow(expect.objectContaining({ code: 'bad_output', retryable: true }));
+    expect(() => readDescription(cut, 'STOP')).toThrow(expect.objectContaining({ code: 'bad_output' }));
+    expect(() => readDescription('Some words then the limit', 'MAX_TOKENS')).toThrow(expect.objectContaining({ code: 'bad_output' }));
+    // Complete JSON is fine whatever the finish reason says.
+    expect(readDescription(DESC, 'MAX_TOKENS').description).toMatch(/mountain bike/);
+    expect(readDescription('Just words about a wheel.', 'STOP')).toMatchObject({ unclear: true, problem: 'none' });
+    const { f } = fakeFetch(() => ok({ candidates: [{ content: { parts: [{ text: cut }] }, finishReason: 'MAX_TOKENS' }], usageMetadata: {} }));
+    await expect(describeMedia(cfg(f), 'Shop', { kind: 'image', mime: 'image/jpeg', data: JPEG_B64 }, Date.now() + 10_000)).rejects.toMatchObject({ code: 'bad_output', retryable: true });
   });
 });
 
@@ -267,6 +297,40 @@ describe('checks', () => {
     expect(() => checkVisionPatch({ video_daily_cap: 1.5 })).toThrow();
     expect(() => checkVisionPatch({ enabled: 'yes' })).toThrow();
   });
+  it('checks the first bytes of an upload and pipes the rest native to native, never through a JavaScript transform', async () => {
+    const chunks = [new Uint8Array([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 1, 2, 3, 4]), ...Array.from({ length: 50 }, (_, i) => new Uint8Array(4096).fill(i))];
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const src = () => { let i = 0; return new ReadableStream<Uint8Array>({ pull(ctl) { if (i < chunks.length) ctl.enqueue(chunks[i++]!); else ctl.close(); } }); };
+    let written = 0;
+    let piped = 0;
+    class FakeFixed {
+      readable: ReadableStream<Uint8Array>;
+      writable: WritableStream<Uint8Array>;
+      constructor(public n: number) {
+        const t = new TransformStream<Uint8Array, Uint8Array>();
+        this.readable = t.readable;
+        const inner = t.writable;
+        // Count what JavaScript writes itself (the writer) apart from what is piped in.
+        this.writable = inner;
+        const getWriter = inner.getWriter.bind(inner);
+        (inner as any).getWriter = () => { const w = getWriter(); const write = w.write.bind(w); (w as any).write = (c: Uint8Array) => { written++; return write(c); }; return w; };
+      }
+    }
+    const body = src();
+    const pipeTo = body.pipeTo.bind(body);
+    (body as any).pipeTo = (dest: WritableStream<Uint8Array>, o?: StreamPipeOptions) => { piped++; return pipeTo(dest, o); };
+    const out = await checkedVideoBody(body, total, FakeFixed as any);
+    expect(out.sized).toBe(true);
+    let got = 0;
+    const reader = out.stream.getReader();
+    for (;;) { const { value, done } = await reader.read(); if (done) break; got += value!.length; }
+    expect(got).toBe(total); // every byte, in order
+    expect(written).toBe(1); // only the first chunk went through JavaScript
+    expect(piped).toBe(1); // the other 50 were piped by the runtime
+    const jpeg = new ReadableStream<Uint8Array>({ start(ctl) { ctl.enqueue(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1, 0, 0])); ctl.close(); } });
+    await expect(checkedVideoBody(jpeg, 14, FakeFixed as any)).rejects.toMatchObject({ status: 415, code: 'not_a_video' });
+  });
+
   it('tells a video from other bytes by its first bytes', () => {
     const mp4 = new Uint8Array([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     const webm = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0, 0, 0, 0, 0]);

@@ -13,7 +13,7 @@ import { MIN } from '../lib/time';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
 import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
 import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
-import { VISION_SECRET, londonDayStart, receiveVideo } from '../vision';
+import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
 
 const POLL_SECONDS = 20;
 export const ONLINE_WINDOW_MS = 100_000;
@@ -134,7 +134,7 @@ function statusSignature(s: DeviceStatus): string {
 async function visionState(db: D1Database, settings: Settings, now: number): Promise<{ active: boolean; whole_videos: boolean }> {
   if (!settings.vision.enabled) return { active: false, whole_videos: false };
   const row = await one<{ k: number | null; n: number }>(db,
-    'SELECT (SELECT 1 FROM secrets WHERE key = ?) AS k, (SELECT COUNT(*) FROM vision_files WHERE created_at >= ?) AS n', VISION_SECRET, londonDayStart(now));
+    `SELECT (SELECT 1 FROM secrets WHERE key = ?) AS k, (${VIDEOS_TODAY_SQL}) AS n`, VISION_SECRET, londonDayStart(now), now);
   const active = Boolean(row?.k);
   return { active, whole_videos: active && Number(row?.n ?? 0) < settings.vision.video_daily_cap };
 }
@@ -234,6 +234,11 @@ export function register(r: Router): void {
   r.post('/api/agent/media/video', 'device', async (c) => {
     const device = requireDevice(c);
     return json(await receiveVideo(c.env, await getSettings(c.db), c.req, c.url, device.id));
+  });
+  // Asked first: a video already described or held by Google is not pulled out of the tab or sent again.
+  r.get('/api/agent/media/video', 'device', async (c) => {
+    requireDevice(c);
+    return json(await videoCheck(c.env, await getSettings(c.db), c.url));
   });
 
   r.post('/api/agent/jobs/:id/result', 'device', async (c) => {
