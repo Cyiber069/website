@@ -67,6 +67,11 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   if (text.includes('shop-interested')) return { ...base, parts: [`The ${MOCK_PRODUCT.title} fits best for that ${MOCK_PRODUCT.link}`] };
   if (text.includes('shop-browse')) return { ...base, parts: ['Nice, what bike are you fitting it to?'] };
   if (text.includes('ignore-me')) return { ...base, action: 'ignore', note: 'mock ignore' };
+  // Replies queued but not sent yet reach the brain marked pending (src/pipeline/inbound.ts buildTimeline).
+  if (text.includes('show-queued')) {
+    const queued = input.history.filter((m) => m.pending).map((m) => m.body);
+    return { ...base, parts: [`Mock saw ${queued.length} queued: ${queued.join(' + ').slice(0, 120) || 'none'}`] };
+  }
   if (text.includes('two-parts')) return { ...base, parts: ['Hey', 'Mock second part'] };
   if (text.includes('dashes')) return { ...base, parts: ['Sure \u2014 delivery is 2-4 days, and it is free - no worries!'] };
   return { ...base, parts: [`Mock reply to: ${(last?.body ?? '').slice(0, 60)}`] };

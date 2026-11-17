@@ -28,7 +28,7 @@ async function queueAnswer(db: D1Database, urgent: UrgentRow, conv: Conversation
     }),
     parts,
     expires_at: Date.now() + 3 * DAY,
-    pacing: { delay_ms: 1500, typing_cps: settings.pacing.typing_cps },
+    pacing: { delay_ms: 0, typing_cps: 0 }, // sent as soon as the laptop has it, pasted whole
     dedupe_key: `urgent:${urgent.id}:${Date.now()}`,
   });
   if (!id) throw new HttpError(409, 'already_queued', 'That answer is already on its way');

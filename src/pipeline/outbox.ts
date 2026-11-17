@@ -6,6 +6,15 @@ import { MIN } from '../lib/time';
 
 export const MAX_ATTEMPTS = 3;
 const LEASE_MS = 3 * MIN;
+/** Due jobs handed out per ready channel in one sync. The extension queues them and sends one at a time. */
+export const JOBS_PER_SYNC = 3;
+/** The owner was typing in that tab: offered again this soon, and not counted as a try. */
+export const BUSY_RETRY_MS = 20_000;
+/** Failures that are over in seconds (a slow page, a reloading tab): an agent reply is tried again quickly. */
+const QUICK_RETRY_CODES = new Set(['timeout', 'no_content_script', 'tab_missing', 'send_not_confirmed', 'thread_not_found', 'composer_missing']);
+const BUSY_CODES = new Set(['owner_busy', 'composer_busy']);
+/** The agent's own replies: they may carry an extra wait the owner set. */
+const AGENT_SOURCES = new Set(['auto', 'holding', 'discount']);
 
 export interface EnqueueInput {
   channel: Channel;
@@ -20,6 +29,8 @@ export interface EnqueueInput {
   expires_at?: number | null;
   dedupe_key?: string | null;
   pacing?: { delay_ms: number; typing_cps: number };
+  /** Agent replies: the customer message answered and when it arrived (the brain's history and the reply time). */
+  reply_to?: { id: string; ts: number } | null;
 }
 
 export function emptyTarget(over: Partial<JobTarget> = {}): JobTarget {
@@ -49,17 +60,30 @@ export function enqueueStatements(db: D1Database, input: EnqueueInput): { id: st
   }
   statements.push(stmt(
     db,
-    `INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, ref_id, not_before, expires_at, dedupe_key, pacing, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING`,
+    `INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, ref_id, not_before, expires_at, dedupe_key, pacing, created_at, reply_to_id, reply_to_ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING`,
     id, input.channel, input.kind, input.conversation_id ?? null, JSON.stringify(input.target), JSON.stringify(parts),
     input.status ?? 'pending', input.source, input.ref_id ?? null, input.not_before ?? now, input.expires_at ?? null,
-    input.dedupe_key ?? null, JSON.stringify(input.pacing ?? {}), now,
+    input.dedupe_key ?? null, JSON.stringify(input.pacing ?? {}), now, input.reply_to?.id ?? null, input.reply_to?.ts ?? null,
   ));
   return { id, statements };
 }
 
+/**
+ * How the extension paces a job. Replies go out as fast as possible: no wait, and each part pasted
+ * whole (typing_cps 0). The agent's own replies keep the extra wait the owner may set (none by
+ * default, and never more than the current setting, so a job queued under the old slow pacing is not
+ * slow). The checkout reminders and the owner alert keep their own pacing.
+ */
+export function jobPacing(row: Pick<OutboxRow, 'source' | 'pacing'>, settings: Settings): { delay_ms: number; typing_cps: number } {
+  const stored = parseJson<{ delay_ms?: number; typing_cps?: number }>(row.pacing, {});
+  if (row.source === 'recovery' || row.source === 'alert') return { delay_ms: stored.delay_ms ?? 0, typing_cps: stored.typing_cps ?? settings.pacing.typing_cps };
+  if (!AGENT_SOURCES.has(row.source)) return { delay_ms: 0, typing_cps: 0 };
+  const max = Math.max(0, settings.pacing.max_reply_delay_s * 1000);
+  return { delay_ms: Math.min(Math.max(0, stored.delay_ms ?? 0), max), typing_cps: 0 };
+}
+
 export function toJob(row: OutboxRow, settings: Settings): AgentJob {
-  const pacing = parseJson<{ delay_ms?: number; typing_cps?: number }>(row.pacing, {});
   return {
     id: row.id,
     channel: row.channel,
@@ -67,7 +91,7 @@ export function toJob(row: OutboxRow, settings: Settings): AgentJob {
     source: row.source,
     target: parseJson<JobTarget>(row.target, emptyTarget()),
     parts: parseJson<string[]>(row.parts, []),
-    pacing: { delay_ms: pacing.delay_ms ?? 0, typing_cps: pacing.typing_cps ?? settings.pacing.typing_cps },
+    pacing: jobPacing(row, settings),
     lease_until: row.lease_until ?? 0,
     attempts: row.attempts,
   };
@@ -87,8 +111,24 @@ export async function leaseById(db: D1Database, device: DeviceRow, id: string, s
 }
 
 /**
- * Hand due jobs to the extension. At most one job per channel is out at a time so messages in a
- * tab are typed one after another, never interleaved.
+ * Undo a lease that never reached the extension (the answer it was in could not be written). The job
+ * goes back to the queue for the next sync and the lease does not count as a try.
+ */
+export async function releaseLeases(db: D1Database, device: DeviceRow, ids: string[]): Promise<number> {
+  if (!ids.length) return 0;
+  return run(
+    db,
+    `UPDATE outbox SET status = 'pending', lease_until = NULL, lease_device = NULL, attempts = MAX(0, attempts - 1)
+     WHERE id IN (SELECT value FROM json_each(?)) AND status = 'leased' AND lease_device = ?`,
+    JSON.stringify(ids), device.id,
+  );
+}
+
+/**
+ * Hand due jobs to the extension: up to JOBS_PER_SYNC per ready channel, most urgent first. The
+ * extension queues them per tab and types one at a time, so jobs it already holds do not stop more
+ * being handed out. A channel whose jobs another laptop holds is skipped, so two laptops never type
+ * in the same channel at once.
  */
 export async function leaseDue(db: D1Database, device: DeviceRow, settings: Settings, ready: Channel[]): Promise<AgentJob[]> {
   if (!settings.agent.enabled) return [];
@@ -96,17 +136,20 @@ export async function leaseDue(db: D1Database, device: DeviceRow, settings: Sett
   const jobs: AgentJob[] = [];
   for (const channel of ready) {
     if (settings.channels[channel].mode === 'off') continue;
-    const busy = await one<{ id: string }>(db, `SELECT id FROM outbox WHERE channel = ? AND status = 'leased' AND lease_until > ? LIMIT 1`, channel, now);
-    if (busy) continue;
-    const next = await one<OutboxRow>(
+    const other = await one<{ id: string }>(
+      db, `SELECT id FROM outbox WHERE channel = ? AND status = 'leased' AND lease_until > ? AND COALESCE(lease_device, '') != ? LIMIT 1`, channel, now, device.id,
+    );
+    if (other) continue;
+    const due = await all<OutboxRow>(
       db,
       `SELECT * FROM outbox WHERE channel = ? AND status = 'pending' AND not_before <= ? AND (expires_at IS NULL OR expires_at > ?)
-       ORDER BY CASE source WHEN 'urgent' THEN 0 WHEN 'manual' THEN 0 WHEN 'auto' THEN 1 WHEN 'review' THEN 1 WHEN 'holding' THEN 1 ELSE 2 END, not_before, created_at LIMIT 1`,
-      channel, now, now,
+       ORDER BY CASE source WHEN 'urgent' THEN 0 WHEN 'manual' THEN 0 WHEN 'auto' THEN 1 WHEN 'review' THEN 1 WHEN 'holding' THEN 1 WHEN 'discount' THEN 1 ELSE 2 END, not_before, created_at LIMIT ?`,
+      channel, now, now, JOBS_PER_SYNC,
     );
-    if (!next) continue;
-    const job = await leaseById(db, device, next.id, settings);
-    if (job) jobs.push(job);
+    for (const next of due) {
+      const job = await leaseById(db, device, next.id, settings);
+      if (job) jobs.push(job);
+    }
   }
   return jobs;
 }
@@ -221,16 +264,43 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
   }
 
   const code = (result.error_code ?? 'failed').slice(0, 60);
+  const why = `${code}: ${clip(result.error ?? '', 200)}`;
+
+  // The customer wrote again after the extension read the chat. An agent reply written before that may
+  // no longer fit, so it is dropped quietly (no alert, no try used) and the customer is marked as
+  // waiting: the extension reads the chat again and one fresh decision answers everything. A code
+  // message, or what the owner wrote, still fits whatever came after it, so it is offered again.
+  if (code === 'newer_message') {
+    if (row.source === 'auto' || row.source === 'holding') {
+      await db.batch([
+        stmt(db, `UPDATE outbox SET status = 'cancelled', lease_until = NULL, last_error = ? WHERE id = ?`, why, id),
+        stmt(db, 'UPDATE conversations SET needs_reply_since = COALESCE(needs_reply_since, ?) WHERE id = ?', now, row.conversation_id ?? ''),
+      ]);
+      return { ok: true, status: 'cancelled' };
+    }
+    await run(db, `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ? WHERE id = ?`, now, why, id);
+    return { ok: true, status: 'pending' };
+  }
+
+  // The owner is typing in that tab: not the job's fault. Offered again soon without using a try,
+  // until it expires as usual.
+  if (BUSY_CODES.has(code) && result.retryable !== false) {
+    await run(db, `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ? WHERE id = ?`, now + BUSY_RETRY_MS, why, id);
+    return { ok: true, status: 'pending' };
+  }
+
   const retry = result.retryable !== false && row.attempts < MAX_ATTEMPTS;
   if (retry) {
+    // A quick failure of the agent's own reply is tried again in seconds: the customer is waiting.
+    const step = AGENT_SOURCES.has(row.source) && QUICK_RETRY_CODES.has(code) ? 15_000 : MIN;
     await run(
       db,
       `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, last_error = ? WHERE id = ?`,
-      now + row.attempts * MIN, `${code}: ${clip(result.error ?? '', 200)}`, id,
+      now + row.attempts * step, why, id,
     );
     return { ok: true, status: 'pending' };
   }
-  await run(db, `UPDATE outbox SET status = 'failed', lease_until = NULL, last_error = ? WHERE id = ?`, `${code}: ${clip(result.error ?? '', 200)}`, id);
+  await run(db, `UPDATE outbox SET status = 'failed', lease_until = NULL, last_error = ? WHERE id = ?`, why, id);
   if (row.source === 'recovery' && row.ref_id) {
     await run(db, `UPDATE checkouts SET status = 'failed', skip_reason = ?, updated_at = ? WHERE id = ?`, code, now, row.ref_id);
   }

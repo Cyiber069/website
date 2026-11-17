@@ -182,7 +182,7 @@ export async function makeLive(env: Env, row: DiscountRow, opts: { confirmExists
  */
 export async function queueDiscountMessage(
   env: Env, row: DiscountRow, text: string,
-  opts: { now: number; source?: EnqueueInput['source']; status?: 'pending' | 'review'; pacing?: { delay_ms: number; typing_cps: number } },
+  opts: { now: number; source?: EnqueueInput['source']; status?: 'pending' | 'review'; pacing?: { delay_ms: number; typing_cps: number }; reply_to?: EnqueueInput['reply_to'] },
 ): Promise<{ outbox_id: string; already: boolean }> {
   const db = env.DB;
   if (!row.conversation_id) throw bad('no_conversation', 'This code is not linked to a chat any more, so there is nowhere to send the message.');
@@ -200,7 +200,7 @@ export async function queueDiscountMessage(
       thread_external_id: conv.external_thread_id, title: conv.title || contact?.display_name || null,
       phone: contact?.phone ?? null, email: contact?.email ?? null, handle: contact?.handle ?? null, subject: conv.subject,
     }),
-    parts: [text], expires_at: opts.now + DAY, pacing: opts.pacing ?? { delay_ms: 500, typing_cps: 30 },
+    parts: [text], expires_at: opts.now + DAY, pacing: opts.pacing ?? { delay_ms: 0, typing_cps: 0 }, reply_to: opts.reply_to ?? null,
   });
   if (!id) {
     const again = await one<{ id: string }>(db, 'SELECT id FROM outbox WHERE dedupe_key = ?', dedupe);

@@ -77,6 +77,16 @@ export function waited(ts, now = Date.now()) {
   if (m < 60 * 24) return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
   return `${Math.floor(m / 1440)}d`;
 }
+/** A length of time for the owner: "38s", "2 min 5s", "1 hr 10 min". */
+export function span(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '';
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return r ? `${m} min ${r}s` : `${m} min`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h} hr ${m % 60} min` : `${h} hr`;
+}
 export const clock = (ts) => new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 export function dayClock(ts) {
   const d = new Date(ts);

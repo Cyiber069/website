@@ -12,6 +12,59 @@ export const MIN_CONFIDENCE = 0.7;
 const CODE_HINT = /\b(codes?|discount\w*|sponsor\w*|promo\w*|coupons?)\b/i;
 export const mentionsCode = (text: string): boolean => CODE_HINT.test(text);
 
+/** A message of the chat as the code check sees it. */
+export interface ChatLine { direction: 'in' | 'out'; body: string; ts: number }
+
+/** How far back a code request may have started: the last few messages, and not older than this. */
+export const REQUEST_LOOKBACK = 6;
+export const REQUEST_MAX_AGE_MS = 2 * 3_600_000;
+/** Split requests are short ("hey can it be", "acxjohn", "make it JAKE20"). A long message needs a code word of its own. */
+const CONTEXT_MAX_CHARS = 160;
+
+/**
+ * Is the customer's unanswered text worth one extractor call, and why.
+ *   words:   it mentions a code itself.
+ *   context: it does not, but the request started just before it (the customer asked for a code, or
+ *            we asked what code they want) and it is short enough to be the rest of that request.
+ * `before` is the chat just before the unanswered messages, oldest first, queued replies included.
+ * `since` is when the message the request started from was written, so one handled since is not done twice.
+ */
+export function codeTrigger(unanswered: string, before: ChatLine[], now: number): { kind: 'words' | 'context'; since: number | null } | null {
+  if (mentionsCode(unanswered)) return { kind: 'words', since: null };
+  if (!unanswered.trim() || unanswered.length > CONTEXT_MAX_CHARS) return null;
+  const recent = before.slice(-REQUEST_LOOKBACK).filter((m) => now - m.ts <= REQUEST_MAX_AGE_MS);
+  const start = recent.find((m) => mentionsCode(m.body));
+  return start ? { kind: 'context', since: start.ts } : null;
+}
+
+const squash = (t: string) => t.toLowerCase().replace(/[\s"'“”‘’`]+/g, '');
+/**
+ * True when the code is in the customer's own words (any case, spaces ignored). A code the model
+ * made up or worked out (their name, a guess) is never made: the reply asks them instead.
+ */
+export function inCustomerWords(code: string, customerText: string): boolean {
+  const c = squash(code);
+  return c.length > 0 && squash(customerText).includes(c);
+}
+
+/**
+ * The quick check (cheap model) said yes with a code; the main model read it again. The main model's
+ * answer stands. When the two name different codes, the lower confidence of the two is kept so a
+ * shaky reading parks for the owner instead of making a code.
+ */
+export function confirmRequest(quick: DiscountRequest, main: DiscountRequest): DiscountRequest {
+  if (!main.wants_code) return { wants_code: false, code: null, confidence: main.confidence };
+  if (!main.code) return { wants_code: true, code: null, confidence: main.confidence };
+  const same = (a: string | null, b: string) => (a ?? '').toLowerCase().replace(/\s+/g, '') === b.toLowerCase().replace(/\s+/g, '');
+  return { wants_code: true, code: main.code, confidence: same(quick.code, main.code) ? Math.min(quick.confidence, main.confidence) : Math.min(main.confidence, MIN_CONFIDENCE - 0.01) };
+}
+
+/** The customer may be talking about a code that already exists: one they used, or one that did not work. */
+const TROUBLE = /\b(didn'?t|doesn'?t|does not|did not|won'?t|wont|isn'?t|is not|not) (work|working|apply|valid|accepted)|\bnot working\b|\b(failed|invalid|expired|declined|rejected)\b|\bused (the |my |a |this |that |code )|\bat (the )?checkout\b|\balready (have|got|used)\b|\bwrong code\b/i;
+export function codeTrouble(text: string): string | null {
+  return TROUBLE.test(text) ? 'The customer may mean a code that already exists, one they used or one that did not work' : null;
+}
+
 /** Note for the normal reply when the customer wants a code but did not say which. The mock brain keys on its start. */
 export const ASK_FOR_CODE_NOTE =
   'The customer wants their own discount code for the creator offer but did not say what it should be. Ask them in one short line, in their tone, what they want their code to be (letters and numbers only). Do not say any code is made or live.';
@@ -59,6 +112,10 @@ export interface CodeFacts {
   contact_code: string | null;
   /** Codes the agent made by itself today (London day). */
   made_today: number;
+  /** The code is in the customer's own unanswered words (inCustomerWords). Left out means yes (older callers). */
+  in_words?: boolean;
+  /** A reason the request may not be what it looks like (codeTrouble), or null. */
+  doubt?: string | null;
 }
 
 export type CodePlan =
@@ -75,8 +132,11 @@ export function planCodeRequest(f: CodeFacts): CodePlan {
   if (!f.code) {
     return { kind: 'ask_customer', note: `${ASK_FOR_CODE_NOTE} What they asked for ("${clip(f.request.code, 40)}") cannot be used: a code is 3 to 30 letters or numbers with no spaces or symbols.` };
   }
+  // Never a code the customer did not type: ask them what they want instead.
+  if (f.in_words === false) return { kind: 'ask_customer', note: `${ASK_FOR_CODE_NOTE} Do not suggest a code yourself.` };
   const park = (reason: string, draft = true): CodePlan => ({ kind: 'park', code: f.code, reason, draft });
   if (f.request.confidence < MIN_CONFIDENCE) return park('The agent was not sure this is a request for a code');
+  if (f.doubt) return park(f.doubt);
   if (f.problem) return park(f.problem);
   if (f.contact_code === f.code) return park(`They already have the code ${f.code}`, false);
   if (f.taken_here) return park(`The code ${f.code} is already used for someone else`, false);

@@ -1,6 +1,12 @@
 import type { Settings } from '../types';
 import { all, one, run } from './db';
 
+/**
+ * Version of the pacing group. Version 1 rows (no `schema` key) hold the old slow values (wait 12 s
+ * for the customer, then 5 to 20 s more). They are moved once to the fast defaults; see migratePacing.
+ */
+export const PACING_SCHEMA = 2;
+
 export const DEFAULT_SETTINGS: Settings = {
   agent: { enabled: true },
   channels: {
@@ -29,12 +35,15 @@ export const DEFAULT_SETTINGS: Settings = {
     kb_full_tokens: 24_000,
     kb_top_chunks: 14,
   },
+  // Reply as fast as possible: a short quiet wait so a burst of messages gets one reply, and no extra
+  // delay. Replies are pasted whole; typing_cps is only used for the checkout reminders.
   pacing: {
-    settle_seconds: 12,
-    min_reply_delay_s: 5,
-    max_reply_delay_s: 20,
+    schema: PACING_SCHEMA,
+    settle_seconds: 4,
+    min_reply_delay_s: 0,
+    max_reply_delay_s: 0,
     typing_cps: 11,
-    max_auto_replies_per_thread_per_hour: 10,
+    max_auto_replies_per_thread_per_hour: 30,
     human_takeover_minutes: 15,
     ignore_older_than_hours: 24,
   },
@@ -129,6 +138,23 @@ function upgrade<G extends Group>(group: G, value: Settings[G]): Settings[G] {
   return value;
 }
 
+/**
+ * One time move of stored pacing to the fast defaults (owner directive: reply as fast as possible).
+ * Only rows saved before version 2 are changed, so a value the owner saves afterwards is kept.
+ * Returns true when it changed something, so the caller can save the row once.
+ */
+export function migratePacing(raw: unknown, value: Settings['pacing']): boolean {
+  if (!isObject(raw)) return false; // nothing stored: the defaults are already the new ones
+  if (typeof raw.schema === 'number' && raw.schema >= PACING_SCHEMA) return false;
+  value.schema = PACING_SCHEMA;
+  value.settle_seconds = DEFAULT_SETTINGS.pacing.settle_seconds;
+  value.min_reply_delay_s = 0;
+  value.max_reply_delay_s = 0;
+  // The old default of 10 replies an hour pauses a lively chat now that bursts are answered sooner.
+  if (raw.max_auto_replies_per_thread_per_hour === 10) value.max_auto_replies_per_thread_per_hour = DEFAULT_SETTINGS.pacing.max_auto_replies_per_thread_per_hour;
+  return true;
+}
+
 let cache: { at: number; value: Settings } | null = null;
 const CACHE_MS = 5_000;
 
@@ -142,6 +168,11 @@ export async function getSettings(db: D1Database, fresh = false): Promise<Settin
   }
   const value = {} as Record<Group, unknown>;
   for (const g of GROUPS) value[g] = upgrade(g, mergeKnown(DEFAULT_SETTINGS[g], stored[g]));
+  const pacing = value.pacing as Settings['pacing'];
+  if (migratePacing(stored.pacing, pacing)) {
+    // Saved straight away so it happens once. If the write fails the same values are used and it is tried again.
+    await run(db, 'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', JSON.stringify(pacing), Date.now(), 'pacing').catch((err) => console.error('pacing upgrade not saved', err));
+  }
   cache = { at: Date.now(), value: value as unknown as Settings };
   return cache.value;
 }
@@ -150,6 +181,7 @@ export async function getSettings(db: D1Database, fresh = false): Promise<Settin
 export async function patchSettings<G extends Group>(db: D1Database, group: G, patch: Partial<Settings[G]>): Promise<Settings[G]> {
   const current = (await getSettings(db, true))[group];
   const next = upgrade(group, mergeKnown(DEFAULT_SETTINGS[group], { ...(current as object), ...(patch as object) }));
+  if (group === 'pacing') (next as Settings['pacing']).schema = PACING_SCHEMA; // never set back by a client
   await run(
     db,
     'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
