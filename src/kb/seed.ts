@@ -12,6 +12,7 @@ import productsMd from '../../seed/knowledge/products.md';
 import storeFactsMd from '../../seed/knowledge/store-facts.md';
 import creatorMd from '../../seed/knowledge/creator-sponsorship.md';
 import { splitSections } from './chunk';
+import { PRODUCT_PICKER_ID, PRODUCT_PICKER_TITLE, buildProductPicker } from './picker';
 import { type IngestInput, ingestBulk } from './docs';
 
 export interface KbGap { question: string; why_it_matters: string; category: string }
@@ -67,6 +68,11 @@ const LATER_NOTES: (IngestInput & { id: string; flag: string })[] = [
   {
     id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship', title: 'Creator sponsorship and discount codes',
     content: creatorMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/',
+  },
+  {
+    // Given in full to the brain when a customer is shopping (src/brain/decide.ts), so recommendations carry real links.
+    id: PRODUCT_PICKER_ID, flag: 'kb_seed_product_picker', title: PRODUCT_PICKER_TITLE,
+    content: buildProductPicker(productsMd), category: 'products', source: 'seed', source_ref: 'https://acxebikes.com/collections/all',
   },
 ];
 

@@ -23,6 +23,12 @@ export interface ChannelStatus {
   unread: number;
   busy: boolean;
   checked_at: number;
+  /** Health reported by the extension (0 or '' when an older extension does not send them). */
+  last_ok_at: number;    // ms of the last scan that read the page fine
+  last_scan_at: number;  // ms of the last scan, good or bad
+  last_error: string;    // short text of the last problem
+  recoveries: number;    // self heal actions today
+  version: string;       // extension or content script version for this channel
 }
 
 export interface DeviceStatus {
@@ -30,6 +36,9 @@ export interface DeviceStatus {
   paused_locally: boolean;
   reported_at: number;
 }
+
+/** Write the device row at least this often even when nothing changed (the online window is 100 s). */
+const STATUS_WRITE_MS = 55_000;
 
 type Pack = Record<string, unknown> & { version?: number };
 
@@ -68,7 +77,15 @@ function clientConfig(settings: Settings, selectorsVersion: string, origin: stri
   };
 }
 
-function parseStatus(raw: unknown, now: number): DeviceStatus {
+/** A time the extension sent: a finite ms number, never in the future, else 0. */
+function msTime(v: unknown, now: number): number {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) return 0;
+  return Math.min(Math.round(v), now);
+}
+
+const text = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '');
+
+export function parseStatus(raw: unknown, now: number): DeviceStatus {
   const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const chans = (src.channels && typeof src.channels === 'object' ? src.channels : {}) as Record<string, unknown>;
   const channels: DeviceStatus['channels'] = {};
@@ -79,12 +96,28 @@ function parseStatus(raw: unknown, now: number): DeviceStatus {
     channels[ch] = {
       state: typeof o.state === 'string' ? o.state.slice(0, 30) : 'unknown',
       detail: typeof o.detail === 'string' ? o.detail.slice(0, 200) : '',
-      unread: typeof o.unread === 'number' ? Math.max(0, Math.round(o.unread)) : 0,
+      unread: typeof o.unread === 'number' && Number.isFinite(o.unread) ? Math.min(9999, Math.max(0, Math.round(o.unread))) : 0,
       busy: o.busy === true,
       checked_at: now,
+      last_ok_at: msTime(o.last_ok_at, now),
+      last_scan_at: msTime(o.last_scan_at, now),
+      last_error: text(o.last_error, 160),
+      recoveries: typeof o.recoveries === 'number' && Number.isFinite(o.recoveries) ? Math.min(100_000, Math.max(0, Math.round(o.recoveries))) : 0,
+      version: text(o.version, 20),
     };
   }
   return { channels, paused_locally: src.paused_locally === true, reported_at: now };
+}
+
+/** The parts of a status worth a database write when they change. Scan times alone are not. */
+function statusSignature(s: DeviceStatus): string {
+  // The stored row starts as '{}', so every part may be missing.
+  return JSON.stringify([s?.paused_locally === true, CHANNELS.map((ch) => {
+    const c = s?.channels?.[ch];
+    // How fresh the last good read is, in 5 minute steps, so a stalled or recovered page is written at once.
+    const fresh = c?.last_ok_at ? Math.min(3, Math.floor(Math.max(0, (s.reported_at || 0) - c.last_ok_at) / (5 * MIN))) : -1;
+    return c ? [c.state, c.detail, c.unread, c.busy, c.last_error, c.recoveries, c.version, fresh] : null;
+  })]);
 }
 
 function requireDevice(c: Ctx): DeviceRow {
@@ -124,7 +157,13 @@ export function register(r: Router): void {
     const status = parseStatus(body.status, c.now);
     const version = typeof body.version === 'string' ? body.version.slice(0, 20) : '';
     const wasOffline = !device.last_seen_at || c.now - device.last_seen_at > 3 * MIN;
-    await run(c.db, 'UPDATE devices SET last_seen_at = ?, status = ?, version = ? WHERE id = ?', c.now, JSON.stringify(status), version, device.id);
+    // One small UPDATE, and only when something the owner sees changed or a minute has passed:
+    // this runs every 20 s and the free plan allows 100,000 rows written a day.
+    const before = parseJson<DeviceStatus>(device.status, { channels: {}, paused_locally: false, reported_at: 0 });
+    const changed = version !== device.version || statusSignature(before) !== statusSignature(status);
+    if (changed || wasOffline || c.now - (device.last_seen_at ?? 0) >= STATUS_WRITE_MS) {
+      await run(c.db, 'UPDATE devices SET last_seen_at = ?, status = ?, version = ? WHERE id = ?', c.now, JSON.stringify(status), version, device.id);
+    }
     if (wasOffline) {
       await logEvent(c.db, { level: 'good', type: 'device_online', message: `${device.name} is back online.` });
       await setState(c.db, 'offline_alerted', false);

@@ -97,6 +97,20 @@ async function main() {
   if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 20_000 });
   const extensionId = new URL(sw.url()).host;
 
+  // The seeded chats carry the current time, and on its first look the adapter answers chats from the
+  // last 10 minutes whose customer wrote last (Leo). This test starts from a quiet inbox instead: the
+  // seed is saved with times from two hours ago before the extension is paired.
+  const prep = await context.newPage();
+  await prep.goto(TIKTOK_URL);
+  await prep.waitForFunction(() => window.mock && window.mock.ready);
+  await prep.evaluate(() => {
+    const st = window.mock.state();
+    const old = new Date(Date.now() - 2 * 3600_000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    for (const c of st.convs) c.time = old;
+    localStorage.setItem('mock_tiktok_state_v1', JSON.stringify(st));
+  });
+  await prep.close();
+
   // ---- pair through the real popup ---------------------------------------------------------------
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
@@ -329,6 +343,53 @@ async function main() {
   pass('legacy layout: read without ids, send confirmed by text, request still blocked');
   await mock(() => window.mock.setVariant('sdk'));
 
+  // ---- watchdog: a hung tab (the content script never answers) is reloaded and the channel recovers --------
+  const timing = (t) => popup.evaluate((v) => chrome.storage.local.set({ timing: v }), t);
+  await until('channel settled', async () => { const s = await tiktokStatus(); return s?.state === 'ready' && !s.busy ? s : null; });
+  const recoveriesBefore = (await tiktokStatus()).recoveries || 0;
+  await timing({ stall_ms: 5000, recovery_gap_ms: 5000, replace_after_ms: 120_000 });
+  const cdp = await context.newCDPSession(page);
+  // Stop all script in the page (the content script runs on the same thread): it never answers again,
+  // as with a frozen or hung tab. Only a reload brings it back.
+  await cdp.send('Debugger.enable');
+  await cdp.send('Debugger.pause');
+  const healed = await until('watchdog reloads the hung tab', async () => { const s = await tiktokStatus(); return s && s.recoveries > recoveriesBefore ? s : null; }, 90_000);
+  assert.match(healed.last_error, /No good read|has not answered|stopped answering/, JSON.stringify(healed));
+  await page.waitForFunction(() => window.mock && window.mock.ready, null, { timeout: 30_000 });
+  const recovered = await until('tiktok ready again after the reload', async () => { const s = await tiktokStatus(); return s?.state === 'ready' && !s.last_error ? s : null; });
+  assert.ok(recovered.last_ok_at > 0, 'a good read is reported after the recovery');
+  await timing(null);
+  let before = (await sent()).length;
+  await mock(() => window.mock.receive('mia_b', 'are you still there'));
+  await until('answer after the recovery', async () => (await sent()).length === before + 1);
+  assert.equal((await sent()).at(-1).convId, miaId);
+  assert.equal((await sent()).at(-1).text, 'mock reply to: are you still there');
+  await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 8);
+  pass(`watchdog: hung tab reloaded (${healed.recoveries} fix today, "${healed.last_error}"), channel answers again`);
+
+  // ---- a second TikTok tab: only the first one is ever read or typed into --------------------------------------
+  const page2 = await context.newPage();
+  await page2.goto(TIKTOK_URL);
+  await page2.waitForFunction(() => window.mock && window.mock.ready);
+  const mock2 = (fn, arg) => page2.evaluate(fn, arg);
+  const sent2 = () => mock2(() => window.mock.sent());
+  const sent2Before = (await sent2()).length; // the copy starts from the first tab's saved state
+  const dupStatus = await until('duplicate tab reported', async () => { const s = await tiktokStatus(); return /2 TikTok tabs are open/.test(s?.detail || '') ? s : null; });
+  assert.equal(dupStatus.state, 'ready');
+  await mock2(() => window.mock.receive('jake.rides', 'hello from the second tab'));
+  before = (await sent()).length;
+  await mock(() => window.mock.receive('mia_b', 'one more question'));
+  await until('answer in the first tab', async () => (await sent()).length === before + 1);
+  for (let i = 0; i < 8; i++) { await kick(); await sleep(600); }
+  assert.equal((await sent()).length, before + 1, 'answered once');
+  assert.equal((await sent()).at(-1).convId, miaId);
+  assert.equal((await sent2()).length, sent2Before, 'nothing was typed into the second tab');
+  const read2 = await sql(`SELECT COUNT(*) AS n FROM messages WHERE body = 'hello from the second tab'`);
+  assert.equal(read2[0].n, 0, 'the second tab was never read');
+  await page2.close();
+  await until('duplicate note gone', async () => { const s = await tiktokStatus(); return s?.state === 'ready' && !/tabs are open/.test(s.detail || '') ? s : null; });
+  pass(`duplicate tab: "${dupStatus.detail}"; reads and sends stay in the first tab`);
+
   // ---- captcha and rate limit stop the channel ------------------------------------------------------------
   await mock(() => window.mock.setCaptcha(true));
   const captcha = await op('probe');
@@ -345,9 +406,10 @@ async function main() {
   assert.equal((await mock(() => window.mock.failed())).length, 1);
   const blocked = await until('blocked in /api/overview', async () => { const s = await tiktokStatus(); return s?.state === 'blocked' ? s : null; });
   assert.match(blocked.detail, /too fast/i);
+  const sentBeforeBlock = (await sent()).length;
   await mock(() => window.mock.receive('jake.rides', 'hello?'));
   for (let i = 0; i < 6; i++) { await kick(); await sleep(600); }
-  assert.equal((await sent()).length, 9, 'nothing is sent while blocked');
+  assert.equal((await sent()).length, sentBeforeBlock, 'nothing is sent while blocked');
   assert.equal((await mock(() => window.mock.failed())).length, 1, 'the agent did not try again');
   const whileBlocked = await op('send', { job: fake() });
   assert.deepEqual([whileBlocked.ok, whileBlocked.error_code], [false, 'blocked'], JSON.stringify(whileBlocked));

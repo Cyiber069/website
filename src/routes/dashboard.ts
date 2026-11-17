@@ -12,6 +12,8 @@ import { processConversation } from '../pipeline/inbound';
 import { answerUrgent, answerUrgentWithNote, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
 import { currentDevice, pairingCodeRow, selectorPack } from './agent';
 import { checkDiscountPatch } from '../discounts/rules';
+import { monitorRows } from '../pipeline/monitor';
+import { usageToday } from '../lib/usage';
 
 const count = async (db: D1Database, sql: string, ...p: (string | number)[]) => (await one<{ n: number }>(db, sql, ...p))?.n ?? 0;
 
@@ -90,7 +92,7 @@ export function register(r: Router): void {
     const now = c.now;
     const settings = await getSettings(db);
     const day = startOfLondonDay(now);
-    const [devices, hints] = await Promise.all([currentDevice(db, now), secretHints(db)]);
+    const [devices, hints, mon] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db)]);
     const device = devices[0] ?? null;
     const [urgentOpen, reviewPending, inboundToday, sentToday, queued, convToday, kbDocs, kbTokens, autoToday, escalatedToday] = await Promise.all([
       count(db, `SELECT COUNT(*) AS n FROM urgent WHERE status = 'open'`),
@@ -115,6 +117,9 @@ export function register(r: Router): void {
       agent: { enabled: settings.agent.enabled },
       device,
       channels: settings.channels,
+      // Channel problems, chats waiting with no reply and AI failures found by the every minute check.
+      monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
+      usage: usageToday(mon.usage, now),
       counts: {
         urgent_open: urgentOpen, review_pending: reviewPending, inbound_today: inboundToday, sent_today: sentToday,
         queued, conversations_today: convToday, auto_today: autoToday, escalated_today: escalatedToday,
@@ -368,17 +373,21 @@ export function register(r: Router): void {
   // ---- Health -------------------------------------------------------------------------------------------
   r.get('/api/health', 'owner', async (c) => {
     const since = c.now - DAY;
-    const [devices, misses, failed, errors, usage, sel] = await Promise.all([
+    const [devices, misses, failed, errors, usage, sel, mon] = await Promise.all([
       currentDevice(c.db, c.now),
       all(c.db, `SELECT id, ts, channel, kind, data FROM diagnostics WHERE ts > ? ORDER BY id DESC LIMIT 60`, since),
       all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status = 'failed' AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
       all(c.db, `SELECT id, ts, type, channel, message FROM events WHERE level = 'error' AND ts > ? ORDER BY id DESC LIMIT 30`, since),
       all(c.db, `SELECT provider, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, AVG(ms) AS avg_ms, SUM(ok) AS ok FROM llm_usage WHERE ts > ? GROUP BY provider, model`, since),
       selectorPack(c.db),
+      monitorRows(c.db),
     ]);
     return json({
       now: c.now,
       devices,
+      monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
+      // Rows this Worker used today, counted in the Worker itself. An estimate: see src/lib/usage.ts.
+      d1_usage: usageToday(mon.usage, c.now),
       diagnostics: misses.map((m) => ({ ...(m as object), data: parseJson((m as { data: string }).data, {}) })),
       failed_jobs: failed.map((f) => ({ id: f.id, channel: f.channel, source: f.source, error: f.last_error, created_at: f.created_at, target: parseJson<JobTarget>(f.target, emptyTarget()).title })),
       errors,

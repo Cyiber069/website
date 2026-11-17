@@ -2,8 +2,13 @@
 
 export type Param = string | number | null;
 
+/**
+ * First row or null. Uses all() rather than first() because first() hides meta.rows_read, and the
+ * usage meter (src/lib/usage.ts) can only count what it sees. Add LIMIT 1 when a query may match many.
+ */
 export async function one<T>(db: D1Database, sql: string, ...params: Param[]): Promise<T | null> {
-  return (await db.prepare(sql).bind(...params).first<T>()) ?? null;
+  const res = await db.prepare(sql).bind(...params).all<T>();
+  return res.results?.[0] ?? null;
 }
 
 export async function all<T>(db: D1Database, sql: string, ...params: Param[]): Promise<T[]> {

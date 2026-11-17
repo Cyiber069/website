@@ -13,6 +13,9 @@
 //   send({ job })      -> { sent_external_ids: [] }         types job.parts in order into job.target and sends them
 //   prepare({ job })   -> { navigate: url } | { ready: true }   optional, for new_chat jobs that need a page load first
 //   selftest()         -> { checks: [{ name, ok, detail }] }    optional
+//   sweep()            -> { threads: [...] } like scan, optional: the most recent 1:1 chats whose last
+//                         message is from the customer, whatever their unread badge says. Run every
+//                         10 minutes as a safety net for messages the normal scan missed.
 //
 // Throw new ACX.Fail(code, message, retryable) for expected failures. Codes the server understands:
 // thread_not_found, composer_missing, composer_busy, send_not_confirmed, not_on_whatsapp, invalid_number,
@@ -450,20 +453,47 @@
   // ---- adapter plumbing ---------------------------------------------------------------------------------------
   let adapter = null;
   let chainTail = Promise.resolve();
+  let current = null; // { op, since } of the operation the queue is running now
+
+  // The longest an operation may hold the queue. A step that never finishes (a promise the page never
+  // resolves) would otherwise block every later scan in this tab for good. Longer than the service
+  // worker's own limits, so the worker always gives up first.
+  const OP_LIMIT_MS = { scan: 60_000, sweep: 60_000, read: 90_000, prepare: 60_000, send: 240_000, selftest: 120_000 };
 
   /** Run operations strictly one after another: a tab can only do one thing at a time. */
-  function serial(fn) {
-    const run = chainTail.then(fn, fn);
+  function serial(op, fn) {
+    const limited = () => {
+      current = { op, since: Date.now() };
+      let timer;
+      const cap = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Fail('timeout', `${op} did not finish in this tab`, true)), OP_LIMIT_MS[op] || 90_000);
+      });
+      return Promise.race([Promise.resolve().then(fn), cap]).finally(() => { clearTimeout(timer); current = null; });
+    };
+    const run = chainTail.then(limited, limited);
     chainTail = run.then(() => undefined, () => undefined);
     return run;
   }
+
+  // A page holding a Web Lock is not frozen by Chrome's Energy Saver (a frozen tab never answers the
+  // agent). The name is neutral and unique per page, so a second tab of the same site holds its own.
+  try {
+    if (navigator.locks && window === window.top) {
+      navigator.locks.request(`tab-lease-${Math.random().toString(36).slice(2, 10)}`, () => new Promise(() => {})).catch(() => {});
+    }
+  } catch { /* locks unavailable */ }
 
   async function handle(op, args) {
     if (!adapter) throw new Fail('unknown', 'Adapter not ready', true);
     if (!Object.keys(pack).length) await loadPack();
     switch (op) {
-      case 'probe': return adapter.probe(args || {});
+      case 'probe': {
+        const res = await adapter.probe(args || {});
+        // How long the queue has been busy with one operation: lets the worker see a stuck tab.
+        return res && typeof res === 'object' ? { ...res, busy_op: current ? current.op : null, busy_ms: current ? Date.now() - current.since : 0 } : res;
+      }
       case 'scan': return adapter.scan(args || {});
+      case 'sweep': return adapter.sweep ? adapter.sweep(args || {}) : { threads: [] };
       case 'read': return adapter.read(args || {});
       case 'send': return adapter.send(args || {});
       case 'prepare': return adapter.prepare ? adapter.prepare(args || {}) : { ready: true };
@@ -478,7 +508,7 @@
       if (!msg || msg.acx !== true || !msg.op) return false;
       // probe and health may run while a long send is in progress; everything else waits its turn.
       const job = () => handle(msg.op, msg.args);
-      const run = msg.op === 'probe' || msg.op === 'health' ? job() : serial(job);
+      const run = msg.op === 'probe' || msg.op === 'health' ? job() : serial(msg.op, job);
       Promise.resolve(run).then(
         (data) => respond({ ok: true, data: data ?? null }),
         (err) => {

@@ -15,6 +15,7 @@ import { alertOwner } from './alerts';
 import { noReplyNeeded } from './noreply';
 export { noReplyNeeded };
 import { cancelAgentJobs, cancelForOptOut, emptyTarget, enqueue, leaseById } from './outbox';
+import { recordSalesRead } from '../sales/leads'; // SALES: lead stage tracking
 
 const KINDS: MessageKind[] = ['text', 'image', 'voice', 'video', 'sticker', 'document', 'other'];
 const MAX_MESSAGES = 40;
@@ -424,6 +425,8 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   let act = decision.action;
   let draft: string | null = null;
+  // SALES: the parts queued to the customer this turn, so the product link we sent is remembered.
+  let salesSent: string[] = [];
   // Only the code template may tell a customer a code is live, and only after the code exists.
   const promisesCode = act === 'reply' && promisesLiveCode(decision.parts.join(' '));
   if (act === 'reply' && (decision.confidence < settings.brain.confidence_threshold || decision.flags.needs_human || promisesCode)) {
@@ -446,6 +449,7 @@ export async function processConversation(env: Env, convId: string, device: Devi
       expires_at: mode === 'review' ? null : now + settings.pacing.ignore_older_than_hours * HOUR,
       dedupe_key: `auto:${convId}:${lastMsg.id}`,
     });
+    if (id) salesSent = decision.parts; // SALES
     if (id && mode === 'review') {
       action = 'review';
       // Only the newest draft answers the chat as it stands. An older one approved later would reply out of context.
@@ -479,10 +483,12 @@ export async function processConversation(env: Env, convId: string, device: Devi
       await run(db, `UPDATE conversations SET status = 'waiting_owner' WHERE id = ?`, convId);
       await logEvent(db, { level: 'warn', type: 'escalated', channel: conv.channel, conversation_id: convId, message: `Needs you: ${who} asked "${clip(esc.question, 160)}"`, data: { urgent_id: urgentId } });
       if (decision.parts.length && settings.voice.holding_reply && mode === 'auto') {
+        // SALES: up to two parts, the part of the answer the knowledge covers and the holding line (checked in src/brain/rules.ts).
         const hid = await enqueue(db, {
-          channel: conv.channel, kind: 'reply', conversation_id: convId, target, parts: decision.parts.slice(0, 1),
+          channel: conv.channel, kind: 'reply', conversation_id: convId, target, parts: decision.parts.slice(0, 2),
           source: 'holding', ref_id: urgentId, pacing, dedupe_key: `holding:${urgentId}`, expires_at: now + settings.pacing.ignore_older_than_hours * HOUR,
         });
+        if (hid) salesSent = decision.parts.slice(0, 2); // SALES
         if (hid && device) {
           const job = await leaseById(db, device, hid, settings, pacing.delay_ms);
           if (job) jobs.push(job);
@@ -493,6 +499,9 @@ export async function processConversation(env: Env, convId: string, device: Devi
   } else {
     reason = decision.note || 'no_reply_needed';
   }
+
+  // SALES: store the lead stage, product and any product link we sent (src/sales/leads.ts). Never blocks a reply.
+  await recordSalesRead(db, conv, decision.sales, salesSent, now).catch((err) => console.error('sales read not stored', err));
 
   await clear();
   return { conversation_id: convId, action, reason, jobs, new_inbound: newInbound };

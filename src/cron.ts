@@ -1,34 +1,17 @@
 // Runs every minute (see wrangler.jsonc). Each task is independent: one failing never blocks the rest.
 import type { Env } from './types';
-import { all, run } from './lib/db';
-import { logEvent } from './lib/events';
+import { run } from './lib/db';
 import { getSettings, getState, setState } from './lib/settings';
-import { DAY, MIN } from './lib/time';
-import { alertOwner } from './pipeline/alerts';
+import { DAY } from './lib/time';
+import { watchHealth } from './pipeline/monitor';
 import { sweepConversations } from './pipeline/inbound';
 import { sweepOutbox } from './pipeline/outbox';
 import { syncStore } from './kb';
 import { recoveryTick } from './recovery';
-import { ONLINE_WINDOW_MS } from './routes/agent';
+import { salesTick } from './sales';
 
 async function safely(name: string, fn: () => Promise<unknown>): Promise<void> {
   try { await fn(); } catch (err) { console.error(`cron task ${name} failed`, err); }
-}
-
-async function watchDevice(env: Env): Promise<void> {
-  const db = env.DB;
-  const settings = await getSettings(db);
-  if (!settings.agent.enabled) return;
-  const now = Date.now();
-  const devices = await all<{ name: string; last_seen_at: number | null }>(db, 'SELECT name, last_seen_at FROM devices WHERE revoked_at IS NULL ORDER BY COALESCE(last_seen_at, 0) DESC LIMIT 1');
-  const d = devices[0];
-  if (!d?.last_seen_at) return;
-  const silentFor = now - d.last_seen_at;
-  if (silentFor < Math.max(ONLINE_WINDOW_MS, settings.alerts.offline_minutes * MIN)) return;
-  if (await getState<boolean>(db, 'offline_alerted', false)) return;
-  await setState(db, 'offline_alerted', true);
-  await logEvent(db, { level: 'error', type: 'device_offline', message: `${d.name} has gone quiet. Nothing can be sent until Chrome is open on it again.` });
-  await alertOwner(env, settings, { kind: 'offline', title: 'Your laptop agent is offline', body: `${d.name} stopped checking in. Customers are not being answered.`, path: '/#/health' });
 }
 
 async function cleanup(env: Env): Promise<void> {
@@ -64,6 +47,8 @@ export async function runCron(env: Env): Promise<void> {
   await safely('recovery', async () => { busy = await recoveryTick(env); });
   if (!busy) await safely('store-sync', async () => { busy = await dailyStoreSync(env); });
   if (!busy) await safely('conversations', () => sweepConversations(env, 1));
-  await safely('device', () => watchDevice(env));
+  // One follow up for warm leads. Skipped in the minute a recovery run or store sync starts.
+  if (!busy) await safely('sales', () => salesTick(env));
+  await safely('health', () => watchHealth(env));
   await safely('cleanup', () => cleanup(env));
 }

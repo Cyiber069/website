@@ -1,13 +1,26 @@
 // Deterministic stand-in for the LLM, used only when ACX_TEST_MODE=1 (local dev and automated tests).
 // Tests rely on these exact triggers, so change them together with test/.
-import type { Decision, DecideInput, PolishInput, PolishResult, ToneProfile } from '../types';
+import type { Decision, DecideInput, PolishInput, PolishResult, SalesRead, ToneProfile } from '../types';
+
+/** Mock product link for the sales tests. Matches the seed catalogue. */
+export const MOCK_PRODUCT = { title: 'ACX 2000w bundle', link: 'https://acxebikes.com/products/acx-2000w-bundle' };
+
+/** Deterministic sales read for tests: support words, then bought, then the shop-* triggers, else none. */
+export function mockSales(text: string): SalesRead {
+  if (/refund|broken|faulty|complain|where is my/.test(text)) return { stage: 'support', product: null };
+  if (/just ordered|already bought|i bought/.test(text)) return { stage: 'bought', product: null };
+  if (text.includes('shop-ready')) return { stage: 'ready', product: MOCK_PRODUCT.title };
+  if (text.includes('shop-interested')) return { stage: 'interested', product: MOCK_PRODUCT.title };
+  if (text.includes('shop-browse')) return { stage: 'browsing', product: null };
+  return { stage: 'none', product: null };
+}
 
 export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   const last = [...input.history].reverse().find((m) => m.direction === 'in');
   const text = (last?.body ?? '').toLowerCase();
   const base: Decision = {
     action: 'reply', parts: [], confidence: 0.92, escalate: null, tone,
-    flags: { opt_out: false, asked_if_bot: false, needs_human: false }, kb_refs: [], note: 'mock', usage: null,
+    flags: { opt_out: false, asked_if_bot: false, needs_human: false }, kb_refs: [], note: 'mock', usage: null, sales: mockSales(text),
   };
   if (text.includes('mock-error')) throw new Error('mock brain failure');
   // The owner explained the situation on an Urgent card (src/brain/note.ts). Every later reply in the chat follows it too.
@@ -31,7 +44,14 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   if (input.context_notes.some((n) => n.startsWith('The customer wants their own discount code'))) {
     return { ...base, parts: ['nice one what do you want your code to be'], note: 'mock asks for the code' };
   }
-  if (text.includes('lowconf')) return { ...base, confidence: 0.3, parts: ['i think it is about 3 days but not sure'] };
+  // (The draft is only shaky, it never says "not sure": the never sound unsure guard would turn that into a holding line.)
+  if (text.includes('lowconf')) return { ...base, confidence: 0.3, parts: ['i think it is about 3 days'] };
+  // The agent sounding unsure (owner rule test): the guard in rules.ts turns this into a holding line and an Urgent item.
+  if (text.includes('unsure-reply')) return { ...base, parts: ["I'm not sure about that one"] };
+  // Selling: a recommendation with the product link, or the close.
+  if (text.includes('shop-ready')) return { ...base, parts: [`this is the one you can grab it here ${MOCK_PRODUCT.link}`] };
+  if (text.includes('shop-interested')) return { ...base, parts: [`the ${MOCK_PRODUCT.title} fits best for that ${MOCK_PRODUCT.link}`] };
+  if (text.includes('shop-browse')) return { ...base, parts: ['nice what bike are you fitting it to'] };
   if (text.includes('ignore-me')) return { ...base, action: 'ignore', note: 'mock ignore' };
   if (text.includes('two-parts')) return { ...base, parts: ['hey', 'mock second part'] };
   if (text.includes('dashes')) return { ...base, parts: ['Sure \u2014 delivery is 2-4 days, and it is free - no worries!'] };

@@ -88,7 +88,7 @@ function renderExcerpt(h: KbHit): string {
  * fits brain.kb_full_tokens) or the best brain.kb_top_chunks excerpts for `queryText`.
  * `budgetTokens` caps the total for models with a small context window.
  */
-export async function buildKnowledgeContext(env: Env, queryText: string, opts: { budgetTokens?: number } = {}): Promise<KnowledgeContext> {
+export async function buildKnowledgeContext(env: Env, queryText: string, opts: { budgetTokens?: number; include?: string[] } = {}): Promise<KnowledgeContext> {
   await ensureSeeded(env);
   const settings = await getSettings(env.DB);
   const budget = opts.budgetTokens ?? Number.MAX_SAFE_INTEGER;
@@ -113,7 +113,20 @@ export async function buildKnowledgeContext(env: Env, queryText: string, opts: {
     used.push({ id: d.id, title: d.title });
     tokens += d.token_estimate;
   }
-  const hits = await searchKb(env, queryText, { limit: settings.brain.kb_top_chunks, includePinned: false });
+  // Documents asked for by id (the product picker for a shopper) go in full, ahead of the search matches.
+  const extra: string[] = [];
+  const wanted = (opts.include ?? []).filter((id) => !used.some((u) => u.id === id)).slice(0, 5);
+  if (wanted.length) {
+    const rows = await all<KbDocRow>(env.DB, `SELECT * FROM kb_docs WHERE id IN (SELECT value FROM json_each(?)) AND enabled = 1`, JSON.stringify(wanted));
+    for (const d of rows) {
+      if (tokens + d.token_estimate > budget) continue;
+      extra.push(renderDoc(d));
+      used.push({ id: d.id, title: d.title });
+      tokens += d.token_estimate;
+    }
+  }
+  const included = new Set(used.map((u) => u.id));
+  const hits = (await searchKb(env, queryText, { limit: settings.brain.kb_top_chunks + included.size, includePinned: false })).filter((h) => !included.has(h.doc_id)).slice(0, settings.brain.kb_top_chunks);
   // Keep excerpts of one document together and in reading order, best document first.
   const order = [...new Set(hits.map((h) => h.doc_id))];
   const picked: KbHit[] = [];
@@ -125,5 +138,5 @@ export async function buildKnowledgeContext(env: Env, queryText: string, opts: {
   }
   picked.sort((a, b) => order.indexOf(a.doc_id) - order.indexOf(b.doc_id) || a.ord - b.ord);
   for (const h of picked) if (!used.some((u) => u.id === h.doc_id)) used.push({ id: h.doc_id, title: h.title });
-  return { mode: 'top', stable: stable.join('\n\n'), retrieved: picked.map(renderExcerpt).join('\n\n'), docs: used, tokens };
+  return { mode: 'top', stable: stable.join('\n\n'), retrieved: [...extra, ...picked.map(renderExcerpt)].join('\n\n'), docs: used, tokens };
 }

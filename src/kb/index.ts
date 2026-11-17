@@ -15,6 +15,7 @@ import { titleSimilarity } from './query';
 export { buildKnowledgeContext, searchKb, type KbHit, type KnowledgeContext } from './search';
 export { ensureSeeded, getGaps, setGaps, type KbGap } from './seed';
 export { syncStore, type SyncResult } from './sync';
+export { PRODUCT_PICKER_ID, PRODUCT_PICKER_TITLE, buildProductPicker } from './picker';
 
 /**
  * Store a fact the owner taught the agent while answering an urgent question. Returns the kb_docs id.

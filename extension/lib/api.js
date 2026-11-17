@@ -23,15 +23,20 @@ export function parsePairingString(text) {
   return { server_url: url.origin, code };
 }
 
-async function request(path, { method = 'POST', body, auth, signal } = {}) {
+const REQUEST_TIMEOUT_MS = 30_000;
+
+async function request(path, { method = 'POST', body, auth, signal, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const a = auth ?? (await store.get('auth'));
   if (!a?.server_url) throw new ApiError(0, 'not_paired', 'Not paired yet');
   const headers = { 'content-type': 'application/json' };
   if (a.token) headers.authorization = `Bearer ${a.token}`;
+  // Every call ends: a request that hangs (laptop woke up, network changed) must never stall the agent.
+  const sig = signal || AbortSignal.timeout(timeoutMs);
   let res;
   try {
-    res = await fetch(`${a.server_url}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal });
+    res = await fetch(`${a.server_url}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: sig, cache: 'no-store' });
   } catch (err) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') throw new ApiError(0, 'timeout', 'The dashboard server did not answer in time');
     throw new ApiError(0, 'network', `Cannot reach the dashboard server (${err?.message || 'network error'})`);
   }
   return res;
@@ -40,7 +45,14 @@ async function request(path, { method = 'POST', body, auth, signal } = {}) {
 async function json(path, opts) {
   const res = await request(path, opts);
   let data = null;
-  try { data = await res.json(); } catch { /* empty or non JSON body */ }
+  // The body can hang too: give it the same limit as the request.
+  const STUCK = Symbol('stuck');
+  let timer;
+  const stuck = new Promise((r) => { timer = setTimeout(() => r(STUCK), REQUEST_TIMEOUT_MS); });
+  try {
+    data = await Promise.race([res.json(), stuck]);
+  } catch { data = null; /* empty or non JSON body */ } finally { clearTimeout(timer); }
+  if (data === STUCK) throw new ApiError(0, 'timeout', 'The dashboard server stopped halfway through its answer');
   if (!res.ok) throw new ApiError(res.status, data?.error || `http_${res.status}`, data?.message || `Server said ${res.status}`);
   return data;
 }

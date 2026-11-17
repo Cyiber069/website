@@ -3,6 +3,8 @@ import { get } from '../api.js';
 import { $, html, icon, setHTML, unavailable, skeletonCards, ago, dayClock, chBadge, chName, CHANNELS, num, plural } from '../ui.js';
 import { channelState } from './live.js';
 
+const LIMITS = { read: 5000000, write: 100000 };
+
 const JOB_ERRORS = {
   thread_not_found: 'The chat could not be found on the page', composer_missing: 'The message box was not on the page', send_not_confirmed: 'The message was typed but did not show as sent',
   not_on_whatsapp: 'That number is not on WhatsApp', invalid_number: 'The phone number is not valid', logged_out: 'The laptop was signed out of the site', tab_missing: 'The tab was closed on the laptop',
@@ -40,7 +42,11 @@ export default {
       const misses = diags.filter((d) => d.kind === 'selector_miss');
       const usage = data.llm_usage || [];
       const chProblems = ov ? CHANNELS.filter((c) => ['pill--down'].includes(channelState(ov, c).pill)).length : 0;
-      const problems = (dev?.online ? 0 : 1) + (failed.length ? 1 : 0) + (errors.length ? 1 : 0) + (misses.length ? 1 : 0) + chProblems;
+      const mon = data.monitor || ov?.monitor || {};
+      const stuck = Object.values(mon.stuck || {}).reduce((n, x) => n + x, 0);
+      const u = data.d1_usage;
+      const usageHigh = u && Math.max(u.read_pct || 0, u.write_pct || 0) > 60;
+      const problems = (dev?.online ? 0 : 1) + (failed.length ? 1 : 0) + (errors.length ? 1 : 0) + (misses.length ? 1 : 0) + chProblems + (mon.ai_failing ? 1 : 0) + (stuck ? 1 : 0) + (usageHigh ? 1 : 0);
       setHTML(view, html`
         <section class="hero ${problems ? (dev?.online ? 'is-paused' : 'is-offline') : ''}" aria-label="Summary">
           <span class="eyebrow">Last 24 hours</span>
@@ -52,8 +58,21 @@ export default {
           <div class="card__head"><h2 class="eyebrow" id="hl-h">Laptop</h2>${dev ? html`<span class="pill ${dev.online ? 'pill--live' : 'pill--down'}"><span class="dot ${dev.online ? 'dot--live' : 'dot--down'}" aria-hidden="true"></span>${dev.online ? 'Online' : 'Offline'}</span>` : html`<span class="pill pill--wait"><span class="dot dot--wait" aria-hidden="true"></span>Not paired</span>`}</div>
           ${dev ? html`<p class="muted">${dev.name || 'Laptop'} ${dev.last_seen_at ? `last checked in ${ago(dev.last_seen_at, data.now)}` : 'has not checked in yet'}.${dev.online ? '' : ' Open the laptop, make sure Chrome is running and it has internet.'}${dev.status?.paused_locally ? ' It is paused from the extension on the laptop.' : ''}</p>`
             : html`<p class="muted">No laptop is paired, so the agent cannot read or send anything.</p><div><a class="btn btn--primary" href="#/connections">Pair this laptop</a></div>`}
-          ${ov ? html`<ul class="rows">${CHANNELS.map((c) => { const st = channelState(ov, c); const un = dev?.status?.channels?.[c]?.unread; return html`<li class="rowline">${chBadge(c)}<span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span><span class="meta">${st.hint}${un ? ` · ${plural(un, 'unread chat')}` : ''}</span></li>`; })}</ul>` : ''}
+          ${ov ? html`<ul class="rows">${CHANNELS.map((c) => {
+            const st = channelState(ov, c); const cs = dev?.status?.channels?.[c]; const un = cs?.unread; const seen = st.seen;
+            const facts = [seen ? seen.text : '', un ? plural(un, 'unread chat') : '', cs?.recoveries ? `fixed itself ${plural(cs.recoveries, 'time')} today` : '', seen?.stuck ? `${plural(seen.stuck, 'chat')} waiting with no reply` : ''].filter(Boolean).map((f) => f[0].toUpperCase() + f.slice(1));
+            return html`<li class="rowline">${chBadge(c)}<span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span><span class="meta">${seen?.reason || st.hint}${facts.length ? html`<span class="rowline__sub ${seen && seen.level !== 'ok' ? `seen--${seen.level}` : ''}">${facts.join('. ')}</span>` : ''}${cs?.last_error && cs.last_error !== seen?.reason ? html`<span class="rowline__sub break">Last problem: ${cs.last_error}</span>` : ''}</span></li>`;
+          })}</ul>` : ''}
         </section>
+
+        ${mon.ai_failing ? html`<p class="banner banner--down" role="status">${icon('i-stop')}<span><b>The AI is failing.</b> It did not answer 3 times in a row. Check the key or the free daily limit in <a href="#/connections">Connections</a>.</span></p>` : ''}
+
+        ${u ? html`<section class="card stack" aria-labelledby="hd-h">
+          <div class="card__head"><h2 class="eyebrow" id="hd-h">Database use today</h2><span class="meta">Estimate</span></div>
+          ${meter('read', u.rows_read, LIMITS.read, u.read_pct)}
+          ${meter('written', u.rows_written, LIMITS.write, u.write_pct)}
+          <p class="field__hint">Cloudflare's free plan allows ${num(LIMITS.read)} rows read and ${num(LIMITS.write)} rows written a day. It starts again at midnight UTC. The agent counts this itself and can miss some, so the real number may be a bit higher. Cloudflare's own page has the exact count.</p>
+        </section>` : ''}
 
         <section class="card stack" aria-labelledby="hf-h">
           <div class="card__head"><h2 class="eyebrow" id="hf-h">Messages that did not send</h2><span class="count ${failed.length ? 'count--danger' : ''}">${failed.length}</span></div>
@@ -80,6 +99,16 @@ export default {
             <tbody>${usage.map((u) => html`<tr><th scope="row">${PROVIDER[u.provider] || 'AI'}<span class="rowline__sub">${String(u.model || '').replace(/^@cf\/[^/]+\//, '').replace(/^claude-/, 'Claude ').replace(/-/g, ' ')}</span></th><td class="r num">${num(u.calls)}</td><td class="r num">${num((u.calls || 0) - (u.ok || 0))}</td><td class="r num">${((u.avg_ms || 0) / 1000).toFixed(1)}s</td><td class="r num">${num(Math.round(((u.input_tokens || 0) + (u.cache_read_tokens || 0)) * 0.75))}</td><td class="r num">${num(Math.round((u.output_tokens || 0) * 0.75))}</td></tr>`)}</tbody></table></div>
             <p class="field__hint">Words are a rough count. Your Anthropic bill is based on these.</p>` : html`<p class="voice muted">The AI has not been used in the last day.</p>`}
         </section>`);
+    }
+
+    function meter(what, n, limit, pct) {
+      const p = Math.min(1, (n || 0) / limit);
+      const level = pct >= 85 ? 'down' : pct > 60 ? 'wait' : 'ok';
+      return html`<div class="meter meter--${level}">
+        <p class="meter__label">About <b class="num">${num(Math.round(n || 0))}</b> rows ${what} today of <span class="num">${num(limit)}</span></p>
+        <div class="progress meter__bar" role="progressbar" aria-label="Rows ${what} today" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(p * 100)}"><i style="--p:${p.toFixed(4)}"></i></div>
+        <p class="meta num">${pct < 1 && n ? 'Under 1%' : `${Math.round(pct)}%`}</p>
+      </div>`;
     }
 
     async function load() {

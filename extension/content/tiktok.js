@@ -606,6 +606,9 @@
       if (changed && !row.unread && !isOpen) bump(row.key);
       // An open conversation gets no unread badge, so there the last bubble decides.
       if (!(row.unread > 0 || changed || (isOpen && tail.last_in))) continue;
+      // The row only moved because of our own reply: nothing to read. For the open chat the last
+      // bubble tells, for the others the preview (a text this page sent).
+      if (!row.unread && !accepted && (isOpen ? !tail.last_in : endsWithOurs(row.preview))) continue;
       threads.push({
         key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: row.is_group, accepted,
         sig: isOpen ? `${stamp(row.key)}|o|${tail.sig}` : `${stamp(row.key)}|l|${row.unread}|${row.preview}|${row.time}`,
@@ -643,6 +646,58 @@
         key: open.key, title: open.nick, unread: 0, preview: String(tail.preview || '').slice(0, 200),
         is_group: open.convId ? !isOneToOne(open.convId) : false, sig: `${stamp(open.key)}|o|${tail.sig}`,
       });
+    }
+    return { threads };
+  }
+
+  // ---- sweep ----------------------------------------------------------------------------------------------
+
+  // Texts this page sent lately: a row whose preview is one of them ends with our own message.
+  const sentTexts = [];
+  const rememberSent = (text) => { sentTexts.push(squash(text)); if (sentTexts.length > 60) sentTexts.shift(); };
+  function endsWithOurs(preview) {
+    const p = squash(preview).replace(/(\.\.\.|\u2026)$/, '').trim();
+    if (!p) return false;
+    return sentTexts.some((t) => t === p || (p.length >= 12 && t.startsWith(p)));
+  }
+
+  /** True when a list time ("20:14", "now", "5m", "3h") is within the last day. */
+  function recentTime(time) {
+    const t = String(time || '').trim().toLowerCase();
+    if (!t) return false;
+    if (/^(now|just now)$/.test(t)) return true;
+    if (/^\d{1,3}\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\b/.test(t)) return true;
+    return /^\d{1,2}:\d{2}/.test(t) && withinMinutes(t, 24 * 60);
+  }
+
+  /**
+   * Safety net, run every 10 minutes: the most recent 1:1 conversations that may end with a customer
+   * message, badge or not. A list row does not say who wrote last, so the open chat is judged from its
+   * last bubble and other rows from their preview (rows that show a text this page sent are left out).
+   * The signature only moves with the preview, so each row is read at most once per new message.
+   * Leaves the accepted request logic and the startup window of scan() alone.
+   */
+  async function sweep() {
+    requireMessages();
+    if (blockedNow()) return { threads: [] };
+    if (!q('conversation.list', document, QUIET)) return { threads: [] };
+    await leaveRequests();
+    const rows = visibleRows();
+    const open = currentOpen(rows);
+    const tail = open ? tailOf(open) : null;
+    const threads = [];
+    for (const row of rows) {
+      if (threads.length >= 8) break;
+      if (row.is_group || row.request) continue;
+      if (open && open.key === row.key) {
+        // Same signature as scan() gives the open chat, so one already reported is not read again.
+        if (tail && tail.last_in) threads.push({ key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: false, sig: `${stamp(row.key)}|o|${tail.sig}` });
+        continue;
+      }
+      if (row.unread > 0) continue; // a badge is scan()'s job, every time
+      if (!row.preview || endsWithOurs(row.preview)) continue;
+      if (!recentTime(row.time)) continue; // older conversations are the owner's to deal with
+      threads.push({ key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: false, sig: `sw|l|${row.preview}` });
     }
     return { threads };
   }
@@ -797,7 +852,7 @@
     }
     res = await waitFor(outcome, { timeout: 20_000, interval: 500 });
 
-    if (res && res.state === 'sent') return res.id;
+    if (res && res.state === 'sent') { rememberSent(text); return res.id; }
 
     if (res && res.state === 'failed') {
       const notice = q('message.notice', res.msg.el, QUIET);
@@ -973,7 +1028,7 @@
 
   // ---- start -----------------------------------------------------------------------------------------------
 
-  const adapter = { probe, scan, read, send, selftest };
+  const adapter = { probe, scan, sweep, read, send, selftest };
 
   let started = false;
   function start() {

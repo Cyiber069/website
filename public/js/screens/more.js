@@ -4,6 +4,7 @@ import { $, html, icon, setHTML } from '../ui.js';
 const LINKS = [
   ['knowledge', 'i-knowledge', 'Knowledge', 'What the agent knows. Upload files and answer its questions.'],
   ['voice', 'i-voice', 'Voice', 'How it writes, and a place to try it out.'],
+  ['sales', 'i-shop', 'Sales', 'Chats that turned into orders, hot leads and follow ups.'],
   ['discounts', 'i-tag', 'Discount codes', 'Codes for creators and sponsors, sent in their chat.'],
   ['connections', 'i-plug', 'Connections', 'Laptop, AI brain, Shopify, notifications, password.'],
   ['health', 'i-health', 'Health', 'Is everything working, and what went wrong if not.'],

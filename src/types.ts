@@ -123,6 +123,16 @@ export interface DiscountSettings {
   one_per_customer: boolean;
 }
 
+/** Selling: the one follow up after a product recommendation, and how hard the agent sells. */
+export interface SalesSettings {
+  /** Send one short follow up when a customer who was shown a product goes quiet. */
+  follow_ups: boolean;
+  /** Hours of silence after our recommendation before the follow up. Only sent 10:00 to 20:00 UK time. */
+  follow_up_hours: number;
+  /** friendly: warm and helpful (default). relaxed: answer first, sell only when asked. keen: always end with a clear next step. */
+  style: 'friendly' | 'relaxed' | 'keen';
+}
+
 export interface Settings {
   agent: { enabled: boolean };
   channels: Record<Channel, { mode: ChannelMode }>;
@@ -137,6 +147,8 @@ export interface Settings {
   gmail: { account: string; ignore_senders: string[] };
   /** Creator codes the agent makes when a customer asks for one. */
   discounts: DiscountSettings;
+  /** Selling style and the follow up after a recommendation (src/sales). */
+  sales: SalesSettings;
 }
 
 // ---- Tone and brain --------------------------------------------------------------------------
@@ -188,6 +200,16 @@ export interface LlmUsage {
   ms: number;
 }
 
+/** Where a conversation stands as a sale. support: help with an order or a kit they own. none: not about buying. */
+export type SalesStage = 'browsing' | 'interested' | 'ready' | 'bought' | 'support' | 'none';
+export const SALES_STAGES: SalesStage[] = ['browsing', 'interested', 'ready', 'bought', 'support', 'none'];
+
+/** The brain's read of the sale, from the same decide call. product is a product title from the knowledge. */
+export interface SalesRead {
+  stage: SalesStage;
+  product: string | null;
+}
+
 export interface Decision {
   /** reply: send parts. escalate: add to Urgent (parts may hold a short holding line). ignore: send nothing. */
   action: 'reply' | 'escalate' | 'ignore';
@@ -201,6 +223,8 @@ export interface Decision {
   kb_refs: string[];
   note: string;
   usage: LlmUsage | null;
+  /** Optional: older callers and the media path leave it out. */
+  sales?: SalesRead | null;
 }
 
 export interface PolishInput {
@@ -256,6 +280,11 @@ export interface ConversationRow {
   needs_reply_since: number | null; processing_until: number | null; context_notes: string;
   last_inbound_at: number | null; last_outbound_at: number | null; last_preview: string;
   last_direction: string; created_at: number; updated_at: number;
+  /** Sales columns (migration 0006). */
+  sales_stage?: SalesStage | null; sales_product?: string | null; sales_link?: string | null; sales_link_at?: number | null;
+  sales_stage_at?: number | null; interested_at?: number | null; ready_at?: number | null; bought_at?: number | null;
+  order_total?: number | null; order_currency?: string | null; followup_at?: number | null; followup_status?: string | null;
+  followup_outbox_id?: string | null;
 }
 
 export interface MessageRow {

@@ -381,6 +381,44 @@
     return { threads, source: feed ? 'feed' : 'list' };
   }
 
+  /**
+   * Safety net, run every 10 minutes: the newest threads of the inbox list that is on screen, read or
+   * not, whose latest sender is not us. Catches an email the owner opened on the phone (so it left the
+   * unread feed) before the agent saw it. Never changes the view: only works when the inbox list is
+   * already showing and the owner is not busy in it.
+   */
+  async function sweep() {
+    await stateReady;
+    if (isStandaloneCompose()) return { threads: [] };
+    const main = mainRoot();
+    const route = String(lookup('routes.inbox') || '#inbox');
+    const onInbox = !location.hash || location.hash === route || location.hash === '#inbox';
+    if (!main || !onInbox || threadHeader(main) || ownerBusy()) return { threads: [] };
+    const mine = myEmails();
+    const threads = [];
+    for (const row of listRows(main)) {
+      if (threads.length >= 8) break;
+      const r = parseRow(row);
+      if (!HEX_ID.test(r.id)) continue;
+      // Gmail lists every sender of the thread ("Jake, me"): the last one wrote last.
+      const senders = qa('list.sender', row).map((el) => (el.getAttribute('email') || '').toLowerCase()).filter(Boolean);
+      const lastFrom = senders.length ? senders[senders.length - 1] : r.email;
+      if (!lastFrom || mine.has(lastFrom)) continue;
+      if (state.skip[r.id] || automatedReason(lastFrom, r.subject)) continue;
+      const at = parseDate(r.date);
+      if (at && Date.now() - at > 24 * 3600_000) continue; // older mail is the owner's to deal with
+      threads.push({
+        key: r.id,
+        title: r.name || lastFrom || 'Unknown sender',
+        unread: r.unread ? 1 : 0,
+        preview: [r.subject, r.snippet].filter(Boolean).join(': ').slice(0, 200),
+        is_group: false,
+        sig: `sw|${r.id}|${r.lastMessageId || r.date}`,
+      });
+    }
+    return { threads };
+  }
+
   // ---- moving around -----------------------------------------------------------------------------------------
 
   /** Text the owner typed above the signature of a compose box ('' for a fresh, untouched box). */
@@ -1088,7 +1126,7 @@
 
   // ---- start -------------------------------------------------------------------------------------------------
 
-  ACX.register({ probe, scan, read, prepare, send, selftest });
+  ACX.register({ probe, scan, sweep, read, prepare, send, selftest });
 
   // New mail changes the inbox list: tell the service worker so it looks right away.
   ACX.watch(() => {

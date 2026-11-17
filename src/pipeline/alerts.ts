@@ -5,7 +5,7 @@ import { MIN } from '../lib/time';
 import { emptyTarget, enqueue } from './outbox';
 
 export interface OwnerAlert {
-  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount';
+  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount' | 'channel' | 'stuck' | 'ai' | 'usage';
   title: string;
   body: string;
   /** Dashboard path, for example /#/urgent */
@@ -19,20 +19,26 @@ const THROTTLE_MS: Record<OwnerAlert['kind'], number> = {
   recovery: 0,
   error: 30 * MIN,
   discount: 0,
+  // The monitor (src/pipeline/monitor.ts) already sends one per problem; these stop a flapping page spamming.
+  channel: 5 * MIN,
+  stuck: 30 * MIN,
+  ai: 60 * MIN,
+  usage: 0,
 };
 
 /**
  * Tell the owner something needs them: a push notification to their phone and, when they gave a
  * second number, a WhatsApp ping sent by the laptop. Best effort, never throws.
+ * Resolves false when the alert was held back by the throttle for its kind.
  */
-export async function alertOwner(env: Env, settings: Settings, alert: OwnerAlert): Promise<void> {
+export async function alertOwner(env: Env, settings: Settings, alert: OwnerAlert): Promise<boolean> {
   try {
     const db = env.DB;
     const now = Date.now();
     const gap = THROTTLE_MS[alert.kind];
     if (gap) {
       const last = await getState<number>(db, `alert_last:${alert.kind}`, 0);
-      if (now - last < gap) return;
+      if (now - last < gap) return false;
       await setState(db, `alert_last:${alert.kind}`, now);
     }
     if (settings.alerts.push) {
@@ -56,4 +62,5 @@ export async function alertOwner(env: Env, settings: Settings, alert: OwnerAlert
   } catch (err) {
     console.error('alertOwner failed', err);
   }
+  return true;
 }

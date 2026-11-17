@@ -42,6 +42,7 @@ This file is the contract between the parts. Keep it true when you change code.
 | `src/kb/` | knowledge base: extract, chunk, search, store sync | exports via `src/kb/index.ts` |
 | `src/shopify/` | Shopify client, webhooks, phone normalising | |
 | `src/recovery/` | abandoned checkout run + template | exports via `src/recovery/index.ts` |
+| `src/sales/` | lead stages (`leads.ts`), orders matched to chats (`conversions.ts`), the one follow up `salesTick` and the Sales screen numbers (`index.ts`) | |
 | `src/discounts/` | creator codes: shared create + send (`index.ts`), the agent's code turn (`agent.ts`), pure rules (`rules.ts`) | |
 | `src/routes/` | one file per API area, each exports `register(r)` | |
 | `src/cron.ts` | every-minute tasks | |
@@ -50,12 +51,25 @@ This file is the contract between the parts. Keep it true when you change code.
 | `seed/knowledge/` | starter knowledge exported from the store | bundled into the Worker |
 | `test/` | unit tests (vitest) and end to end (Playwright) | in test mode every API response carries `x-acx-d1-queries`; `test/api/limits.test.ts` keeps heavy paths under 50 |
 
+### Monitoring (`src/pipeline/monitor.ts`, every minute in cron)
+
+Alerts the owner once per problem (push, throttled in `alertOwner`) and logs a good event when it is fixed:
+a channel not switched off with no good scan for 10 min while the laptop is online (`channel_down` / `channel_ok`),
+signed out or blocked for 10 min, the laptop offline (`device_offline`), a chat with `needs_reply_since` over
+15 min and nothing processing it (`reply_stuck`), 3 failed AI calls in a row (`ai_failing` / `ai_ok`), and D1
+use over 70% of a free daily limit (`usage_high`, once a UTC day). State lives in `state:monitor`;
+`GET /api/overview` and `GET /api/health` return it as `monitor { channels, stuck, ai_failing }`.
+
+D1 usage meter (`src/lib/usage.ts`): env.DB is wrapped to sum `meta.rows_read` / `rows_written` of all(),
+run() and batch() (first() is not counted; `one()` in db.ts uses all()). Flushed to `state:d1_usage` at most
+every 5 min per isolate. An estimate: `usage` on overview, `d1_usage` on health.
+
 ## 3. Data model
 
 See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Key tables:
 `settings` (JSON groups + `state:*` keys), `secrets` (write only), `devices`, `kb_docs` / `kb_chunks`,
 `contacts`, `conversations`, `messages`, `urgent`, `outbox`, `checkouts`, `recovery_runs`, `events`,
-`diagnostics`, `llm_usage`, `discount_codes` (`made_by` owner | agent, `migrations/0004_agent_discounts.sql`).
+`diagnostics`, `llm_usage`, `sales_conversions` (one row per order matched to a chat, `migrations/0006_sales.sql`, which also adds the `sales_*`, `followup_*`, `interested_at`, `ready_at`, `bought_at` and `order_*` columns of `conversations`), `discount_codes` (`made_by` owner | agent, `migrations/0004_agent_discounts.sql`).
 `urgent.discount_id` links a code request to its draft, `urgent.owner_note` holds the owner's note when they told the agent what is going on.
 
 Settings groups and defaults: `src/lib/settings.ts` (`DEFAULT_SETTINGS`), typed in `src/types.ts`.
@@ -84,6 +98,9 @@ Errors are `{ "error": "<code>", "message": "<human text>" }` with a 4xx/5xx sta
   "status": { "paused_locally": false,
     "channels": { "whatsapp": { "state": "ready", "detail": "", "unread": 2, "busy": false } } } }
 // state: ready | no_tab | loading | logged_out | blocked | error
+// optional health per channel: last_ok_at (ms of last good scan), last_scan_at, last_error (short text),
+// recoveries (self heal actions today), version. Kept clamped and clipped. The device row is written only
+// when something visible changed or at least every 55 s, so a sync is normally 0 rows written.
 // response
 { "server_time": 0,
   "config": { "enabled": true, "channels": { "whatsapp": { "mode": "auto" } },
@@ -206,6 +223,19 @@ Create and send live in `src/discounts/index.ts` (`insertDiscount`, `makeLive`, 
 Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the owner) | `sent` | `failed`. `sent` and `failed` are read from the row's outbox job on every `GET`.
 `shopify_status`: `not_connected` | `created` | `failed` | `owner_confirmed`. Table `discount_codes` (`migrations/0003_discounts.sql`).
 
+### Sales (`owner`, `src/routes/sales.ts`, logic in `src/sales/`)
+
+* `GET /api/sales` -> `{ funnel: [{ days: 7|30, chats, interested, ready, bought, revenue }], leads: [{ conversation_id, channel, customer, stage, product, link, last_message, last_direction, stage_at, followup_status }], followups: [{ days, sent, waiting, replies }], settings }`.
+  `bought` and `revenue` (GBP) count only orders `from_chat` (the agent wrote in that chat in the 14 days before the order). Leads are interested or ready in the last 3 days, ready first.
+* `PUT /api/sales/settings { follow_ups?, follow_up_hours? (1 to 72), style? ('friendly' | 'relaxed' | 'keen') }` -> `{ ok, settings }`. 400 `invalid_field` otherwise. Settings group `sales` (defaults on, 20, friendly).
+* `POST /api/test/sales-tick { now? }` runs `salesTick` (test mode only).
+
+Lead stages: `decide` returns an optional `sales: { stage, product }` (`browsing | interested | ready | bought | support | none`) in the same call. The pipeline stores it on the conversation (`recordSalesRead`), with the product link the agent queued. `none` or `browsing` never overwrite a live lead; an upset customer or a complaint is always `support`.
+
+Follow up (`salesTick(env)`, to be called from the every minute job): ONE short follow up, written by the cheapest model of the provider (`brain.writeFollowUp`, checked like a reply, fixed line on any failure), when a chat is interested or ready, the agent sent a product link, our message is the last one and `follow_up_hours` passed. Only 10:00 to 20:00 London (nothing is read outside those hours), at most 3 per run, through the partial index `conversations_followup_due`. Never a second one (`followup_status`), never when opted out, paused, taken over by the owner, bought, the channel is off, or on WhatsApp more than 23 hours after the customer's last message. Review mode makes it a draft. Queued as `source: 'auto'`, `ref_id: 'followup'`, so a takeover, an opt out or a new message cancels it.
+
+Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook or daily pull) call `recordConversions`, which matches by E.164 phone or email, marks every matched chat `bought` with total and time, and writes one `sales_conversions` row per order (same chat within 6 hours counts once).
+
 ### Connections and push (`owner`, `src/routes/connections.ts`)
 
 * `GET /api/connections` -> `{ brain: { provider, model, effort, claude_key: { saved, hint }, workers_ai: { available, model }, models: [{ id, label, note }] }, shopify: { mode, domain, myshopify_domain, api: { saved, hint }, webhook: { url, secret_saved, last_received_at } }, push: { public_key, subscriptions }, alerts }`
@@ -240,7 +270,13 @@ Statuses: `draft` (saved, not live) | `live` (in Shopify, or confirmed by the ow
      (`one_per_customer`), `daily_cap` codes made by the agent today (London day), Shopify not connected or refusing.
    A turn that made or parked a code sends nothing else. Any normal reply that says a code is live or ready
    (`promisesLiveCode`) is parked for the owner instead of sent.
-4. `brain.decide(...)` returns a `Decision` (`src/types.ts`).
+4. `brain.decide(...)` returns a `Decision` (`src/types.ts`). When the customer is shopping (`isShopping`) the knowledge search adds product words and the
+   product picker note (`seed_product_picker`, every product with price and link, built from `seed/knowledge/products.md`) is included in full.
+   The brain follows a sales playbook (one question at a time, one product with its real price and link, answer the objection, close with the link,
+   at most one relevant extra, no pressure, never sell to an upset customer). In code: a link not found in the knowledge parks the draft for the owner,
+   and a reply that sounds unsure ("not sure", "no idea", "I can't help" ...) becomes an escalation (`unknown_fact`) with a confident holding line.
+   An escalation may carry two parts: the part of the answer the knowledge covers, then the holding line. Questions about parts of a kit the
+   customer owns go to the owner as `product_support`, and the answer is learned like any Urgent answer.
 5. Apply: `reply` goes to `outbox` (`pending`, or `review` when the channel is in review mode; a new review
    draft cancels the older `auto` drafts of the same chat, so only one answer to the chat as it stands waits);
    low confidence or `needs_human` becomes an Urgent item that carries the draft; `escalate` creates
@@ -275,6 +311,7 @@ The LLM is prompted with them and `sanitizeReply` enforces them deterministicall
 * Short: default at most 3 sentences / 260 characters, split into up to 3 separate texts.
 * Never invent facts: answer from knowledge or escalate.
 * Never claim to be human. Asked sincerely whether it is a bot, answer honestly in one short line.
+* Never tell a customer it is unsure or does not know: that is an escalation with a confident holding line.
 
 ## 8. Checkout recovery
 

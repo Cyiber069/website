@@ -7,7 +7,8 @@ import { getSettings } from '../lib/settings';
 import { LlmError, callJson, chooseProvider, knowledgeBudget } from './llm';
 import { mockDecide } from './mock';
 import { DECISION_SCHEMA, buildDecidePrompt, buildRetryUser, renderConversation, validateDecision, type RawDecision } from './prompt';
-import { enforceDecision, hasWords, holdingLine, knowledgeQuery, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
+import { enforceDecision, hasWords, holdingLine, isShopping, knowledgeQuery, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
+import { PRODUCT_PICKER_ID } from '../kb';
 import { lengthLimits } from './style';
 import { analyzeTone, mirrorPlan } from './tone';
 
@@ -23,7 +24,7 @@ function addUsage(a: LlmUsage | null, b: LlmUsage | null): LlmUsage | null {
 }
 
 function toDecision(d: RawDecision, tone: ToneProfile, usage: Decision['usage']): Decision {
-  return { action: d.action, parts: d.parts, confidence: d.confidence, escalate: d.escalate, tone, flags: d.flags, kb_refs: d.kb_refs, note: d.note, usage };
+  return { action: d.action, parts: d.parts, confidence: d.confidence, escalate: d.escalate, tone, flags: d.flags, kb_refs: d.kb_refs, note: d.note, usage, sales: d.sales ?? null };
 }
 
 export async function decide(env: Env, input: DecideInput): Promise<Decision> {
@@ -50,7 +51,9 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
 
   const choice = await chooseProvider(env, settings);
   // The knowledge base failing must not stop a reply: without knowledge the model can only greet or escalate.
-  const knowledge = await buildKnowledgeContext(env, knowledgeQuery(input), { budgetTokens: knowledgeBudget(choice) }).catch((err) => {
+  // A shopper also gets the product picker (every product with its price and link), so a recommendation always has a real link.
+  const include = isShopping(input) ? [PRODUCT_PICKER_ID] : [];
+  const knowledge = await buildKnowledgeContext(env, knowledgeQuery(input), { budgetTokens: knowledgeBudget(choice), include }).catch((err) => {
     console.error('knowledge lookup failed', err);
     return NO_KNOWLEDGE;
   });
@@ -59,7 +62,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
 
   if (choice.provider === 'mock') {
     const m = mockDecide(input, tone);
-    const raw: RawDecision = { action: m.action, parts: m.parts, confidence: m.confidence, escalate: m.escalate, flags: m.flags, kb_refs: [], note: m.note };
+    const raw: RawDecision = { action: m.action, parts: m.parts, confidence: m.confidence, escalate: m.escalate, flags: m.flags, kb_refs: [], note: m.note, sales: m.sales ?? null };
     // The mock invents its wording, so the "figures must be in the knowledge" check cannot apply to it.
     const done = enforceDecision(raw, { ...ctx, sources: `${sources}\n${m.parts.join('\n')}` });
     // Report what the real brain would have been shown, so retrieval is exercised end to end in tests.

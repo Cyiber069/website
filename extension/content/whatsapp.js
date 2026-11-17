@@ -305,20 +305,62 @@
   // Last seen time and preview of each chat row, to notice messages already read on the phone.
   const rowSeen = new Map();
 
+  /** True for a row that is a 1:1 chat the agent may answer (not a group, not a title shared by two chats). */
+  function isPersonRow(r, titleCount, byTitle) {
+    const nt = normTitle(r.title);
+    if (titleCount[nt] > 1) {
+      // Two chats with the same name cannot be told apart safely: leave them for the owner.
+      if (!dupWarned.has(nt)) { dupWarned.add(nt); ACX.diag('note', { where: 'scan', note: 'two chats share a title, skipped' }); }
+      return false;
+    }
+    const info = byTitle[nt] && byTitle[nt].length === 1 ? byTitle[nt][0] : null;
+    if (info && (info.is_group || info.archived || !(lookup('dataId.personServers') || ['c.us', 'lid']).includes(info.server))) return false;
+    if (!info && ((known[r.title] && known[r.title].is_group) || r.groupHint)) return false;
+    return true;
+  }
+
+  /** Rows of the list plus what is needed to tell people from groups. */
+  async function listContext() {
+    const rows = parsedRows();
+    const titleCount = {};
+    for (const r of rows) titleCount[normTitle(r.title)] = (titleCount[normTitle(r.title)] || 0) + 1;
+    // The bridge knows what kind of chat each row is without opening it.
+    const chats = await bridgeChats();
+    const byTitle = {};
+    for (const c of chats || []) (byTitle[normTitle(c.title)] = byTitle[normTitle(c.title)] || []).push(c);
+    return { rows, titleCount, byTitle };
+  }
+
+  /**
+   * Safety net, run every 10 minutes: the most recent 1:1 chats whose last message is from the
+   * customer, badge or not. Catches a message that was read on the phone while the agent missed it.
+   * Same signature as scan(), so a chat the worker already reported is not read again.
+   */
+  async function sweep() {
+    if (!Q('state.loggedIn')) return { threads: [] };
+    await closeDialogs();
+    await resetList();
+    if (!q('chatList.grid', document, { quiet: true })) return { threads: [] };
+    const { rows, titleCount, byTitle } = await listContext();
+    const threads = [];
+    for (const r of rows) {
+      if (threads.length >= 8) break;
+      if (r.lastMine || (!r.preview && !r.time)) continue;
+      // Only today's chats (the list shows a clock time for those): older ones are the owner's to deal with.
+      if (!/^\d{1,2}[:.]\d{2}/.test(String(r.time || ''))) continue;
+      if (!isPersonRow(r, titleCount, byTitle)) continue;
+      threads.push({ key: r.title, title: r.title, unread: r.unread, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
+    }
+    return { threads };
+  }
+
   async function scan() {
     if (!Q('state.loggedIn')) return { threads: [] };
     await closeDialogs();
     await resetList();
     if (!q('chatList.grid')) return { threads: [] }; // reports the missing selector
 
-    const rows = parsedRows();
-    const titleCount = {};
-    for (const r of rows) titleCount[normTitle(r.title)] = (titleCount[normTitle(r.title)] || 0) + 1;
-
-    // The bridge knows what kind of chat each row is without opening it.
-    const chats = await bridgeChats();
-    const byTitle = {};
-    for (const c of chats || []) (byTitle[normTitle(c.title)] = byTitle[normTitle(c.title)] || []).push(c);
+    const { rows, titleCount, byTitle } = await listContext();
 
     const threads = [];
     const firstScan = !rowSeen.size;
@@ -330,15 +372,7 @@
       const changed = rowSeen.has(r.title) ? rowSeen.get(r.title) !== rowSig : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
       rowSeen.set(r.title, rowSig);
       if (r.lastMine || !(r.unread || changed)) continue; // nothing new from the customer
-      const nt = normTitle(r.title);
-      if (titleCount[nt] > 1) {
-        // Two chats with the same name cannot be told apart safely: leave them for the owner.
-        if (!dupWarned.has(nt)) { dupWarned.add(nt); ACX.diag('note', { where: 'scan', note: 'two chats share a title, skipped' }); }
-        continue;
-      }
-      const info = byTitle[nt] && byTitle[nt].length === 1 ? byTitle[nt][0] : null;
-      if (info && (info.is_group || info.archived || !(lookup('dataId.personServers') || ['c.us', 'lid']).includes(info.server))) continue;
-      if (!info && ((known[r.title] && known[r.title].is_group) || r.groupHint)) continue;
+      if (!isPersonRow(r, titleCount, byTitle)) continue;
       threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
     }
 
@@ -954,6 +988,7 @@
   ACX.register({
     probe,
     scan: guarded('scan', scan),
+    sweep: guarded('sweep', sweep),
     read: guarded('read', read),
     send: guarded('send', send),
     prepare,

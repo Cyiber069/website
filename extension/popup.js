@@ -9,6 +9,28 @@ const STATE_TEXT = {
   blocked: 'Needs your attention', error: 'Problem on the page',
 };
 
+/** "just now", "1 min ago", "3 hours ago": plain words, no dashes. */
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+}
+
+/** Second line under a channel: when it last read the chats, and what went wrong last. */
+function healthLine(ch, mode) {
+  const bits = [];
+  if (mode !== 'off' && ch.state !== 'no_tab') bits.push(ch.last_ok_at ? `Last read ${ago(ch.last_ok_at)}` : 'Not read yet');
+  if (ch.last_error) bits.push(`Problem: ${ch.last_error}`);
+  else if (ch.last_recovery && ch.last_recovery_at && Date.now() - ch.last_recovery_at < 3 * 3600_000) bits.push(`Fixed itself ${ago(ch.last_recovery_at)}`);
+  if (ch.recoveries) bits.push(`${ch.recoveries} fix${ch.recoveries === 1 ? '' : 'es'} today`);
+  return bits.join('. ').replace(/[\u2013\u2014]/g, ' ');
+}
+
 const send = (msg) => new Promise((resolve) => chrome.runtime.sendMessage({ acx: true, ...msg }, (res) => resolve(chrome.runtime.lastError ? null : res)));
 
 async function render() {
@@ -55,6 +77,13 @@ async function render() {
       count.textContent = String(ch.unread);
       count.title = 'Unread chats';
       li.append(count);
+    }
+    const line = healthLine(ch, mode);
+    if (line) {
+      const meta = document.createElement('small');
+      meta.className = `meta${ch.last_error ? ' bad' : ''}`;
+      meta.textContent = line;
+      li.append(meta);
     }
     list.append(li);
   }
@@ -127,5 +156,6 @@ $('unpair-btn').addEventListener('click', async () => {
 });
 
 chrome.storage.onChanged.addListener(render);
+setInterval(render, 30_000); // keeps "Last read 2 min ago" current while the popup is open
 send({ type: 'tick' });
 render();

@@ -9,6 +9,7 @@ const DEFAULTS = {
   auto_open_tabs: true,
   done_jobs: [], // ids of jobs already sent, newest last
   status: { channels: {}, last_sync_at: 0, last_error: '', server_ok: false },
+  timing: null, // test only: shorter watchdog and sweep timers, see TIMING in sw.js
 };
 
 export async function get(keys = Object.keys(DEFAULTS)) {

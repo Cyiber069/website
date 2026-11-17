@@ -4,6 +4,17 @@ import type { CheckoutRow } from '../types';
 import { all, one, stmt } from '../lib/db';
 import type { AbandonedCheckoutNode } from './client';
 import { toE164 } from './phone';
+import { type OrderFacts, orderFacts, recordConversions } from '../sales/conversions';
+
+/** SALES: a completed checkout as order facts, so the purchase is matched to the chat it came from. */
+function checkoutFacts(c: NormalCheckout): OrderFacts | null {
+  if (!c.completed_at) return null;
+  const total = c.total !== null ? Number(c.total) : NaN;
+  return {
+    ref: `checkout:${c.token ?? c.id}`, at: c.completed_at, total: Number.isFinite(total) ? total : null, currency: c.currency,
+    phones: c.phone_e164 ? [c.phone_e164] : [], emails: c.email ? [c.email] : [],
+  };
+}
 
 export interface NormalCheckout {
   id: string;
@@ -218,8 +229,12 @@ function upsertStatements(db: D1Database, c: NormalCheckout, source: 'api' | 'we
 
 /** Insert or refresh one checkout. Returns what happened so callers can count. */
 export async function upsertCheckout(db: D1Database, c: NormalCheckout, source: 'api' | 'webhook'): Promise<'inserted' | 'updated' | 'stale'> {
-  const plan = upsertStatements(db, c, source, await findExisting(db, c), Date.now());
+  const existing = await findExisting(db, c);
+  const plan = upsertStatements(db, c, source, existing, Date.now());
   if (plan.statements.length) await db.batch(plan.statements);
+  // SALES: first time this checkout is seen completed.
+  const facts = !existing?.completed_at ? checkoutFacts(c) : null;
+  if (facts) await recordConversions(db, [facts]);
   return plan.result;
 }
 
@@ -242,12 +257,17 @@ export async function upsertCheckouts(db: D1Database, list: NormalCheckout[], so
   for (const r of rows) { const k = linkKey(r.recovery_url); if (k && !byLink.has(k)) byLink.set(k, r); }
   const now = Date.now();
   const statements: D1PreparedStatement[] = [];
+  const completed: OrderFacts[] = []; // SALES
   for (const c of list) {
     const key = linkKey(c.recovery_url);
     const existing = byId.get(c.id) ?? (c.token ? byToken.get(c.token) : undefined) ?? (key ? byLink.get(key) : undefined) ?? null;
     statements.push(...upsertStatements(db, c, source, existing, now).statements);
+    const facts = !existing?.completed_at ? checkoutFacts(c) : null;
+    if (facts) completed.push(facts);
   }
   if (statements.length) await db.batch(statements);
+  // SALES: purchases seen in the pull are matched to chats, in a few queries for the whole list.
+  if (completed.length) await recordConversions(db, completed);
 }
 
 /**
@@ -279,5 +299,8 @@ export async function recordOrder(db: D1Database, order: Obj, defaultCountry: st
   if (email) add(await find('email = ? AND COALESCE(created_at_shop, first_seen_at) <= ?', email, at));
 
   for (const row of matched.values()) await markCompleted(db, row, at);
+  // SALES: match the order to the chat it came from (phone or email) and count it on the Sales screen.
+  const facts = orderFacts(order, defaultCountry);
+  if (facts) await recordConversions(db, [facts]);
   return matched.size;
 }

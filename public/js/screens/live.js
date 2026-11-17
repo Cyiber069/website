@@ -20,7 +20,36 @@ export function channelState(ov, ch) {
   const [text, pill, dot] = STATE_TEXT[st.state] || ['Checking', 'pill--pause', 'dot--pause'];
   const hints = { no_tab: `Open ${chName(ch)} in Chrome on the laptop`, logged_out: `Sign in to ${chName(ch)} on the laptop`, blocked: st.detail || `${chName(ch)} is blocking the page. Check it on the laptop`, error: st.detail || 'Look at the tab on the laptop' };
   const inbox = ch === 'gmail' && st.state === 'ready' && st.detail.includes('@') ? `${st.detail}. ` : '';
-  return { text, pill, dot, mode, hint: hints[st.state] || `${inbox}${MODE_TEXT[mode]}`, unread: st.unread || 0 };
+  const out = { text, pill, dot, mode, hint: hints[st.state] || `${inbox}${MODE_TEXT[mode]}`, unread: st.unread || 0, seen: channelSeen(ov, ch) };
+  // A tab that says it is fine but has not read anything for 10 minutes is not fine.
+  if (out.seen?.level === 'down' && st.state === 'ready') Object.assign(out, { text: 'Stopped reading', pill: 'pill--down', dot: 'dot--down' });
+  return out;
+}
+
+const SEEN_WARN_MS = 5 * 60000, SEEN_DOWN_MS = 10 * 60000;
+/** "Last read 2 min ago" from the last good scan the laptop reported. Amber after 5 min, red after 10 with the reason. */
+export function channelSeen(ov, ch) {
+  const mode = ov.channels?.[ch]?.mode || 'off';
+  const d = ov.device;
+  const st = d?.status?.channels?.[ch];
+  if (mode === 'off' || !d?.online || !st?.last_ok_at) return null;
+  const age = Math.max(0, (ov.now || Date.now()) - st.last_ok_at);
+  const level = age >= SEEN_DOWN_MS ? 'down' : age >= SEEN_WARN_MS ? 'wait' : 'ok';
+  const reason = level === 'ok' ? '' : (ov.monitor?.channels?.[ch]?.reason || st.last_error || st.detail || '');
+  const stuck = ov.monitor?.stuck?.[ch] || 0;
+  return { age, level, text: `Last read ${ago(st.last_ok_at, ov.now)}`, reason, stuck };
+}
+
+/** Shown on Live when the AI is failing or the database use is getting near the free limit. */
+function warnings(ov) {
+  const out = [];
+  if (ov.monitor?.ai_failing) out.push(html`<p class="banner banner--down" role="status">${icon('i-stop')}<span><b>The AI is failing.</b> Check the key or the free daily limit in <a href="#/connections">Connections</a>. Customers are not getting answers.</span></p>`);
+  const stuck = Object.values(ov.monitor?.stuck || {}).reduce((n, x) => n + x, 0);
+  if (stuck) out.push(html`<p class="banner banner--wait" role="status">${icon('i-dot')}<span><b>${stuck === 1 ? 'One customer has' : `${stuck} customers have`} waited over 15 min with no reply.</b> The agent keeps trying. <a href="#/health">See Health</a></span></p>`);
+  const u = ov.usage;
+  const pct = u ? Math.max(u.read_pct || 0, u.write_pct || 0) : 0;
+  if (pct > 60) out.push(html`<p class="banner ${pct >= 85 ? 'banner--down' : 'banner--wait'}" role="status">${icon('i-dot')}<span><b>Database use is high today.</b> About ${Math.round(pct)}% of the free daily ${(u.read_pct || 0) >= (u.write_pct || 0) ? 'reads' : 'writes'} are used. This is an estimate. <a href="#/health">See Health</a></span></p>`);
+  return out;
 }
 
 const STEPS = [
@@ -57,6 +86,7 @@ export default {
         </div>
         <svg class="signal" viewBox="0 0 600 44" preserveAspectRatio="none" aria-hidden="true"><path class="signal__base" pathLength="100" d="M0 38 L600 38"/><path class="signal__pulse" pathLength="100" d="M0 38 L600 38"/></svg>
       </section>
+      <section class="stack" id="warnings" hidden></section>
       <section class="chgrid" aria-label="Laptop and channels" id="channels"></section>
       <section class="grid grid--stats" aria-label="Today" id="stats">
         ${[0, 1, 2, 3].map(() => html`<div class="stat"><span class="skel" style="--w:60%"></span><span class="skel skel--value"></span><span class="skel" style="--w:45%"></span></div>`)}
@@ -99,7 +129,11 @@ export default {
       const laptop = !d ? ['Not paired', 'pill--wait', 'dot--wait', 'Pair it in Connections'] : d.online ? ['Online', 'pill--live', 'dot--live', `Checked in ${ago(d.last_seen_at, ov.now)}`] : ['Offline', 'pill--down', 'dot--down', `Last seen ${ago(d.last_seen_at, ov.now)}`];
       setHTML($('#channels', view), html`
         <a class="chcard" href="#/connections"><span class="ch ch--icon" aria-hidden="true">${icon('i-laptop', 'ch__glyph')}</span><span class="chcard__name">${d?.name || 'Laptop'}</span><span class="pill ${laptop[1]}"><span class="dot ${laptop[2]}" aria-hidden="true"></span>${laptop[0]}</span><span class="chcard__hint">${laptop[3]}</span></a>
-        ${CHANNELS.map((c) => { const st = channelState(ov, c); return html`<a class="chcard" href="#/connections">${chBadge(c, true)}<span class="chcard__name">${chName(c)}</span><span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span><span class="chcard__hint">${st.hint}</span></a>`; })}`);
+        ${CHANNELS.map((c) => { const st = channelState(ov, c); const seen = st.seen; return html`<a class="chcard" href="${seen && seen.level !== 'ok' ? '#/health' : '#/connections'}">${chBadge(c, true)}<span class="chcard__name">${chName(c)}</span><span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span>${seen ? html`<span class="chcard__seen chcard__seen--${seen.level}">${seen.text}</span>` : ''}<span class="chcard__hint">${seen?.reason || st.hint}</span>${seen?.stuck ? html`<span class="chcard__seen chcard__seen--wait">${seen.stuck === 1 ? 'One chat' : `${seen.stuck} chats`} waiting with no reply</span>` : ''}</a>`; })}`);
+      const warn = warnings(ov);
+      const wbox = $('#warnings', view);
+      wbox.hidden = !warn.length;
+      if (warn.length) setHTML(wbox, html`${warn}`); else wbox.innerHTML = '';
 
       // Numbers
       const c = ov.counts || {};

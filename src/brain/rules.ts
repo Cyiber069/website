@@ -44,10 +44,66 @@ export function pendingInbound(history: HistoryMessage[]): HistoryMessage[] {
 
 export const hasWords = (m: HistoryMessage): boolean => /[\p{L}\p{N}]{2,}/u.test(wordsOf(m));
 
-/** What to search the knowledge base for: the subject and the customer's last few messages. */
+// Words that mean the customer is shopping: choosing, pricing or about to buy a kit, bundle, battery or extra.
+const SHOPPING = /\b(?:buy|buying|purchase|order(?:ing)? (?:one|it|a|the)|how much|price|prices|cost|costs|cheap|cheapest|budget|afford|recommend|which (?:kit|bundle|battery|one)|best (?:kit|bundle|battery|one)|what (?:kit|bundle|battery|should i)|kit|kits|bundle|bundles|battery|batteries|conversion|convert|motor|watt|watts|\d{3,4}\s?w|\d{2}\s?v|mph|fast|faster|speed|power|range|road legal|off ?road|wheel size|\d{2}(?:\.5)? ?(?:inch|in|")|mountain bike|mtb|link|in stock|klarna|finance|instalments?)\b|\u00a3\s?\d/i;
+// Someone with a problem is not shopping, even when they name a product.
+const SUPPORT = /\b(?:refund|return|broken|faulty|not working|stopped working|doesn'?t work|won'?t (?:turn on|charge|work)|where(?:'s| is) my|tracking|late|still (?:no|not|waiting)|complain|complaint|damaged|wrong item|error code)\b/i;
+
+/** The customer is choosing or buying something (and is not reporting a problem). */
+export function isShopping(input: Pick<DecideInput, 'history' | 'subject'>): boolean {
+  const recent = input.history.filter((m) => m.direction === 'in' && hasWords(m)).slice(-3).map((m) => wordsOf(m)).join(' ');
+  const text = `${input.subject ?? ''} ${recent}`.replace(/\u2019/g, "'");
+  return SHOPPING.test(text) && !SUPPORT.test(text);
+}
+
+/**
+ * What to search the knowledge base for: the subject and the customer's last few messages. When the
+ * customer is shopping, product words are added so the product entries (price and link) are found.
+ */
 export function knowledgeQuery(input: DecideInput): string {
   const recent = input.history.filter((m) => m.direction === 'in' && hasWords(m)).slice(-3).map((m) => wordsOf(m).slice(0, 600));
-  return [input.subject ?? '', ...recent].join('\n').trim();
+  const base = [input.subject ?? '', ...recent].join('\n').trim();
+  return isShopping(input) ? `${base}\nbundle kit battery price` : base;
+}
+
+// ---- never sound unsure ---------------------------------------------------------------------------
+
+// A customer must never read that the shop does not know. Apostrophes are optional, case is ignored.
+const UNSURE = /\b(?:not (?:so |too |really |100% |entirely |totally |quite )?sure|unsure|(?:i |we )?(?:don'?t|do not|dunno|didn'?t) know|dunno|no idea|(?:can'?t|cannot|can not) say|not certain|uncertain|(?:i'?m|i am|we'?re|we are) not able to|(?:i |we )?(?:can'?t|cannot|can not) help|(?:i'?m|i am|we'?re|we are) unable|beyond my|(?:i |we )?(?:don'?t|do not) have (?:any |that |the |enough |much )?(?:info|information|details)|(?:don'?t|do not) have information)\b/i;
+
+export const soundsUnsure = (text: string): boolean => UNSURE.test(text.replace(/[\u2018\u2019\u02bc]/g, "'"));
+
+const CONFIDENT_HOLDING = ['let me check that for you', 'let me find out and come back to you', "leave it with me I'll check that now"];
+
+/** A confident holding line, varied a little per conversation. Plain and calm for an upset customer. */
+export function confidentHoldingLine(tone: ToneProfile, seed: string): string {
+  if (tone.language !== 'en') return holdingLine(tone.language);
+  if (tone.mood === 'angry' || tone.mood === 'frustrated' || tone.register === 'formal') return 'Let me find out and come back to you';
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return CONFIDENT_HOLDING[h % CONFIDENT_HOLDING.length]!;
+}
+
+// ---- links ----------------------------------------------------------------------------------------
+
+const URL_RE = /\bhttps?:\/\/[^\s<>"']+|\b(?:www\.)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|co\.uk|uk|shop|store|me)\/[^\s<>"']*/gi;
+const bareUrl = (u: string): string => u.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[.,!?)\]]+$/, '').replace(/\/+$/, '');
+
+/** Links in a text, without the protocol, www and trailing punctuation. */
+export function linksIn(text: string): string[] {
+  return [...new Set((text.match(URL_RE) ?? []).map(bareUrl).filter((u) => u.includes('/') || u.includes('.')))];
+}
+
+/** Links in `text` that appear nowhere in `sources`. A link the model made up is never sent. */
+export function inventedLinks(text: string, sources: string): string[] {
+  const known = new Set(linksIn(sources));
+  return linksIn(text).filter((u) => !known.has(u));
+}
+
+/** The first product page link in a text, as written, for the follow up and the Sales screen. */
+export function productLink(text: string): string | null {
+  const m = /\bhttps?:\/\/[^\s<>"']+\/products\/[^\s<>"']+/i.exec(text);
+  return m ? m[0].replace(/[.,!?)\]]+$/, '') : null;
 }
 
 /**
@@ -170,6 +226,34 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
     }
   }
 
+  // Never sound unsure (owner rule). A reply that says "not sure" or "no idea" becomes a question for
+  // the owner with a confident holding line, and the answer is learned through the Urgent flow.
+  if (out.action === 'reply' && out.parts.some(soundsUnsure)) {
+    out.note = `${out.note} (the draft said it was not sure, so it went to the owner)`.trim();
+    out.action = 'escalate';
+    out.confidence = Math.max(out.confidence, 0.9);
+    out.escalate = {
+      question: out.escalate?.question || lastText.slice(0, 1000) || 'The customer needs an answer from you',
+      reason: 'The agent did not know this one. Your answer is saved so it knows next time.',
+      category: out.escalate?.category && out.escalate.category !== 'low_confidence' ? out.escalate.category : 'unknown_fact',
+    };
+    out.parts = [confidentHoldingLine(tone, lastText)];
+  }
+
+  // Links come from the knowledge or the chat only. A made up link is parked for the owner like a made up figure.
+  if (out.action === 'reply') {
+    const madeUp = inventedLinks(out.parts.join(' '), ctx.sources);
+    if (madeUp.length) {
+      out.flags.needs_human = true;
+      out.confidence = Math.min(out.confidence, 0.3);
+      out.note = `${out.note} (link not found in the knowledge: ${madeUp.slice(0, 3).join(', ')})`.trim();
+      out.escalate = {
+        question: lastText.slice(0, 1000) || 'Please check this draft', category: 'low_confidence',
+        reason: `The draft has a link that is not in the knowledge (${madeUp.slice(0, 3).join(', ')}). Check it before it goes out.`,
+      };
+    }
+  }
+
   // Never invent facts: a figure that appears in the reply but nowhere in the knowledge, the notes or
   // the conversation was made up. The draft is kept for the owner to check instead of being sent.
   if (out.action === 'reply') {
@@ -187,11 +271,19 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
   }
 
   if (out.action === 'escalate') {
-    const line = out.parts[0] ?? '';
+    // parts is the holding line, or the part of the answer the knowledge covers followed by the holding line.
+    const list = out.parts.filter((p) => p.trim());
+    let line = list.length ? list[list.length - 1]! : '';
+    let known = list.length > 1 ? list[0]! : '';
     // A holding line may not smuggle in an answer. Anything long or with figures is replaced.
-    if (line && (line.length > 140 || unsupportedNumbers(line, renderConversation(input.history, input.now)).length > 0)) out.parts = [holdingLine(tone.language)];
+    if (line && (line.length > 140 || unsupportedNumbers(line, renderConversation(input.history, input.now)).length > 0)) line = holdingLine(tone.language);
+    // Nor may it sound unsure.
+    if (line && soundsUnsure(line)) line = confidentHoldingLine(tone, lastText);
+    // The known part must pass every check a reply passes: figures and links from the knowledge, sure of itself.
+    if (known && (out.confidence < 0.7 || soundsUnsure(known) || claimsHuman(known)
+      || unsupportedNumbers(known, ctx.sources).length > 0 || inventedLinks(known, ctx.sources).length > 0)) known = '';
+    out.parts = [known, line].filter(Boolean);
     if (!voice.holding_reply) out.parts = [];
-    out.parts = out.parts.slice(0, 1);
   }
   if (out.action === 'ignore') out.parts = [];
 
@@ -223,5 +315,17 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
     out.flags.needs_human = true;
     escalate('The draft was empty after the style rules were applied', 'other');
   }
+  out.sales = checkSales(out, tone);
   return out;
+}
+
+/** The sales read, kept honest: an upset customer or a complaint is never a lead, and a reply with a product link is at least interested. */
+function checkSales(d: RawDecision, tone: ToneProfile): RawDecision['sales'] {
+  const read = d.sales ?? null;
+  const upset = tone.mood === 'angry' || tone.mood === 'frustrated';
+  const complaint = d.action === 'escalate' && ['complaint', 'refund_return', 'order_status', 'technical_fault', 'safety', 'legal', 'product_support'].includes(d.escalate?.category ?? '');
+  if (upset || (complaint && read?.stage !== 'ready')) return { stage: 'support', product: read?.product ?? null };
+  if (!read) return null;
+  if (read.stage === 'browsing' && productLink(d.parts.join(' '))) return { ...read, stage: 'interested' };
+  return read;
 }

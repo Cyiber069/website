@@ -311,6 +311,42 @@ async function main() {
   assert.equal(omar.phone, '+447700900888', 'phone comes from the contact store');
   pass('bare id build without the bridge: chat id resolved from IndexedDB');
 
+  // ---- 11. safety sweep: a customer message in a chat that was already read (no unread badge) ------------------------------
+  // The agent was not looking when Max wrote (the page was reloaded) and the owner read it on the phone, so there is no
+  // badge. Five newer chats that end with our own reply push Max past the startup window of the normal scan.
+  const MAX = '447700900321@c.us';
+  await mock('set', { idForm: 'compound' });
+  await wa.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('wa-mock-state'));
+    const now = Date.now();
+    const id = (n) => `3EB0${(now + n).toString(16).toUpperCase().padStart(12, '0')}C3D4`;
+    st.chats.push({ jid: '447700900321@c.us', title: 'Max', avatar: 'default', unread: 0, draft: '', messages: [
+      { id: id(1), fromMe: false, text: 'is the x5 back in stock', kind: 'text', t: now - 20 * 60_000, ack: null },
+    ] });
+    for (let i = 0; i < 5; i++) {
+      st.chats.push({ jid: `4477009004${i}0@c.us`, title: `Rider ${i + 1}`, avatar: 'default', unread: 0, draft: '', messages: [
+        { id: id(10 + i), fromMe: false, text: 'thanks', kind: 'text', t: now - 9 * 60_000, ack: null },
+        { id: id(20 + i), fromMe: true, text: 'any time', kind: 'text', t: now - 8 * 60_000, ack: 3 },
+      ] });
+    }
+    localStorage.setItem('wa-mock-state', JSON.stringify(st));
+  });
+  await wa.reload();
+  await wa.waitForFunction(() => document.body.dataset.mockReady === '1');
+  await until('ready after the reload', async () => (await channelState()) === 'ready');
+  for (let i = 0; i < 8; i++) { await kick(); await sleep(700); }
+  assert.equal((await sentTo(MAX)).length, 0, 'the normal scan does not see a read chat it never saw change');
+  await sw.evaluate(() => chrome.storage.local.set({ timing: { sweep_ms: 1000 } })); // the sweep is due now instead of in 10 minutes
+  const swept = await until('the sweep answers Max', async () => (await sentTo(MAX))[0]);
+  assert.equal(swept.text, 'mock reply to: is the x5 back in stock');
+  await sw.evaluate(() => chrome.storage.local.set({ timing: null }));
+  for (let i = 0; i < 6; i++) { await kick(); await sleep(700); }
+  assert.equal((await sentTo(MAX)).length, 1, 'answered once');
+  assert.ok((await mock('sent')).every((s) => !/^4477009004\d0@c\.us$/.test(s.jid)), 'chats that end with our own message are left alone');
+  const waHealth = (await api('/api/overview')).device?.status?.channels?.whatsapp;
+  assert.ok(waHealth.last_ok_at > 0 && waHealth.version === '0.2.0', `health reported (${JSON.stringify(waHealth)})`);
+  pass('10 minute sweep answers a customer message in a chat without an unread badge, once');
+
   // ---- final sweep ---------------------------------------------------------------------------------------------------------------
   await sleep(2500);
   const all = await mock('sent');

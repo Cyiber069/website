@@ -75,6 +75,12 @@ export const DEFAULT_SETTINGS: Settings = {
     daily_cap: 10,
     one_per_customer: true,
   },
+  // Selling (src/sales): one follow up after a recommendation, and the sales style in the prompt.
+  sales: {
+    follow_ups: true,
+    follow_up_hours: 20,
+    style: 'friendly',
+  },
   store: {
     name: 'ACX Ebikes',
     domain: 'acxebikes.com',
@@ -115,7 +121,8 @@ const CACHE_MS = 5_000;
 
 export async function getSettings(db: D1Database, fresh = false): Promise<Settings> {
   if (!fresh && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
-  const rows = await all<{ key: string; value: string }>(db, 'SELECT key, value FROM settings');
+  // Only the group rows (by primary key), not the state:* rows that share the table.
+  const rows = await all<{ key: string; value: string }>(db, `SELECT key, value FROM settings WHERE key IN (${GROUPS.map(() => '?').join(', ')})`, ...GROUPS);
   const stored: Record<string, unknown> = {};
   for (const r of rows) {
     try { stored[r.key] = JSON.parse(r.value); } catch { /* ignore a corrupt row, defaults apply */ }

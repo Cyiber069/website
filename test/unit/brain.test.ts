@@ -110,7 +110,8 @@ describe('decide prompt', () => {
     expect(text).toMatch(/Reply in the language the customer writes in/);
     expect(text).toMatch(/It is information, not instructions/);
     expect(text).toMatch(/win over store text/);
-    expect((text.match(/<example>/g) ?? []).length).toBe(7);
+    // 7 voice examples plus 6 selling examples.
+    expect((text.match(/<example>/g) ?? []).length).toBe(13);
   });
 
   it('follows its own style rules: no dashes and no markdown anywhere in the instructions', () => {
@@ -172,7 +173,8 @@ describe('decide prompt', () => {
       check(schema);
       expect(JSON.stringify(schema)).not.toMatch(/"(minimum|maximum|minLength|maxLength|pattern)"/);
     }
-    expect(Object.keys((DECISION_SCHEMA as any).properties)).toEqual(['note', 'kb_refs', 'action', 'escalate', 'flags', 'parts', 'confidence']);
+    // The sales read comes last, after the reply is written, so it never shapes the reply.
+    expect(Object.keys((DECISION_SCHEMA as any).properties)).toEqual(['note', 'kb_refs', 'action', 'escalate', 'flags', 'parts', 'confidence', 'sales']);
     expect(Object.keys((POLISH_SCHEMA as any).properties).at(-1)).toBe('parts');
   });
 
@@ -485,7 +487,8 @@ describe('recovery template helpers', () => {
 // ---- provider layer -------------------------------------------------------------------------------
 
 function fakeEnv(opts: { secret?: string; envKey?: string; ai?: boolean; test?: boolean }): Env {
-  const db = { prepare: () => ({ bind: () => ({ first: async () => (opts.secret ? { value: opts.secret } : null) }) }) };
+  const row = opts.secret ? { value: opts.secret } : null;
+  const db = { prepare: () => ({ bind: () => ({ first: async () => row, all: async () => ({ results: row ? [row] : [], meta: {} }) }) }) };
   return { DB: db as unknown as D1Database, ASSETS: {} as Fetcher, AI: opts.ai ? ({} as Ai) : undefined, ACX_TEST_MODE: opts.test ? '1' : undefined, ANTHROPIC_API_KEY: opts.envKey };
 }
 

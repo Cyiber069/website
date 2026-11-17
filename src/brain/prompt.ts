@@ -10,7 +10,8 @@
 //   user message    everything that differs per call: channel, time, limits, notes, how this
 //                   customer writes, the excerpts found for this conversation, the conversation.
 // Never put a time, an id or anything about one customer into the system blocks.
-import type { Channel, Decision, DecideInput, HistoryMessage, PolishInput, Settings, ToneProfile } from '../types';
+import type { Channel, Decision, DecideInput, HistoryMessage, PolishInput, SalesRead, SalesStage, Settings, ToneProfile } from '../types';
+import { SALES_STAGES } from '../types';
 import { londonTime } from '../lib/time';
 import type { SystemBlock } from './llm';
 import { staticPrompt, writingRules } from './static-prompt';
@@ -30,7 +31,7 @@ export interface BuiltPrompt {
 }
 
 /** What the model may put in escalate.category. Code adds a few of its own: media, bot_question, low_confidence. */
-export const ESCALATE_CATEGORIES = ['unknown_fact', 'order_status', 'refund_return', 'complaint', 'safety', 'legal', 'technical_fault', 'discount_price', 'human_request', 'other'] as const;
+export const ESCALATE_CATEGORIES = ['unknown_fact', 'order_status', 'refund_return', 'complaint', 'safety', 'legal', 'technical_fault', 'discount_price', 'human_request', 'product_support', 'other'] as const;
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian', nl: 'Dutch', pt: 'Portuguese', pl: 'Polish', ro: 'Romanian', tr: 'Turkish',
@@ -47,7 +48,7 @@ export const languageName = (code: string): string => LANGUAGE_NAMES[code] ?? co
 export const DECISION_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['note', 'kb_refs', 'action', 'escalate', 'flags', 'parts', 'confidence'],
+  required: ['note', 'kb_refs', 'action', 'escalate', 'flags', 'parts', 'confidence', 'sales'],
   properties: {
     note: { type: 'string' },
     kb_refs: { type: 'array', items: { type: 'string' } },
@@ -71,6 +72,13 @@ export const DECISION_SCHEMA: Record<string, unknown> = {
     },
     parts: { type: 'array', items: { type: 'string' } },
     confidence: { type: 'number' },
+    // Cheap lead tracking from the same call (src/sales). Last, so it never shapes the reply.
+    sales: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['stage', 'product'],
+      properties: { stage: { type: 'string', enum: [...SALES_STAGES] }, product: { anyOf: [{ type: 'null' }, { type: 'string' }] } },
+    },
   },
 };
 
@@ -104,6 +112,9 @@ export function ownerRules(settings: Settings): string {
   if (v.bot_question_policy === 'escalate') {
     lines.push('If the customer sincerely asks whether they are talking to a bot or a person, do not answer it yourself: set flags.asked_if_bot, choose escalate with category human_request and leave parts empty. The owner answers that one.');
   }
+  const style = settings.sales?.style;
+  if (style === 'relaxed') lines.push('Sales style relaxed: answer what was asked and recommend a product only when they ask what to get. Send a product link only when they ask for it or say they want to buy.');
+  if (style === 'keen') lines.push('Sales style keen: once you know what fits, always end with the product link and a clear next step. Still one question at a time, still no pressure.');
   if (v.banned_phrases.length) lines.push(`Never use these phrases: ${v.banned_phrases.map((p) => p.trim()).filter(Boolean).join(' | ')}`);
   if (v.extra_rules.trim()) lines.push(v.extra_rules.trim());
   if (!lines.length) return '';
@@ -245,7 +256,19 @@ export function buildRetryUser(user: string, firstAnswer: unknown, problems: str
 
 // ---- checking what came back (guard G0) --------------------------------------------------------------
 
-export type RawDecision = Pick<Decision, 'action' | 'parts' | 'confidence' | 'escalate' | 'flags' | 'kb_refs' | 'note'>;
+export type RawDecision = Pick<Decision, 'action' | 'parts' | 'confidence' | 'escalate' | 'flags' | 'kb_refs' | 'note' | 'sales'>;
+
+/**
+ * The optional sales read. Never throws: anything unusable is null, so a model that leaves it out
+ * (or a small model that flattens it to sales_stage) still gives a valid decision.
+ */
+export function validateSales(raw: unknown, flat?: unknown): SalesRead | null {
+  const o = asObject(raw);
+  const stage = typeof o.stage === 'string' ? o.stage.trim().toLowerCase() : typeof flat === 'string' ? flat.trim().toLowerCase() : '';
+  if (!(SALES_STAGES as string[]).includes(stage)) return null;
+  const product = typeof o.product === 'string' && o.product.trim() && !/^(null|none|n\/a)$/i.test(o.product.trim()) ? o.product.trim().slice(0, 120) : null;
+  return { stage: stage as SalesStage, product };
+}
 
 const asString = (v: unknown, max = 600): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const asBool = (v: unknown): boolean => v === true || v === 'true';
@@ -294,7 +317,7 @@ export function validateDecision(raw: unknown, allowedRefs: string[], lastCustom
 
   const allowed = new Set(allowedRefs);
   const refs = Array.isArray(o.kb_refs) ? [...new Set(o.kb_refs.filter((x): x is string => typeof x === 'string' && allowed.has(x)))] : [];
-  return { action, parts, confidence, escalate, flags, kb_refs: refs.slice(0, 12), note };
+  return { action, parts, confidence, escalate, flags, kb_refs: refs.slice(0, 12), note, sales: validateSales(o.sales, o.sales_stage) };
 }
 
 // ---- polish ---------------------------------------------------------------------------------------

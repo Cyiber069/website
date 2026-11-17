@@ -32,7 +32,9 @@ button:disabled { opacity: .55; cursor: default; }
 .row { display: flex; gap: 8px; margin-top: 10px; }
 .error { color: var(--bad); margin: 8px 0 0; }
 .channels { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.channels li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.channels li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 12px; }
+.channels .meta { flex-basis: 100%; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.channels .meta.bad { color: var(--bad, #c4342d); }
 .channels li + li { border-top: 1px solid var(--line); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.ready { background: var(--good); }

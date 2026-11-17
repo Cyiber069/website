@@ -88,6 +88,13 @@ export async function chooseProvider(env: Env, settings: Settings): Promise<Prov
   return pick;
 }
 
+/** The cheapest model of the same provider, for small jobs such as the sales follow up. */
+export const CHEAP_CLAUDE_MODEL = 'claude-haiku-5-5';
+export function cheapChoice(choice: ProviderChoice): ProviderChoice {
+  if (choice.provider !== 'anthropic' || /haiku/i.test(choice.model)) return choice;
+  return { ...choice, model: CHEAP_CLAUDE_MODEL };
+}
+
 /** How many tokens of knowledge a provider can take on top of instructions, conversation and answer. */
 export function knowledgeBudget(choice: ProviderChoice): number {
   if (choice.provider !== 'workers_ai') return Number.MAX_SAFE_INTEGER;
