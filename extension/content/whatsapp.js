@@ -51,6 +51,21 @@
     try { return new RegExp(lookup(key) || fallback); } catch { return new RegExp(fallback); }
   };
 
+  /**
+   * True when a delivery tick (ours) is inside el. Icons of the media type of the message (photo,
+   * voice note, sticker) sit right next to the tick on current builds and are left out.
+   */
+  function hasTick(el) {
+    if (!el) return false;
+    const media = ACX.chain('chatList.rowMediaSymbol').map((e) => e.s).join(', ') || '[data-testid="chat-msg-symbol"]';
+    const names = el.hasAttribute('data-icon') ? [el.getAttribute('data-icon')] : [];
+    el.querySelectorAll('[data-icon], svg > title').forEach((n) => {
+      try { if (n.closest(media)) return; } catch { /* bad selector in a hot update */ }
+      names.push(n.hasAttribute('data-icon') ? n.getAttribute('data-icon') : (n.textContent || '').trim());
+    });
+    return packRe('icons.rowTick', 'msg-(dbl)?check|msg-time|status-(dbl)?check|status-time|ic-(dbl)?check|ic-done|ic-read|ic-delivered|ic-schedule|ic-msg-time|message-fail').test(names.join(' ').toLowerCase());
+  }
+
   /** Split a data-id into its parts. Returns null for things that are not messages. */
   function parseDataId(v) {
     v = String(v || '');
@@ -276,26 +291,63 @@
     }
     const previewEl = Q('chatList.rowPreview', row);
     const icons = iconNames(row);
+    const pinned = isPinnedRow(row, icons);
+    if (pinned) pinnedTitles.add(normTitle(title)); else pinnedTitles.delete(normTitle(title));
     return {
       row,
       title,
+      pinned,
       unread,
       preview: squash(textOf(previewEl)).slice(0, 200),
       time: squash(textOf(Q('chatList.rowTime', row))),
-      // The last message is ours when the preview carries a tick.
-      lastMine: Boolean(Q('chatList.rowLastMine', row)) || /msg-(dbl)?check|ic-check|ic-done/.test(iconNames(previewEl)),
+      // The last message is ours when the preview carries a tick. Current builds show the status
+      // element (chatList.rowLastMine) for the customer's last message too, so only a tick in it counts.
+      lastMine: hasTick(Q('chatList.rowLastMine', row) || previewEl) || /msg-(dbl)?check|ic-check|ic-done/.test(iconNames(previewEl)),
       groupHint: rx('icons.defaultGroup').test(icons),
     };
   }
 
   const parsedRows = () => chatRows().map(parseRow).filter(Boolean);
 
-  function countUnread() {
-    try { return parsedRows().filter((r) => r.unread > 0 && !r.lastMine && !(known[r.title] && known[r.title].is_group)).length; } catch { return 0; }
+  // ---- pinned chats: the owner's own. The agent never reads or answers them by itself. ------------------------------
+  // Titles last seen pinned in the list (normalised). WhatsApp keeps pinned chats at the top, so the list
+  // shows them whenever it is scrolled to the top, which every scan does first.
+  const pinnedTitles = new Set();
+
+  /**
+   * True when the row shows the pin: chatList.rowPinned (data-icon pinned2 or pinned, data-testid pinned),
+   * an svg title with "pinned" or "pin" in it, or an aria-label like "Pinned chat" (text.pinnedAria).
+   */
+  function isPinnedRow(row, icons = iconNames(row)) {
+    if (Q('chatList.rowPinned', row)) return true;
+    if (/(^|[\s,-])pinned2?(\s|,|$)/i.test(icons)) return true;
+    for (const t of row.querySelectorAll('svg title')) if (/\bpin(ned)?\b/i.test(t.textContent || '')) return true;
+    const aria = lookup('text.pinnedAria') ? rx('text.pinnedAria') : /pinned chat|chat fijado|chat disematkan/i;
+    for (const el of [row, ...row.querySelectorAll('[aria-label]')]) if (aria.test(el.getAttribute('aria-label') || '')) return true;
+    return false;
   }
 
-  /** New activity is shown under the "All" filter at the top of the list. */
-  async function resetList() {
+  /** True for a chat the list shows as pinned (by title). */
+  const isPinnedTitle = (title) => pinnedTitles.has(normTitle(title));
+
+  function countUnread() {
+    try { return parsedRows().filter((r) => r.unread > 0 && !r.lastMine && !r.pinned && !(known[r.title] && known[r.title].is_group)).length; } catch { return 0; }
+  }
+
+  // The agent moved the chat list itself (scrolled a row into view): put it back on the next look.
+  let listMovedByUs = false;
+  let lastOwnerReset = 0;
+
+  /**
+   * New activity is shown under the "All" filter at the top of the list. Scans run every few seconds,
+   * so while the owner is looking at this tab the list is only moved back when the agent moved it, or
+   * once a minute, never on every scan. `force` is for opening a chat, which needs the list.
+   */
+  async function resetList(force = false) {
+    const looking = !document.hidden && document.hasFocus();
+    if (!force && looking && !listMovedByUs && Date.now() - lastOwnerReset < 60_000) return;
+    if (looking && !listMovedByUs) lastOwnerReset = Date.now();
+    listMovedByUs = false;
     const all = Q('chatList.filterAll');
     const selected = qa('chatList.filterTab').find((b) => b.getAttribute('aria-selected') === 'true');
     if (all && selected && selected !== all) { ACX.click(all); await sleep(350); }
@@ -303,10 +355,26 @@
     if (pane && pane.scrollTop > 0) { pane.scrollTop = 0; await sleep(300); }
   }
 
+  /** "typing…" or "recording audio…" shown in place of the last message: not a message. */
+  function isTypingPreview(preview) {
+    const re = lookup('text.typingPreview') ? rx('text.typingPreview') : /^(typing|recording audio|recording)\s*(…|\.\.\.)?$/i;
+    return re.test(String(preview || '').trim());
+  }
+
   const dupWarned = new Set();
 
-  // Last seen time and preview of each chat row, to notice messages already read on the phone.
+  // Last seen time and preview of each chat row, to notice messages already read on the phone:
+  // title -> { time, preview, stamp }. `stamp` is the last clock time the row showed, so the
+  // signature does not change when "23:50" turns into "Yesterday" at midnight.
   const rowSeen = new Map();
+
+  /** Signature of a row for the worker: changes with a new message, not with an ageing time label. */
+  function rowThreadSig(r) {
+    const prev = rowSeen.get(r.title);
+    const typing = isTypingPreview(r.preview);
+    const preview = typing && prev ? prev.preview : r.preview;
+    return `${ACX.stableTime(prev && prev.stamp, r.time)}|${preview}${typing ? '|typing' : ''}`;
+  }
 
   /** True for a row that is a 1:1 chat the agent may answer (not a group, not a title shared by two chats). */
   function isPersonRow(r, titleCount, byTitle) {
@@ -345,14 +413,15 @@
     await resetList();
     if (!q('chatList.grid', document, { quiet: true })) return { threads: [] };
     const { rows, titleCount, byTitle } = await listContext();
+    const now = Date.now();
     const threads = [];
     for (const r of rows) {
       if (threads.length >= 8) break;
-      if (r.lastMine || (!r.preview && !r.time)) continue;
+      if (r.pinned || r.lastMine || (!r.preview && !r.time) || isTypingPreview(r.preview)) continue;
       // Only today's chats (the list shows a clock time for those): older ones are the owner's to deal with.
       if (!/^\d{1,2}[:.]\d{2}/.test(String(r.time || ''))) continue;
       if (!isPersonRow(r, titleCount, byTitle)) continue;
-      threads.push({ key: r.title, title: r.title, unread: r.unread, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
+      threads.push({ key: r.title, title: r.title, unread: r.unread, preview: r.preview, is_group: false, sig: rowThreadSig(r), ts_max: ACX.labelTimeMax(r.time, now) });
     }
     return { threads };
   }
@@ -366,22 +435,32 @@
     const { rows, titleCount, byTitle } = await listContext();
 
     const threads = [];
+    const now = Date.now();
     const firstScan = !rowSeen.size;
     let earlyPicks = 0;
     for (const r of rows) {
       // A chat counts as new when it has an unread badge, OR when its last message changed since the
       // last look and is not ours: reading the message on the phone clears the badge everywhere.
-      const rowSig = `${r.time}|${r.preview}`;
-      const changed = rowSeen.has(r.title) ? rowSeen.get(r.title) !== rowSig : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
-      rowSeen.set(r.title, rowSig);
+      // A label that only ages ("23:50" to "Yesterday") or a "typing…" preview is not a new message.
+      const prev = rowSeen.get(r.title);
+      const typing = isTypingPreview(r.preview);
+      const preview = typing && prev ? prev.preview : r.preview;
+      // The first scan after a page load takes up to 5 chats from today as changed (read on the phone
+      // while the tab was down). A pinned chat never uses one of those picks: it is never read.
+      const changed = prev
+        ? prev.preview !== preview || ACX.timeMoved(prev.time, r.time)
+        : firstScan && !r.pinned && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
+      const sig = rowThreadSig(r);
+      rowSeen.set(r.title, { time: r.time, preview, stamp: ACX.stableTime(prev && prev.stamp, r.time) });
+      if (r.pinned) continue; // the owner's own chat: never read by the agent
       if (r.lastMine || !(r.unread || changed)) continue; // nothing new from the customer
       if (!isPersonRow(r, titleCount, byTitle)) continue;
-      threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
+      threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig, ts_max: ACX.labelTimeMax(r.time, now) });
     }
 
     // The chat that is open right now never gets an unread badge: watch its last message instead.
     const cur = currentChat();
-    if (cur && cur.title && !threads.some((t) => t.key === cur.title) && !(known[cur.title] && known[cur.title].is_group) && labelInfo(cur.label).kind !== 'group') {
+    if (cur && cur.title && !isPinnedTitle(cur.title) && !threads.some((t) => t.key === cur.title) && !(known[cur.title] && known[cur.title].is_group) && labelInfo(cur.label).kind !== 'group') {
       const last = lastMessageLight();
       if (last) {
         if (!(cur.title in lastSeen)) lastSeen[cur.title] = last.id; // first look: only what arrives from now on counts
@@ -552,8 +631,11 @@
         kind,
         ts: model && model.t ? model.t * 1000 : pre.ts,
         author: pre.author,
-        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia). Voice notes are left alone.
-        _media: kind === 'image' || kind === 'video' ? { el: m.row, kind } : null,
+        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia), and for a video
+        // what the bridge knows about it (findVideo). Voice notes are left alone.
+        _media: kind === 'image' || kind === 'video'
+          ? { el: m.row, kind, info: model ? { duration: model.duration || null, size: model.size || null, view_once: Boolean(model.view_once) } : {} }
+          : null,
       });
     }
     return out;
@@ -638,7 +720,7 @@
     let cur = currentChat();
     if (cur && fits(cur.title, want)) return cur;
 
-    await resetList();
+    await resetList(true);
     let row = findRow(want);
     let searched = null;
     if (!row) {
@@ -655,7 +737,7 @@
       if (!row) throw new Fail('thread_not_found', `Could not find the chat "${want.titles[0] || want.digits}"`, true);
       const targets = [Q('chatList.rowActivator', row.row), row.row.querySelector('[data-testid="cell-frame-container"]'), row.row].filter(Boolean);
       for (const el of targets) {
-        try { el.scrollIntoView({ block: 'center' }); } catch { /* not scrollable */ }
+        try { el.scrollIntoView({ block: 'center' }); listMovedByUs = true; } catch { /* not scrollable */ }
         await sleep(rand(150, 400));
         ACX.click(el);
         cur = await waitFor(() => { const c = currentChat(); return c && fits(c.title, want) ? c : null; }, { timeout: 4000, interval: 250 });
@@ -677,11 +759,95 @@
     if (li.kind === 'chat' && normTitle(li.name) !== normTitle(cur.title)) throw new Fail('thread_not_found', 'The message box belongs to a different chat', true);
   }
 
+  // ---- the whole video, for the vision model ---------------------------------------------------------------------
+
+  /** The open media viewer, when one shows. */
+  const viewerOpen = () => { const v = Q('media.viewer'); return v && visible(v) ? v : null; };
+
+  /** Mute and pause whatever plays in the viewer, so a customer's clip never plays aloud on the owner's laptop. */
+  function muteViewer() {
+    const v = viewerOpen();
+    if (!v) return;
+    for (const el of [Q('media.viewer_video', v), ...v.querySelectorAll('video')]) {
+      if (!el) continue;
+      try { el.muted = true; if (!el.paused) el.pause(); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Close the media viewer the way a person would: Escape, then its close button, looked for only inside
+   * the viewer (never a close button elsewhere on the page). The chat stays as it was.
+   */
+  async function closeViewer(title) {
+    for (let round = 0; round < 2 && viewerOpen(); round++) {
+      muteViewer();
+      ACX.key(document.activeElement || document.body, 'Escape', { keyCode: 27, which: 27 });
+      if (await waitFor(() => !viewerOpen(), { timeout: 1200, interval: 150 })) break;
+      const v = viewerOpen();
+      if (!v) break;
+      const btn = Q('media.viewer_close', v);
+      if (btn) ACX.click(btn);
+      await waitFor(() => !viewerOpen(), { timeout: 1200, interval: 150 });
+    }
+    if (viewerOpen()) ACX.diag('note', { video_capture: ['viewer_still_open'] });
+    const cur = currentChat();
+    if (title && cur && normTitle(cur.title) !== normTitle(title)) ACX.diag('note', { video_capture: ['chat_changed'] });
+  }
+
+  /**
+   * The file of a customer video. WhatsApp Web only loads it when it is opened, so: open it in the
+   * media viewer, keep the player muted and paused, read the bytes behind its blob: address, and close
+   * the viewer again (done). Never for a view once video. A video the bridge says is huge is not opened.
+   */
+  async function findVideo(m, deadline) {
+    const left = () => deadline - Date.now();
+    const info = (m._media && m._media.info) || {};
+    const bubble = m._media.el;
+    if (info.view_once || Q('media.view_once', bubble)) return { why: 'view_once' };
+    if (info.size && info.size > 64 * 1024 * 1024) return { why: 'too_big_to_open', seconds: info.duration || null };
+    const opener = Q('media.video_open', bubble);
+    if (!opener) return { why: 'no_opener' };
+    const title = currentChat()?.title || '';
+    // Mute and close on every path. After no viewer showed in time, one that opens a moment later (a slow
+    // laptop) is waited for briefly and closed too.
+    const done = async ({ late = false } = {}) => {
+      if (late && !viewerOpen()) await waitFor(() => viewerOpen(), { timeout: 1500, interval: 150 });
+      muteViewer();
+      await closeViewer(title);
+    };
+    if (viewerOpen()) await closeViewer(title); // left over from before: start clean
+    ACX.click(opener);
+    const viewer = await waitFor(() => viewerOpen(), { timeout: Math.max(300, Math.min(4000, left())), interval: 200 });
+    if (!viewer) return { why: 'no_viewer', done: () => done({ late: true }) };
+    const quiet = (v) => { try { v.muted = true; if (!v.paused) v.pause(); } catch { /* ignore */ } return v; };
+    const video = await waitFor(() => {
+      const v = Q('media.viewer_video', viewerOpen() || viewer);
+      if (v) quiet(v);
+      return v && /^blob:/.test(v.currentSrc || v.src || '') ? v : null;
+    }, { timeout: Math.max(300, Math.min(8000, left())), interval: 200 });
+    if (!video) return { why: 'no_video_in_viewer', done };
+    quiet(video);
+    const seconds = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : info.duration || null;
+    let blob = null;
+    try {
+      const res = await fetch(video.currentSrc || video.src, { signal: AbortSignal.timeout(Math.max(500, Math.min(5000, left()))) });
+      if (res.ok) blob = await res.blob();
+    } catch { blob = null; } // a streamed player has no file behind its address: frames only
+    if (blob && blob.size > 0) return { blob, seconds, mime: blob.type || 'video/mp4', done };
+    return { el: video, seconds, done };
+  }
+
   async function read({ key }) {
     const title = String(key || '').trim();
     if (!title) throw new Fail('thread_not_found', 'No chat given', false);
     await closeDialogs();
+    // A pinned chat is the owner's: not opened, not read, never reported (the worker counts it as done).
+    try {
+      const row = findRow({ titles: [title], digits: '' });
+      if ((row && row.pinned) || isPinnedTitle(title)) return { skipped: true, why: 'pinned' };
+    } catch { /* two rows with that title: openThread says so */ }
     const cur = await openThread({ titles: [title], digits: '' });
+    if (isPinnedTitle(cur.title)) return { skipped: true, why: 'pinned' };
     await sleep(rand(300, 700)); // a person looks before doing anything
 
     const messages = await collectMessages();
@@ -699,7 +865,11 @@
     if (messages.length) lastSeen[cur.title] = messages[messages.length - 1].external_id;
     // Photos and video previews of the newest customer messages ride along. Never throws, at most about 5 s.
     await ACX.captureMedia(messages);
-    return { thread, messages: messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts })) };
+    // The newest customer video itself, when Google AI Studio is connected. Never throws, at most about 8 s.
+    await ACX.captureVideo(messages, findVideo);
+    const out = messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts }));
+    // What the end of the chat looked like: send() refuses the reply if the customer wrote again since.
+    return { thread, messages: out, tail: ACX.tailRef(out) };
   }
 
   // ---- typing and sending -----------------------------------------------------------------------------------------------
@@ -717,24 +887,27 @@
   }
 
   /**
-   * Type one message at a human pace and confirm the box holds exactly that text.
+   * Put one message in the box and confirm the box holds exactly that text. With the old human pacing
+   * (`pace.instant` false) there is a thinking pause before and a "typing..." pause after, scaled by
+   * `pace.scale`; with typing_cps 0 the text goes in at once.
    * The message box is looked up again at every step: WhatsApp replaces the element when it goes
    * from empty to filled, so a reference kept across a pause may be dead.
    */
-  async function typePart(text, cps, title) {
+  async function typePart(text, pace, title) {
     const want = squash(text);
     const first = q('composer.input');
     if (!first) throw new Fail('composer_missing', 'Could not find the message box', true);
-    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, cps)) * 1000));
+    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, pace.cps)) * 1000));
     const there = squash(textOf(first));
-    if (there && there !== want) throw new Fail('composer_busy', 'Someone is typing in this chat', true);
+    // Text that is not ours in this chat's box: the owner is writing to this customer (or left a draft).
+    if (there && there !== want) throw new Fail('draft_in_chat', 'There is an unsent message in this chat', true);
 
     if (!there) { // (when the box already holds exactly this text it is ours from an attempt that was cut short)
       first.focus();
-      await sleep(total * rand(0.25, 0.4)); // thinking pause before the text appears
+      if (!pace.instant) await ACX.humanPause(total * rand(0.25, 0.4), pace.scale); // thinking pause before the text appears
       const el = Q('composer.input');
       if (!el) throw new Fail('composer_missing', 'The message box went away', true);
-      if (squash(textOf(el))) throw new Fail('composer_busy', 'Someone started typing in this chat', true);
+      if (squash(textOf(el))) throw new Fail('draft_in_chat', 'Someone started typing in this chat', true);
       try {
         await ACX.insertText(el, text);
       } catch (err) {
@@ -744,7 +917,7 @@
           throw err;
         }
       }
-      await sleep(total * rand(0.2, 0.35)); // the customer sees "typing..." meanwhile
+      if (!pace.instant) await ACX.humanPause(total * rand(0.2, 0.35), pace.scale); // the customer sees "typing..." meanwhile
     }
     // Read back. Anything else in the box (the owner typed, the chat changed) stops the send.
     const cur = currentChat();
@@ -754,8 +927,13 @@
 
   const idsInMain = () => new Set(messageRows().map((m) => m.dataId));
 
-  /** Click Send and wait for the new outgoing message. Returns its id. Never sends twice. */
-  async function sendTyped(text) {
+  /**
+   * Click Send and wait for the new outgoing message. Returns its id. Never sends twice.
+   * A delivery tick is waited for briefly (3 s, 5 s for the last part); after that the bubble on
+   * the clock is enough, since WhatsApp holds it in its own queue. Only when no bubble shows at all
+   * is the full 20 s waited before giving up.
+   */
+  async function sendTyped(text, { last = true } = {}) {
     const want = squash(text);
     const before = idsInMain();
     // The Send button only exists while the box has text (it swaps with the microphone).
@@ -796,10 +974,13 @@
     }
 
     // Sent or better (one tick) is success. A message still on the clock is in WhatsApp's own queue.
-    const strong = await waitFor(() => { const n = newOwn(); return n && !n.weak ? n : null; }, { timeout: 20_000, interval: 400 });
-    const res = strong || newOwn();
+    const strongWait = last ? 5000 : 3000;
+    let res = await waitFor(() => { const n = newOwn(); return n && !n.weak ? n : null; }, { timeout: strongWait, interval: 300 });
+    if (!res) res = newOwn();
+    // A slow render (a hidden tab): keep waiting for the bubble itself before calling it unclear.
+    if (!res) res = await waitFor(newOwn, { timeout: 20_000 - strongWait, interval: 400 });
     if (!res) throw new Fail('send_not_confirmed', 'The message left the box but did not show up in the chat', false);
-    if (res.weak) ACX.diag('note', { where: 'send', note: `no delivery tick after 20s (${res.status})` });
+    if (res.weak && res.status === 'echo') ACX.diag('note', { where: 'send', note: 'no delivery state on the sent bubble' });
     sentIds.add(res.id);
     return res.id;
   }
@@ -856,11 +1037,16 @@
     return cur;
   }
 
-  async function send({ job, navigated }) {
+  async function send({ job, navigated, newer_than: newerThan, budget_ms: budgetMs }) {
     if (!job || !Array.isArray(job.parts) || !job.parts.length) throw new Fail('unknown', 'Nothing to send', false);
     const target = job.target || {};
     const parts = job.parts.map((p) => String(p));
-    const cps = (job.pacing && job.pacing.typing_cps) || 11;
+    // typing_cps 0: each part goes in whole with no pauses. A typing speed (older servers): the human
+    // pauses, scaled down to short floor pauses when the worker says other customers are waiting.
+    const rawCps = job.pacing ? job.pacing.typing_cps : undefined;
+    const cps = ACX.cpsOf(rawCps);
+    const nominal = 850 + parts.reduce((n, p) => n + Math.min(12_000, Math.max(700, (p.length / Math.max(3, cps)) * 1000)) * 0.6 + 1150, 0);
+    const pace = { instant: ACX.instant(rawCps), cps, scale: ACX.pauseScale(budgetMs, nominal) };
     const want = await wantFor(target);
 
     let cur;
@@ -871,8 +1057,13 @@
       if (!want.titles.length && !want.digits) throw new Fail('thread_not_found', 'The job does not say which chat', false);
       cur = await openThread(want);
     }
-    await sleep(rand(500, 1200));
+    await sleep(pace.instant ? rand(150, 300) : Math.max(300, rand(500, 1200) * pace.scale)); // let the chat settle on screen
 
+    // A pinned chat is the owner's: the agent's own replies never go there. What the owner chose (an
+    // Urgent answer, a message from Inbox, a code they approved) still does.
+    if (isPinnedTitle(cur.title) && ['auto', 'holding'].includes(job.source)) {
+      throw new Fail('pinned_chat', 'This chat is pinned, so the agent leaves it to you', false);
+    }
     // Refuse to type anywhere but the chat the job names.
     checkLabel(cur);
     const msgs = await collectMessages();
@@ -893,10 +1084,23 @@
     const mine = jobProgress.get(job.id) || [];
     const sent = mine.length >= seen.k ? [...mine] : [...seen.ids];
     const from = sent.length;
+    // The customer wrote again after the read this reply was decided on: it is out of date. Nothing
+    // was sent for it yet, so it is refused and the worker reads the chat again for one fresh answer.
+    if (from === 0 && newerThan && ACX.newerInbound(msgs, newerThan)) {
+      await clearOurs(parts[0]);
+      throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
+    }
+    // The owner answered this customer by hand after the read: the agent's reply would go out on top.
+    if (from === 0 && newerThan && ACX.ownerReplied(msgs, newerThan, parts, (m) => sentIds.has(m.external_id))) {
+      await clearOurs(parts[0]);
+      throw new Fail('owner_replied', 'You already replied to this customer yourself', false);
+    }
     for (let i = from; i < parts.length; i++) {
-      if (i > from) await sleep(rand(700, 1600));
-      await typePart(parts[i], cps, cur.title);
-      sent.push(await sendTyped(parts[i]));
+      // About 0.4 s between parts (WhatsApp keeps their order); the old human gap with a speed.
+      if (i > from) await sleep(pace.instant ? 400 : Math.max(400, rand(700, 1600) * pace.scale));
+      await typePart(parts[i], pace, cur.title);
+      sent.push(await sendTyped(parts[i], { last: i === parts.length - 1 }));
+      ACX.noteSent(parts[i]);
       jobProgress.set(job.id, [...sent]);
     }
     if (sent.length) lastSeen[cur.title] = sent[sent.length - 1];

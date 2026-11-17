@@ -126,24 +126,30 @@ export function bool(v: unknown, fallback: boolean): boolean {
 /**
  * Stream newline delimited JSON while a slow job runs, so the caller (the extension service worker)
  * gets bytes straight away and the connection is not dropped while the brain thinks.
+ *
+ * `send` resolves true once the line is taken by the stream, false when the caller has gone.
+ * `isOpen()` is true until a write fails or the stream closes (the caller hung up). Work that would
+ * hand something to the caller checks it first, so nothing is handed to a caller that is not there.
  */
 export function ndjsonStream(
   exec: ExecutionContext,
-  work: (send: (obj: unknown) => void) => Promise<void>,
+  work: (send: (obj: unknown) => Promise<boolean>, isOpen: () => boolean) => Promise<void>,
   pingMs = 4000,
 ): Response {
   const enc = new TextEncoder();
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
   const writer = writable.getWriter();
   let open = true;
-  const send = (obj: unknown) => {
-    if (!open) return;
-    writer.write(enc.encode(JSON.stringify(obj) + '\n')).catch(() => { open = false; });
+  // The reader going away errors the stream: notice it without waiting for the next write.
+  writer.closed.catch(() => { open = false; });
+  const send = (obj: unknown): Promise<boolean> => {
+    if (!open) return Promise.resolve(false);
+    return writer.write(enc.encode(JSON.stringify(obj) + '\n')).then(() => true, () => { open = false; return false; });
   };
-  const timer = setInterval(() => send({ type: 'ping' }), pingMs);
+  const timer = setInterval(() => { void send({ type: 'ping' }); }, pingMs);
   const job = (async () => {
     try {
-      await work(send);
+      await work(send, () => open);
     } catch (err) {
       const e = err instanceof HttpError ? err : null;
       send({ type: 'error', code: e?.code ?? 'internal', message: e?.message ?? 'Something went wrong' });

@@ -1,27 +1,33 @@
 // The agent making creator codes by itself. Called by processConversation (src/pipeline/inbound.ts)
 // after its gates, before the normal brain reply.
 //
-//   new customer messages mention a code?  (cheap keyword check, no AI)
+//   the unanswered customer messages mention a code, or finish a code request started just before
+//   them ("hey can it be" then "acxjohn")?  (codeTrigger: no AI)
 //     no  -> nothing to do here
-//     yes -> extractDiscountRequest (one small AI call): wants_code, code, confidence
+//     yes -> quick check on the cheap model (extractDiscountRequest): wants_code, code, confidence
 //            no request            -> normal reply
 //            request, no code      -> normal reply, with a note to ask what they want it to be
-//            request with a code   -> planCodeRequest: make it now (auto) or park it for the owner
+//            request with a code   -> confirmed on the main model, then planCodeRequest: make it
+//                                     now (auto) or park it for the owner
 //
+// A code is only ever made when it is in the customer's own unanswered words and every rule passes.
 // Parking means: a draft in Discount codes plus an Urgent item with one tap approve. Everything that
-// is not plainly safe parks: ask mode, low confidence, a bad word or the brand name as the code,
-// a code that exists already, a second code for the same person, the daily cap, Shopify not
-// connected or saying no. When a code is made, the only message that goes out is the template.
-import { extractDiscountRequest, type DiscountRequest } from '../brain';
+// is not plainly safe parks: ask mode, low confidence, the two models disagreeing or the check
+// failing, the customer talking about a code that already exists, a bad word or the brand name as
+// the code, a code that exists already, a second code for the same person, the daily cap, Shopify
+// not connected or saying no. When a code is made, the only message that goes out is the template.
+import { cheapChoice, chooseProvider, extractDiscountRequest, type DiscountRequest } from '../brain';
+import { pendingInbound } from '../brain/rules';
+import type { CallBudget } from '../brain/llm';
 import type { AgentJob, ContactRow, ConversationRow, DeviceRow, Env, HistoryMessage, JobTarget, MessageRow, Settings, UrgentRow } from '../types';
-import { clip, one, run, uid } from '../lib/db';
+import { clip, one, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError } from '../lib/http';
 import { HOUR, MIN, londonTime } from '../lib/time';
 import { alertOwner } from '../pipeline/alerts';
-import { enqueue, leaseById } from '../pipeline/outbox';
+import { enqueueStatements, leaseById } from '../pipeline/outbox';
 import type { DiscountResult } from '../shopify/discounts';
-import { HOLDING_CODE_LINE, brandWords, codeProblem, mentionsCode, planCodeRequest } from './rules';
+import { CODE_ANSWER_NOTE, HOLDING_CODE_LINE, brandWords, codeProblem, codeTrigger, codeTrouble, confirmRequest, inCustomerWords, mentionsCode, ourCodeAsk, planCodeRequest } from './rules';
 import {
   type CreateFn, type DiscountRow, insertDiscount, liveThenSend, loadDiscount, makeLive, messageFor, normaliseCode, queueDiscountMessage,
 } from './index';
@@ -35,11 +41,20 @@ export interface CodeTurn {
   settings: Settings;
   conv: ConversationRow;
   contact: ContactRow;
+  /** The chat as the brain sees it, oldest first, replies queued but not sent yet included. */
   history: HistoryMessage[];
   rows: MessageRow[];
+  /** The customer messages nobody answered yet: after our last message, sent or queued. */
+  unanswered: MessageRow[];
   /** The channel's mode: auto sends, review waits for the owner's OK. */
   channel_mode: 'auto' | 'review';
   device: DeviceRow | null;
+  /** False once the extension that is waiting on this request has hung up: then nothing is leased to it. */
+  live?: () => boolean;
+  /** When the model calls of this request must be done (see processConversation). */
+  deadlineAt?: number;
+  /** The customer message a reply sent now answers, and when it arrived (for the reply time). */
+  reply_to?: { id: string; ts: number } | null;
   target: JobTarget;
   pacing: { delay_ms: number; typing_cps: number };
   now: number;
@@ -50,37 +65,68 @@ export interface CodeTurn {
 export type CodeTurnResult =
   | { kind: 'none' }
   | { kind: 'note'; note: string }
-  | { kind: 'done'; action: 'reply' | 'review' | 'escalate' | 'none'; reason: string; jobs: AgentJob[] };
+  /** queued: jobs put in the outbox that were not handed over in `jobs` (the extension fetches them with a sync). */
+  | { kind: 'done'; action: 'reply' | 'review' | 'escalate' | 'none'; reason: string; jobs: AgentJob[]; queued?: number };
 
-/** The customer's words since the last message we sent. */
-function pendingWords(rows: MessageRow[]): { text: string; first: MessageRow | null } {
-  let i = rows.length;
-  while (i > 0 && rows[i - 1]!.direction === 'in') i--;
-  const pending = rows.slice(i).filter((m) => m.status !== 'history');
+/** The customer's unanswered words. */
+function pendingWords(unanswered: MessageRow[]): { text: string; first: MessageRow | null } {
+  const pending = unanswered.filter((m) => m.status !== 'history' && m.direction === 'in');
   return { text: pending.map((m) => m.body).join('\n'), first: pending[0] ?? null };
 }
+
+// The quick check runs on the cheap model and keeps most of the request's time for the reply.
+const CHECK_CAP_MS = 8_000;
+const CHECK_RESERVE_MS = 20_000;
+const CONFIRM_CAP_MS = 15_000;
+const budget = (deadlineAt: number | undefined, capMs: number, reserveMs: number): CallBudget | undefined =>
+  deadlineAt ? { deadlineAt, capMs, minMs: 2_000, reserveMs } : undefined;
 
 export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnResult> {
   const s = t.settings.discounts;
   if (s.mode === 'off') return { kind: 'none' };
-  const { text, first } = pendingWords(t.rows);
-  if (!first || !mentionsCode(text)) return { kind: 'none' };
+  const { text, first } = pendingWords(t.unanswered);
+  if (!first) return { kind: 'none' };
+  const before = t.history.slice(0, t.history.length - pendingInbound(t.history).length);
+  const trigger = codeTrigger(text, before, t.now);
+  if (!trigger) {
+    // Our last turn asked about their code, but this answer is too late or too long to read as the
+    // rest of the request: the reply must not promise a code, and a named code goes to the owner.
+    return ourCodeAsk(before) ? { kind: 'note', note: CODE_ANSWER_NOTE } : { kind: 'none' };
+  }
   const db = env.DB;
 
   // This run already dealt with these messages (a retry, or the chat handed back): do not do it twice.
   const handled = await one<{ id: string }>(
-    db, `SELECT id FROM discount_codes WHERE conversation_id = ? AND made_by = 'agent' AND created_at >= ? LIMIT 1`, t.conv.id, first.created_at,
+    db, `SELECT id FROM discount_codes WHERE conversation_id = ? AND made_by = 'agent' AND created_at >= ? LIMIT 1`, t.conv.id, trigger.since ?? first.created_at,
   );
   if (handled) {
+    // A request split over messages that was already dealt with: anything after it gets a normal reply.
+    if (trigger.kind === 'context') return { kind: 'none' };
     // Something new and unrelated since then gets a normal reply. More about the code waits for the owner or the template.
     const last = t.rows[t.rows.length - 1];
     if (last && last.id !== first.id && !mentionsCode(last.body)) return { kind: 'none' };
     return { kind: 'done', action: 'none', reason: 'code_request_already_handled', jobs: [] };
   }
 
+  // Quick yes or no on the cheap model. A no, or the check failing, is a normal reply: no code is made.
   let request: DiscountRequest;
   try {
-    request = await extractDiscountRequest(env, t.history);
+    const main = await chooseProvider(env, t.settings);
+    const cheap = cheapChoice(main);
+    const split = cheap.model !== main.model;
+    request = await extractDiscountRequest(env, t.history, {
+      choice: cheap, budget: budget(t.deadlineAt, CHECK_CAP_MS, CHECK_RESERVE_MS), purpose: split ? 'discount_check' : 'discount_request',
+    });
+    // Before a code can be made, the main model reads it too. Any doubt parks it for the owner.
+    if (request.wants_code && request.code && split) {
+      try {
+        const confirm = await extractDiscountRequest(env, t.history, { choice: main, budget: budget(t.deadlineAt, CONFIRM_CAP_MS, 1_000), purpose: 'discount_request' });
+        request = confirmRequest(request, confirm);
+      } catch (err) {
+        console.error('discount request confirm failed', err);
+        request = { ...request, confidence: 0 };
+      }
+    }
   } catch (err) {
     console.error('discount request check failed', err);
     return { kind: 'none' };
@@ -88,16 +134,21 @@ export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnRes
   if (!request.wants_code) return { kind: 'none' };
 
   const code = normaliseCode(request.code);
-  const [taken, contactCode, today] = code
-    ? await Promise.all([
-        one<{ id: string }>(db, 'SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE', code),
-        one<{ code: string }>(db, `SELECT code FROM discount_codes WHERE contact_id = ? AND status != 'draft' ORDER BY created_at DESC LIMIT 1`, t.contact.id),
-        one<{ n: number }>(db, `SELECT COUNT(*) AS n FROM discount_codes WHERE made_by = 'agent' AND shopify_status = 'created' AND created_at >= ?`, startOfLondonDay(t.now)),
-      ])
-    : [null, null, null];
+  const inWords = code ? inCustomerWords(code, text) : true;
+  // The code taken here, the person's last code and today's count: one query (the free plan allows 50 per request).
+  const facts = code && inWords
+    ? await one<{ taken: string | null; contact_code: string | null; today: number }>(
+        db,
+        `SELECT (SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE LIMIT 1) AS taken,
+           (SELECT code FROM discount_codes WHERE contact_id = ? AND status != 'draft' ORDER BY created_at DESC LIMIT 1) AS contact_code,
+           (SELECT COUNT(*) FROM discount_codes WHERE made_by = 'agent' AND shopify_status = 'created' AND created_at >= ?) AS today`,
+        code, t.contact.id, startOfLondonDay(t.now),
+      )
+    : null;
   const plan = planCodeRequest({
     settings: s, request, code, problem: code ? codeProblem(code, brandWords(t.settings)) : null,
-    taken_here: Boolean(taken), contact_code: contactCode?.code ?? null, made_today: today?.n ?? 0,
+    taken_here: Boolean(facts?.taken), contact_code: facts?.contact_code ?? null, made_today: Number(facts?.today ?? 0),
+    in_words: inWords, doubt: codeTrouble(text),
   });
 
   if (plan.kind === 'none') return { kind: 'none' };
@@ -111,7 +162,7 @@ export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnRes
   try {
     draft = await insertDiscount(db, {
       conv: t.conv, contact: t.contact, code: plan.code, amount: s.amount, applies_to: s.applies_to, expires_at: null, usage_limit: null,
-      message_text: messageFor(s, plan.code, s.amount, s.applies_to), made_by: 'agent', now: t.now,
+      message_text: messageFor(s, plan.code, s.amount, s.applies_to), made_by: 'agent', now: t.now, checked: true,
     });
   } catch (err) {
     if (err instanceof HttpError && err.code === 'code_taken') return parkCodeRequest(env, t, { code: plan.code, reason: `The code ${plan.code} is already used for someone else`, withDraft: false, draft: null, shopify: null });
@@ -126,9 +177,10 @@ export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnRes
   }
 
   const status = t.channel_mode === 'review' ? 'review' : 'pending';
-  const queued = await queueDiscountMessage(env, row, row.message_text, { now: t.now, source: 'discount', status, pacing: t.pacing });
+  const queued = await queueDiscountMessage(env, row, row.message_text, { now: t.now, source: 'discount', status, pacing: t.pacing, reply_to: t.reply_to, conv: t.conv, contact: t.contact, fresh: true });
   const jobs: AgentJob[] = [];
-  if (status === 'pending' && t.device) {
+  // Handed over in this answer only while the extension is still listening. Otherwise it waits for the next sync.
+  if (status === 'pending' && t.device && (t.live?.() ?? true)) {
     const job = await leaseById(db, t.device, queued.outbox_id, t.settings, t.pacing.delay_ms);
     if (job) jobs.push(job);
   }
@@ -141,7 +193,7 @@ export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnRes
     kind: 'discount', title: `Made discount code ${plan.code}`,
     body: `For ${who}. ${status === 'review' ? 'The message waits for your OK.' : 'The message is on its way.'}`, path: '/#/discounts',
   });
-  return { kind: 'done', action: status === 'review' ? 'review' : 'reply', reason: `made discount code ${plan.code}`, jobs };
+  return { kind: 'done', action: status === 'review' ? 'review' : 'reply', reason: `made discount code ${plan.code}`, jobs, queued: status === 'pending' && !jobs.length ? 1 : 0 };
 }
 
 /** Draft in Discount codes plus an Urgent item the owner approves with one tap. */
@@ -178,40 +230,52 @@ async function parkCodeRequest(
   }
 
   const question = p.code ? `${who} wants discount code ${p.code}` : `${who} wants a discount code`;
-  const customerWords = pendingWords(t.rows).text;
+  const customerWords = pendingWords(t.unanswered).text;
   const jobs: AgentJob[] = [];
+  let queued = 0;
   let urgentId: string;
+  // The Urgent item, the chat's status, the holding line and the activity line go in one batch: the
+  // free plan allows 50 queries per request and a parked code request is the longest path there is.
+  const writes: D1PreparedStatement[] = [];
+  let hid: string | null = null;
+  let holdingAt = -1;
   if (open) {
     urgentId = open.id;
-    await run(db, 'UPDATE urgent SET question = ?, customer_message = ?, reason = ?, discount_id = COALESCE(?, discount_id) WHERE id = ?',
-      clip(question, 500), clip(customerWords, 1500), clip(p.reason, 300), draft?.id ?? null, open.id);
+    writes.push(stmt(db, 'UPDATE urgent SET question = ?, customer_message = ?, reason = ?, discount_id = COALESCE(?, discount_id) WHERE id = ?',
+      clip(question, 500), clip(customerWords, 1500), clip(p.reason, 300), draft?.id ?? null, open.id));
   } else {
     urgentId = uid('u');
-    await run(
-      db,
-      `INSERT INTO urgent (id, conversation_id, channel, question, customer_message, reason, category, status, discount_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'discount_code', 'open', ?, ?)`,
-      urgentId, t.conv.id, t.conv.channel, clip(question, 500), clip(customerWords, 1500), clip(p.reason, 300), draft?.id ?? null, t.now,
+    writes.push(
+      stmt(db, `INSERT INTO urgent (id, conversation_id, channel, question, customer_message, reason, category, status, discount_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'discount_code', 'open', ?, ?)`,
+        urgentId, t.conv.id, t.conv.channel, clip(question, 500), clip(customerWords, 1500), clip(p.reason, 300), draft?.id ?? null, t.now),
+      stmt(db, `UPDATE conversations SET status = 'waiting_owner' WHERE id = ?`, t.conv.id),
     );
-    await run(db, `UPDATE conversations SET status = 'waiting_owner' WHERE id = ?`, t.conv.id);
     // A short line so they are not left hanging. It never says the code exists.
     if (t.settings.voice.holding_reply && t.channel_mode === 'auto') {
-      const hid = await enqueue(db, {
+      const q = enqueueStatements(db, {
         channel: t.conv.channel, kind: 'reply', conversation_id: t.conv.id, target: t.target, parts: [HOLDING_CODE_LINE],
         source: 'holding', ref_id: urgentId, pacing: t.pacing, dedupe_key: `holding:${urgentId}`, expires_at: t.now + t.settings.pacing.ignore_older_than_hours * HOUR,
+        reply_to: t.reply_to,
       });
-      if (hid && t.device) {
-        const job = await leaseById(db, t.device, hid, t.settings, t.pacing.delay_ms);
-        if (job) jobs.push(job);
-      }
+      hid = q.id;
+      writes.push(...q.statements);
+      holdingAt = writes.length - 1;
     }
   }
-  await logEvent(db, {
-    level: 'warn', type: 'discount_request', channel: t.conv.channel, conversation_id: t.conv.id,
-    message: `${question}. Waiting for you: ${p.reason}.`, data: { urgent_id: urgentId, discount_id: draft?.id ?? null },
-  });
+  writes.push(stmt(db, 'INSERT INTO events (ts, level, type, channel, conversation_id, message, data) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    Date.now(), 'warn', 'discount_request', t.conv.channel, t.conv.id, clip(`${question}. Waiting for you: ${p.reason}.`, 400),
+    JSON.stringify({ urgent_id: urgentId, discount_id: draft?.id ?? null })));
+  const results = await db.batch(writes);
+  if (hid && holdingAt >= 0 && (results[holdingAt]?.meta?.changes ?? 0) > 0) {
+    if (t.device && (t.live?.() ?? true)) {
+      const job = await leaseById(db, t.device, hid, t.settings, t.pacing.delay_ms);
+      if (job) jobs.push(job);
+    }
+    if (!jobs.length) queued = 1;
+  }
   await alertOwner(env, t.settings, { kind: 'urgent', title: 'Discount code request', body: clip(question, 120), path: '/#/urgent' });
-  return { kind: 'done', action: 'escalate', reason: `code request parked: ${p.reason}`, jobs };
+  return { kind: 'done', action: 'escalate', reason: `code request parked: ${p.reason}`, jobs, queued };
 }
 
 /**

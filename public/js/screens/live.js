@@ -1,7 +1,7 @@
 // Live: is it alive, does it need me, what did it just do.
 import { get, post } from '../api.js';
 import { toast } from '../ui.js';
-import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, ago, clock, num, syncList, unavailable, timeTag, plural } from '../ui.js';
+import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, ago, clock, num, syncList, unavailable, timeTag, plural, span } from '../ui.js';
 import { agentStatus, urgentCount } from '../app.js';
 
 const STATE_TEXT = {
@@ -88,8 +88,8 @@ export default {
       </section>
       <section class="stack" id="warnings" hidden></section>
       <section class="chgrid" aria-label="Laptop and channels" id="channels"></section>
-      <section class="grid grid--stats" aria-label="Today" id="stats">
-        ${[0, 1, 2, 3].map(() => html`<div class="stat"><span class="skel" style="--w:60%"></span><span class="skel skel--value"></span><span class="skel" style="--w:45%"></span></div>`)}
+      <section class="grid grid--stats grid--stats5" aria-label="Today" id="stats">
+        ${[0, 1, 2, 3, 4].map(() => html`<div class="stat"><span class="skel" style="--w:60%"></span><span class="skel skel--value"></span><span class="skel" style="--w:45%"></span></div>`)}
       </section>
       <section id="takeover" hidden></section>
       <section id="setup"></section>
@@ -139,9 +139,13 @@ export default {
       const c = ov.counts || {};
       const handled = (c.auto_today || 0) + (c.escalated_today || 0);
       const alone = handled ? Math.round(((c.auto_today || 0) / handled) * 100) : null;
+      // How fast the agent answered today, from the customer's message to the reply going out.
+      const rt = ov.reply_time || {};
+      const slow = rt.slowest;
       setHTML($('#stats', view), html`
         <a class="stat ${waiting ? 'stat--urgent' : ''}" href="#/urgent"><h2 class="stat__label">Waiting on you</h2><p class="stat__value">${num(waiting)}</p><p class="stat__delta">${waiting ? 'Tap to answer' : 'All clear'}</p></a>
         <article class="stat"><h2 class="stat__label">Replies sent today</h2><p class="stat__value">${num(c.sent_today)}</p><p class="stat__delta">${c.queued ? `${num(c.queued)} about to send` : 'Nothing waiting to send'}</p></article>
+        <a class="stat" href="#/health"><h2 class="stat__label">Average reply time today</h2><p class="stat__value num">${rt.count ? span(rt.avg_ms) : raw('<span class="stat__none">None yet</span>')}</p><p class="stat__delta">${rt.count && slow ? `Slowest ${span(slow.ms)} to ${slow.customer}` : 'No replies from the agent yet'}</p></a>
         <article class="stat"><h2 class="stat__label">Handled alone</h2><p class="stat__value">${alone === null ? raw('<span class="stat__none">0</span>') : html`${alone}<span class="stat__unit">%</span>`}</p><p class="stat__delta">${alone === null ? 'No chats yet today' : `${num(c.escalated_today)} passed to you`}</p></article>
         <article class="stat"><h2 class="stat__label">Messages in today</h2><p class="stat__value">${num(c.inbound_today)}</p><p class="stat__delta">${plural(c.conversations_today || 0, 'chat')}</p></article>`);
 

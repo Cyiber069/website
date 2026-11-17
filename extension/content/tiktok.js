@@ -70,14 +70,20 @@
     if (appCtx !== undefined) return appCtx;
     try {
       const el = q('page.app_data', document, QUIET);
-      const ctx = JSON.parse(el.textContent).__DEFAULT_SCOPE__['webapp.app-context'];
+      const scope = JSON.parse(el.textContent).__DEFAULT_SCOPE__;
+      const ctx = scope['webapp.app-context'];
       const p = (ctx.abTestVersion && ctx.abTestVersion.parameters) || {};
       const pick = (k) => (p[k] && p[k].vid != null ? String(p[k].vid) : null);
+      // Business accounts with the message permission get their inbox inside Business Suite. Only a
+      // true is trusted: the page may fill the permission in later, after this data was written.
+      const biz = scope['webapp.business'];
+      const business = biz && biz.businessPermission && biz.businessPermission.message === true ? true : null;
       appCtx = {
         region: ctx.region || null,
         language: ctx.language || null,
         unique_id: ctx.user && ctx.user.uniqueId ? String(ctx.user.uniqueId).toLowerCase() : null,
         flags: { sdk: pick('web_dm_im_react_sdk'), vmok: pick('web_dm_messages_vmok'), drawer: pick('web_dm_flexible_drawer') },
+        business,
       };
     } catch {
       if (document.readyState !== 'complete') return null; // try again once the page has loaded
@@ -520,7 +526,10 @@
     const entry = q('requests.entry', document, QUIET);
     const entryBadge = entry ? q('conversation.unread', entry, QUIET) : null;
     if (entryBadge && visible(entryBadge)) unread += parseInt(squash(entryBadge.textContent), 10) || 1;
-    return { state: 'ready', detail: layout, unread };
+    // A business account: the worker then sends a tab that wandered into Business Suite back to the
+    // business view of this page (scene=business), where this script works.
+    const business = Boolean((appContext() && appContext().business) || /(^|&)scene=business(&|$)/.test(location.search.slice(1)));
+    return { state: 'ready', detail: layout, unread, ...(business ? { business: true } : {}) };
   }
 
   // ---- scan ------------------------------------------------------------------------------------------------
@@ -566,7 +575,9 @@
     return ago >= -1 && ago <= mins;
   }
 
-  // Last seen preview and time of each conversation row, to notice messages already read on the phone.
+  // Last seen preview and time of each conversation row, to notice messages already read on the phone:
+  // key -> { preview, time, tkey }. `tkey` is the last clock time the row showed: relative labels
+  // ("1m", "2m") and dates only age, so they never change a signature by themselves.
   const rowSeen = new Map();
 
   async function scan() {
@@ -579,6 +590,7 @@
     const open = currentOpen(rows);
     const tail = open ? tailOf(open) : null;
     const threads = [];
+    const now = Date.now();
 
     const firstScan = !rowSeen.size;
     let earlyPicks = 0;
@@ -590,19 +602,22 @@
       if ((lastUnread[row.key] || 0) > 0 && row.unread === 0) bump(row.key);
       lastUnread[row.key] = row.unread;
       const isOpen = Boolean(open && open.key === row.key);
-      // Reading a message on the phone clears the badge everywhere, so a row whose preview or time
-      // changed since the last look also counts. The server works out whether anything is unanswered.
-      const rowSig = `${row.preview}|${row.time}`;
+      // Reading a message on the phone clears the badge everywhere, so a row whose preview changed, or
+      // whose time label moved because of a new message ("3m" to "now", "20:14" to "20:31"), counts.
+      // A label that only ages ("1m" to "2m") does not. The server works out what is unanswered.
+      const prev = rowSeen.get(row.key);
+      const tkey = ACX.stableTime(prev && prev.tkey, row.time);
+      const moved = prev ? prev.preview !== row.preview || ACX.timeMoved(prev.time, row.time) : false;
       // A request the owner just accepted. TikTok labels these rows "Message request accepted"; that
       // label is trusted on its own, however many arrive at once. Without it, one or two rows that
       // were not in the list before also count. At startup only labels from the last 10 minutes count.
       const labelled = /message request accept/i.test(String(row.preview || ''));
-      const unseen = !rowSeen.has(row.key) || rowSeen.get(row.key) !== rowSig;
+      const unseen = !prev || moved;
       const accepted = labelled
         ? (firstScan ? withinMinutes(row.time, 10) : unseen)
-        : !firstScan && newRows <= 2 && !rowSeen.has(row.key);
-      const changed = accepted || (rowSeen.has(row.key) ? rowSeen.get(row.key) !== rowSig : firstScan && withinMinutes(row.time, 10) && earlyPicks++ < 3);
-      rowSeen.set(row.key, rowSig);
+        : !firstScan && newRows <= 2 && !prev;
+      const changed = accepted || (prev ? moved : firstScan && withinMinutes(row.time, 10) && earlyPicks++ < 3);
+      rowSeen.set(row.key, { preview: row.preview, time: row.time, tkey });
       if (changed && !row.unread && !isOpen) bump(row.key);
       // An open conversation gets no unread badge, so there the last bubble decides.
       if (!(row.unread > 0 || changed || (isOpen && tail.last_in))) continue;
@@ -611,7 +626,8 @@
       if (!row.unread && !accepted && (isOpen ? !tail.last_in : endsWithOurs(row.preview))) continue;
       threads.push({
         key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: row.is_group, accepted,
-        sig: isOpen ? `${stamp(row.key)}|o|${tail.sig}` : `${stamp(row.key)}|l|${row.unread}|${row.preview}|${row.time}`,
+        sig: isOpen ? `${stamp(row.key)}|o|${tail.sig}` : `${stamp(row.key)}|l|${row.unread}|${row.preview}|${tkey}`,
+        ts_max: isOpen ? null : ACX.labelTimeMax(row.time, now),
       });
     }
 
@@ -636,7 +652,7 @@
       if (open && open.key === row.key) continue; // handled below from the open chat
       threads.push({
         key: row.key, title: row.nick, unread: row.unread, preview: row.preview, is_group: row.is_group,
-        sig: `${stamp(row.key)}|r|${row.unread}|${row.preview}|${row.time}`,
+        sig: `${stamp(row.key)}|r|${row.unread}|${row.preview}|${ACX.stableTime('', row.time)}`,
       });
     }
 
@@ -751,15 +767,48 @@
       const name = chat.nick || chat.handle;
       // Photos and video covers of the newest customer messages ride along. Never throws, at most about 5 s.
       const shown = usable.slice(-MAX_MESSAGES);
-      for (const m of shown) m._media = m.kind === 'image' || m.kind === 'video' ? { el: m.el, kind: m.kind } : null;
+      for (const m of shown) m._media = m.kind === 'image' || m.kind === 'video' ? { el: m.el, kind: m.kind, shared: m.kind === 'video' && Boolean(q('media.shared_card', m.el, QUIET)) } : null;
       await ACX.captureMedia(shown);
+      // A shared post is someone else's video: its cover goes with who posted it and its caption, never the clip.
+      for (const m of shown) if (m.media && m._media && m._media.shared) m.media.shared = sharedPost(m.el);
+      // A video the customer sent in the chat itself, when Google AI Studio is connected. At most about 8 s.
+      const own = shown.map((m) => (m._media && m._media.shared ? { ...m, _media: null } : m));
+      await ACX.captureVideo(own, dmVideo);
+      own.forEach((m, i) => { if (m.media) shown[i].media = m.media; });
+      const messages = shown.map((m) => ({ external_id: m.serverId || null, direction: m.direction, body: m.body, kind: m.kind, ts: null, ...(m.media ? { media: m.media } : {}) }));
       return {
         thread: { external_id, title: name, is_group, subject: null, contact: { name, phone: null, email: null, handle: chat.handle || null } },
-        messages: shown.map((m) => ({ external_id: m.serverId || null, direction: m.direction, body: m.body, kind: m.kind, ts: null, ...(m.media ? { media: m.media } : {}) })),
+        messages,
+        tail: ACX.tailRef(messages), // send() refuses the reply if the customer wrote again since
       };
     } finally {
       await tidy();
     }
+  }
+
+  /** Who posted a shared video and its caption, as shown on the card. Customer content for the vision model. */
+  function sharedPost(el) {
+    const author = (val('media.shared_author', el) || '').replace(/^.*\/@/, '').replace(/[/?#].*$/, '').replace(/^@/, '').trim().slice(0, 60);
+    const caption = squash(val('media.shared_caption', el) || '').slice(0, 300);
+    return author || caption ? { author, caption } : null;
+  }
+
+  /** The file of a video sent in the chat: its https address for the service worker, or the bytes of a blob: one. */
+  async function dmVideo(m) {
+    const node = q('media.dm_video', m._media.el, QUIET);
+    const src = node ? node.currentSrc || node.src || node.getAttribute('src') || '' : '';
+    if (!src) return { why: 'no_src' };
+    const video = node.tagName === 'VIDEO' ? node : node.closest('video');
+    const seconds = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+    if (/^https:/i.test(src)) return { url: src, seconds };
+    if (/^blob:/i.test(src)) {
+      try {
+        const res = await fetch(src, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) return { blob: await res.blob(), seconds };
+      } catch { /* a streamed player: frames only */ }
+      return video ? { el: video, seconds } : { why: 'no_bytes' };
+    }
+    return { why: 'odd_src' };
   }
 
   // ---- send -----------------------------------------------------------------------------------------------
@@ -791,7 +840,9 @@
       const editor = q('composer.editor', box, QUIET);
       if (editor) return editor;
       const tip = q('state.request_pending', box, QUIET);
-      if (tip && rx('text.request_pending').test(textOf(tip))) throw new Fail('blocked', 'This person has not accepted your message request yet', false);
+      // Live text (2026-11-17): "You can start chatting once this user has accepted your message request."
+      const pending = ACX.lookup('text.request_pending') ? rx('text.request_pending') : /accept(s|ed) your message request|only send up to/i;
+      if (tip && pending.test(textOf(tip))) throw new Fail('blocked', 'This person has not accepted your message request yet', false);
       return null;
     };
     let editor = find();
@@ -811,7 +862,7 @@
   };
 
   /** Paste one part, press Send, wait for the new bubble. Returns the message id or null. */
-  async function sendPart(text, cps) {
+  async function sendPart(text, cps, scale = 1) {
     const chat = chatInfo();
     const editor = await composerOf(chat);
     const idOf = (m) => m.clientId || m.serverId;
@@ -820,15 +871,19 @@
     const beforeNoId = before.filter((m) => m.direction === 'out' && !idOf(m) && same(m.body, text)).length;
     const editorText = () => squash(textOf(editor.isConnected ? editor : q('composer.editor', document, QUIET) || editor));
 
-    await ACX.humanType(editor, text, cps); // paste (pack typing.order); fails with composer_busy on a draft
+    await ACX.humanType(editor, text, cps, { scale }); // paste (pack typing.order); fails with composer_busy on a draft
 
     // The button only exists once TikTok's own state holds the text. No button: do not press Enter.
     const button = await waitFor(sendButton, { timeout: 2500, interval: 150 });
     if (!button || !same(editorText(), text)) {
       ACX.snapshot('tiktok.send.not_synced', q('chat.bottom', document, QUIET));
+      // More than our text in the box: someone typed while we waited (the owner in the way). Anything
+      // else is TikTok's editor not taking the text: a quick retry with a try used, never a 15 min wait.
+      const typedMore = Boolean(button) && editorText().length > squash(text).length + 2;
       await ACX.clearComposer(editor);
       if (!button) throw new Fail('composer_missing', 'TikTok did not take the text (the Send button never appeared)', true);
-      throw new Fail('composer_busy', 'The TikTok message box changed while typing', true);
+      if (typedMore) throw new Fail('composer_busy', 'The TikTok message box changed while typing', true);
+      throw new Fail('send_not_synced', 'TikTok did not take the text (the message box did not match it)', true);
     }
     await sleep(rand(400, 1100));
 
@@ -885,7 +940,7 @@
     throw new Fail('send_not_confirmed', 'Could not confirm that TikTok sent the message', false);
   }
 
-  async function send({ job }) {
+  async function send({ job, newer_than: newerThan, budget_ms: budgetMs }) {
     requireMessages();
     if (!job || job.kind !== 'reply') throw new Fail('unknown', 'TikTok can only reply inside an existing conversation', false);
     const parts = (Array.isArray(job.parts) ? job.parts : []).map((p) => String(p == null ? '' : p).trim()).filter(Boolean);
@@ -929,13 +984,31 @@
       if (seen.count > prog.done) { prog.done = seen.count; prog.ids = seen.ids; }
       if (prog.done >= parts.length) return { sent_external_ids: prog.ids.filter(Boolean) };
 
-      if (squash(textOf(editor))) throw new Fail('composer_busy', 'There is a half written message in the TikTok message box', true);
+      // The customer wrote again after the read this reply was decided on: refuse it, nothing was sent.
+      const shown = usable.slice(-MAX_MESSAGES).map((m) => ({ external_id: m.serverId || null, direction: m.direction, body: m.body, kind: m.kind }));
+      if (prog.done === 0 && newerThan && ACX.newerInbound(shown, newerThan)) {
+        throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
+      }
+      // The owner answered this person by hand after the read (from the phone, or in this tab).
+      if (prog.done === 0 && newerThan && ACX.ownerReplied(shown, newerThan, parts, (m) => sentTexts.includes(squash(m.body)))) {
+        throw new Fail('owner_replied', 'You already replied to this person yourself', false);
+      }
 
+      if (squash(textOf(editor))) throw new Fail('draft_in_chat', 'There is a half written message in the TikTok message box', true);
+
+      // typing_cps 0: paste each part at once. A typing speed (older servers): the human pauses, kept
+      // short when other customers are waiting. TikTok always gets at least 1.2 s between two parts.
+      const rawCps = job.pacing ? job.pacing.typing_cps : undefined;
+      const instant = ACX.instant(rawCps);
+      const cps = ACX.cpsOf(rawCps);
+      const nominal = parts.reduce((n, p) => n + Math.min(12_000, Math.max(700, (p.length / Math.max(3, cps)) * 1000)) * 0.6 + 3000, 0);
+      const scale = instant ? 1 : ACX.pauseScale(budgetMs, nominal);
       let sentNow = 0;
       for (let i = prog.done; i < parts.length; i++) {
-        if (sentNow) await sleep(rand(2000, 4000)); // a person pauses between two messages
+        if (sentNow) await sleep(instant ? rand(1200, 1600) : Math.max(1200, rand(2000, 4000) * scale)); // TikTok wants a gap between two messages
         assertNotBlocked();
-        const id = await sendPart(parts[i], job.pacing && job.pacing.typing_cps);
+        const id = await sendPart(parts[i], rawCps, scale);
+        ACX.noteSent(parts[i]);
         sentNow++;
         prog.done = i + 1;
         prog.ids.push(id);

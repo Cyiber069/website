@@ -2,7 +2,7 @@
 // collections. Field names checked against the Admin GraphQL schema, version 2026-10.
 // Needs the write_discounts scope (and read_products to find the collections).
 import type { Env } from '../types';
-import { ShopifyError, adminGraphQL, hasApiCredentials } from './client';
+import { ShopifyError, adminGraphQL, shopifyAuth, type ShopifySession } from './client';
 
 /** The store collections a creator code applies to, matched by title (case does not matter). */
 export const DISCOUNT_COLLECTIONS = ['Kits', 'Bundles', 'Batteries'] as const;
@@ -53,10 +53,10 @@ const SCOPE_HELP =
   'The Shopify app is not allowed to make discount codes yet. In the Shopify Dev Dashboard open the ACX Agent app, add write_discounts to the Scopes on Versions, press Release, then install the app on the store again.';
 
 /** Finds the three collections by exact title. Throws a ShopifyError naming any that are missing. */
-export async function findDiscountCollections(env: Env): Promise<string[]> {
+export async function findDiscountCollections(env: Env, session?: ShopifySession): Promise<string[]> {
   let data: Record<'kits' | 'bundles' | 'batteries', Nodes>;
   try {
-    data = await adminGraphQL(env, FIND_COLLECTIONS, { kits: 'title:Kits', bundles: 'title:Bundles', batteries: 'title:Batteries' });
+    data = await adminGraphQL(env, FIND_COLLECTIONS, { kits: 'title:Kits', bundles: 'title:Bundles', batteries: 'title:Batteries' }, session);
   } catch (err) {
     if (err instanceof ShopifyError && err.code === 'missing_scope') {
       throw new ShopifyError('missing_scope', 'The Shopify app cannot read your collections. Add read_products and write_discounts to the app Scopes, press Release, then install the app again.');
@@ -84,11 +84,14 @@ function money(amount: number): string {
 
 /** Makes the code in Shopify when the API is connected. Never throws: the result says what happened. */
 export async function createShopifyDiscount(env: Env, input: DiscountInput): Promise<DiscountResult> {
-  if (!(await hasApiCredentials(env.DB))) {
+  // Read the saved details once for both calls (one query, not one per detail per call).
+  const auth = await shopifyAuth(env.DB, env);
+  if (auth.mode === 'none') {
     return { ok: false, shopify_status: 'not_connected', error_code: 'not_connected', message: 'Shopify is not connected: make the code in Shopify yourself, then press Send message.' };
   }
+  const session: ShopifySession = { auth, token: null };
   try {
-    const collections = await findDiscountCollections(env);
+    const collections = await findDiscountCollections(env, session);
     const basicCodeDiscount: Record<string, unknown> = {
       title: input.title,
       code: input.code,
@@ -104,7 +107,7 @@ export async function createShopifyDiscount(env: Env, input: DiscountInput): Pro
     };
     let data: { discountCodeBasicCreate: { codeDiscountNode: { id: string; codeDiscount: { status?: string } | null } | null; userErrors: { field: string[] | null; code: string | null; message: string }[] } };
     try {
-      data = await adminGraphQL(env, CREATE_CODE, { basicCodeDiscount });
+      data = await adminGraphQL(env, CREATE_CODE, { basicCodeDiscount }, session);
     } catch (err) {
       if (err instanceof ShopifyError && (err.code === 'missing_scope' || err.code === 'unauthorised')) throw new ShopifyError('missing_scope', SCOPE_HELP);
       throw err;

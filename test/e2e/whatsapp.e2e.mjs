@@ -1,5 +1,6 @@
 // End to end test of the WhatsApp adapter: real backend (wrangler dev, mock brain), real Chromium
 // with the unpacked extension, and a mock of WhatsApp Web served under https://web.whatsapp.com/.
+// Google AI Studio is a fake (test/helpers/fake-gemini.mjs) the backend is pointed at in test mode.
 //
 //   node test/e2e/whatsapp.e2e.mjs            exit code 0 = everything passed
 //   HEADED=1 node test/e2e/whatsapp.e2e.mjs   watch it happen
@@ -13,6 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
 import { jpegSize } from './mocks/image.mjs';
+import { startFakeGemini } from '../helpers/fake-gemini.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright'); // pre-installed on the machine, not a dependency of the repo
@@ -226,17 +228,62 @@ async function main() {
   assert.deepEqual((await sentTo(JAKE)).map((s) => s.text), ['Mock reply to: yo how long is delivery', holding, answer]);
   pass('escalated question appears in /api/urgent and the owner answer is typed into the chat');
 
-  // ---- 5. never types over someone's draft ------------------------------------------------------------------------------------
+  // ---- 5. never types over someone's draft: the owner is writing to that customer, so the agent stands down ---------------
   await mock('setDraft', 'Lena', 'half typed by the owner');
   await mock('receive', 'Lena', 'what colours do you have');
-  const busy = await until('the job to fail with composer_busy', async () => (await sql(`SELECT id, status, last_error FROM outbox WHERE last_error LIKE 'composer_busy%'`))[0]);
-  assert.equal(busy.status, 'pending', 'a busy message box is retried later');
+  const busy = await until('the job to be dropped for the draft', async () => (await sql(`SELECT id, status, last_error FROM outbox WHERE last_error LIKE 'takeover: draft_in_chat%'`))[0]);
+  assert.equal(busy.status, 'cancelled', 'the agent reply stands down instead of waiting on the draft for a day');
   assert.equal((await sentTo(LENA)).length, 2, 'nothing was sent while the draft was there');
   assert.equal((await mock('chats')).find((c) => c.jid === LENA).draft, 'half typed by the owner', 'the draft is untouched');
-  await mock('setDraft', 'Lena', '');
-  await sql('UPDATE outbox SET not_before = 0 WHERE id = ?', [busy.id]);
-  await until('reply to Lena once the draft is gone', async () => (await sentTo(LENA)).find((s) => s.text === 'Mock reply to: what colours do you have'));
-  pass('composer with a draft is left alone (composer_busy), reply goes out once it is free');
+  const paused = (await sql('SELECT paused_until, pause_reason, needs_reply_since FROM conversations WHERE id = ?', [lena.id]))[0];
+  assert.ok(paused.paused_until > Date.now(), 'the chat is paused for the owner');
+  assert.equal(paused.pause_reason, 'You were typing in that chat');
+  assert.ok((await sql(`SELECT id FROM events WHERE type = 'takeover' AND conversation_id = ?`, [lena.id])).length, 'the owner is told on Live');
+  // The owner sends their answer by hand: the agent never adds its own reply on top.
+  await mock('ownerSend', 'Lena', 'we have black and grey');
+  for (let i = 0; i < 6; i++) { await kick(); await sleep(1000); }
+  assert.equal((await sentTo(LENA)).length, 2, 'no agent reply after the owner answered');
+  assert.equal((await sql(`SELECT COUNT(*) AS n FROM outbox WHERE conversation_id = ? AND status IN ('pending', 'leased')`, [lena.id]))[0].n, 0, 'nothing of the agent waits for that chat');
+  pass('a draft in the chat is never typed over: the agent reply stands down, the chat is paused, the owner answers alone');
+
+  // ---- 5b. the owner answers from the phone while the agent reply waits: it is not sent on top ------------------------------
+  await api('/api/settings/pacing', { method: 'PUT', body: { min_reply_delay_s: 6, max_reply_delay_s: 7 } });
+  await mock('receive', 'Jake', 'do you do finance');
+  const waiting = await until('the reply to be with the laptop', async () => (await sql(`SELECT id FROM outbox WHERE conversation_id = ? AND status = 'leased' AND source = 'auto'`, [jake.id]))[0]);
+  await mock('ownerSend', 'Jake', 'yes 0% over 12 months mate');
+  const refused = await until('the reply to be refused', async () => (await sql(`SELECT status, last_error FROM outbox WHERE id = ? AND status != 'leased'`, [waiting.id]))[0], { timeout: 30_000 });
+  assert.equal(refused.status, 'cancelled');
+  assert.match(refused.last_error, /owner_replied/);
+  await sleep(1500);
+  assert.equal((await sentTo(JAKE)).filter((s) => /finance/.test(s.text)).length, 0, 'the agent reply about finance never went out');
+  assert.equal((await sql('SELECT pause_reason FROM conversations WHERE id = ?', [jake.id]))[0].pause_reason, 'You replied yourself');
+  await api('/api/settings/pacing', { method: 'PUT', body: { min_reply_delay_s: 0, max_reply_delay_s: 0 } });
+  await sql('UPDATE conversations SET paused_until = NULL WHERE id = ?', [jake.id]);
+  pass('the owner answered from the phone while the reply waited: owner_replied, nothing sent on top, chat paused');
+
+  // ---- 5c. pinned chats are the owner's: never read or answered, but the owner's own words still go there -------------------
+  const PINNED = '447700900331@c.us';
+  const PLAIN = '447700900332@c.us';
+  await mock('receive', PINNED, 'hello from a pinned chat', { title: 'Pia Pinned', phone: '447700900331', pinned: true });
+  await mock('receive', PLAIN, 'hello from a normal chat', { title: 'Nat Normal', phone: '447700900332' });
+  await until('reply in the normal chat', async () => (await sentTo(PLAIN)).find((s) => s.text === 'Mock reply to: hello from a normal chat'));
+  await mock('receive', PINNED, 'do you have the 750w in stock');
+  for (let i = 0; i < 6; i++) { await kick(); await sleep(1000); }
+  assert.equal((await sentTo(PINNED)).length, 0, 'nothing sent in the pinned chat');
+  assert.equal(await conversation(PINNED), undefined, 'the pinned chat was never read or reported');
+  // A job the owner chose (here a message from Inbox) still goes to the pinned chat; the agent's own words do not.
+  const pinJob = async (id, source, text) => sql(
+    `INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, pacing, created_at)
+     VALUES (?, 'whatsapp', 'reply', NULL, ?, ?, 'pending', ?, 0, '{}', ?)`,
+    [id, JSON.stringify({ thread_external_id: PINNED, title: 'Pia Pinned', phone: '+447700900331', email: null, handle: null, subject: null }), JSON.stringify([text]), source, Date.now()]);
+  await pinJob('ob_e2e_pin_auto', 'auto', 'agent words for a pinned chat');
+  const pinAuto = await until('the agent job for the pinned chat to be dropped', async () => (await sql(`SELECT status, last_error FROM outbox WHERE id = 'ob_e2e_pin_auto' AND status != 'pending' AND status != 'leased'`))[0]);
+  assert.equal(pinAuto.status, 'cancelled');
+  assert.match(pinAuto.last_error, /^pinned_chat/);
+  await pinJob('ob_e2e_pin_owner', 'manual', 'the owner chose to send this');
+  await until('the owner message in the pinned chat', async () => (await sentTo(PINNED)).find((s) => s.text === 'the owner chose to send this'));
+  assert.deepEqual((await sentTo(PINNED)).map((s) => s.text), ['the owner chose to send this']);
+  pass('pinned chat: never read or answered by the agent, the owner\u2019s own message still sent; the normal chat answered');
 
   // ---- 6. groups are ignored ------------------------------------------------------------------------------------------------------
   assert.equal((await sentTo(GROUP)).length, 0, 'nothing sent to the group');
@@ -348,6 +395,38 @@ async function main() {
   assert.ok(waHealth.last_ok_at > 0 && waHealth.version === JSON.parse(readFileSync(join(root, 'extension', 'manifest.json'), 'utf8')).version, `health reported (${JSON.stringify(waHealth)})`);
   pass('10 minute sweep answers a customer message in a chat without an unread badge, once');
 
+  // ---- 11b. after a reload, pinned chats never use up the first scan's picks ---------------------------------------------
+  // Three pinned chats from today sit on top of the list (WhatsApp allows three). Three customers wrote while the tab was
+  // down and the owner read them on the phone, so there is no badge. The first scan still reads all three customers.
+  {
+    const EARLY = ['447700900610@c.us', '447700900620@c.us', '447700900630@c.us'];
+    await wa.evaluate((early) => {
+      const st = JSON.parse(localStorage.getItem('wa-mock-state'));
+      const now = Date.now();
+      const id = (n) => `3EB0${(now + n).toString(16).toUpperCase().padStart(12, '0')}E5F6`;
+      for (let i = 0; i < 2; i++) {
+        st.chats.push({ jid: `4477009006${i}9@c.us`, title: `Pinned Pal ${i + 1}`, avatar: 'default', unread: 0, draft: '', pinned: true, messages: [
+          { id: id(40 + i), fromMe: false, text: 'see you at five', kind: 'text', t: now - 30_000, ack: null },
+        ] });
+      }
+      early.forEach((jid, i) => st.chats.push({ jid, title: `Early ${i + 1}`, avatar: 'default', unread: 0, draft: '', messages: [
+        // Newer than every other chat, so they come right after the pinned ones, inside the first scan's 5 picks.
+        { id: id(50 + i), fromMe: false, text: `early question ${i + 1}`, kind: 'text', t: now - 300 - i * 100, ack: null },
+      ] }));
+      localStorage.setItem('wa-mock-state', JSON.stringify(st));
+    }, EARLY);
+    await wa.reload();
+    await wa.waitForFunction(() => document.body.dataset.mockReady === '1');
+    await until('ready after the reload', async () => (await channelState()) === 'ready');
+    const pinnedNow = await wa.evaluate(() => JSON.parse(localStorage.getItem('wa-mock-state')).chats.filter((c) => c.pinned).length);
+    assert.equal(pinnedNow, 3, 'three pinned chats on top');
+    for (const [i, jid] of EARLY.entries()) {
+      await until(`the first scan answers Early ${i + 1}`, async () => (await sentTo(jid)).find((x) => x.text === `Mock reply to: early question ${i + 1}`), { timeout: 45_000 });
+    }
+    assert.ok((await mock('sent')).every((x) => !/^4477009006\d9@c\.us$/.test(x.jid)), 'the pinned chats were not answered');
+    pass('after a reload the first scan reads three customers with no badge, the three pinned chats use none of its picks');
+  }
+
   // ---- photos and videos: captured from the page, answered by the brain, shown to the owner ---------------------------------------
   {
     const PIA = '447700900555@c.us';
@@ -397,6 +476,135 @@ async function main() {
     assert.match(note.data, /canvas|fetch/);
     await api(`/api/urgent/${deadCard.id}/dismiss`, { body: {} });
     pass(`photo that cannot be copied: owner asked silently, failure noted in diagnostics (${JSON.parse(note.data).media_capture[0]})`);
+  }
+
+  // ---- Google AI Studio: a photo described, a video opened in the viewer, captured whole, streamed and watched ------------------
+  {
+    const fake = await startFakeGemini();
+    const GKEY = 'AIzaSyE2EfakeKEYforTheVisionModel012345';
+    const rowsOf = (threadId) => sql(
+      `SELECT md.kind, md.video_ref, md.vision, md.description FROM media md JOIN conversations cv ON cv.id = md.conversation_id
+       WHERE cv.external_thread_id = ? ORDER BY md.created_at, md.id`, [threadId]);
+    const laptopVision = async () => (await sw.evaluate(() => chrome.storage.local.get('config'))).config?.vision ?? null;
+    try {
+      await api('/api/test/vision-base', { body: { url: fake.url } });
+      await api('/api/connections/vision', { method: 'PUT', body: { gemini_api_key: GKEY, video_daily_cap: 20 } });
+      // The owner has no Claude key, so Workers AI (text only) answers: from what the vision model wrote.
+      await api('/api/connections/brain', { method: 'PUT', body: { provider: 'workers_ai' } });
+      await until('the laptop to hear photos and videos are read', async () => (await laptopVision())?.active === true);
+      const clip = await until('the mock clip to be recorded', () => mock('videoClip'));
+
+      const ZOE = '447700900881@c.us';
+      await mock('receive', '+44 7700 900881', '', { kind: 'image', photo: true });
+      const described = await until('reply to the described photo', async () => (await sentTo(ZOE))[0]);
+      assert.match(described.text, /^Mock read the vision model: Fake vision saw a photo/, 'the text only brain answered from the description');
+      const shown = fake.generateCalls();
+      assert.equal(shown.length, 1, 'Google was asked once');
+      assert.ok(shown[0].json.contents[0].parts.some((p) => p.inlineData?.mimeType === 'image/jpeg' && p.inlineData.data.length > 1000), 'the captured JPEG went to Google');
+      assert.equal(shown[0].headers['x-goog-api-key'], GKEY);
+      const photoRow = (await rowsOf(ZOE))[0];
+      assert.match(photoRow.description, /^Fake vision saw a photo/);
+      const zoeConv = await conversation(ZOE);
+      assert.equal((await api('/api/urgent')).urgent.filter((u) => u.conversation_id === zoeConv.id).length, 0, 'no Urgent card: the agent could answer it');
+      assert.match((await api(`/api/conversations/${zoeConv.id}`)).messages[0].media.description, /^Fake vision saw a photo/, 'the owner sees what it saw under the thumbnail');
+      pass('photo: described by Google AI Studio and answered by the text only brain from the description');
+
+      await mock('receive', '+44 7700 900881', 'what is this noise', { kind: 'video', photo: true, video: true });
+      const watched = await until('reply to the video', async () => (await sentTo(ZOE))[1], { timeout: 90_000 });
+      assert.match(watched.text, /^Mock read the vision model: Fake vision watched the video/, 'the brain answered from the whole video');
+      const ups = fake.requests((q) => q.path === '/upload/v1beta/files' && /finalize/.test(q.headers['x-goog-upload-command'] || ''));
+      assert.equal(ups.length, 1, 'uploaded once');
+      assert.equal(ups[0].bytes, clip.size, `every byte of the clip reached Google (${ups[0].bytes} of ${clip.size})`);
+      assert.ok(ups[0].head.startsWith('1a45dfa3'), 'a WebM file');
+      const viewers = await mock('viewerLog');
+      assert.equal(viewers.length, 1, 'the media viewer was opened once');
+      assert.equal(viewers[0].muted, true, 'the player was muted');
+      assert.equal(viewers[0].audible, false, 'it never played with sound');
+      assert.equal(viewers[0].chat_after, viewers[0].chat, 'the chat stayed open');
+      assert.equal(await mock('viewerOpen'), false, 'the viewer was closed again');
+      const videoRow = (await rowsOf(ZOE))[1];
+      assert.equal(videoRow.kind, 'video_frame');
+      assert.match(videoRow.video_ref || '', /^vf_/);
+      assert.equal(JSON.parse(videoRow.vision).via, 'video');
+      // Deleted after the answer (waitUntil), so it may land a moment after the reply.
+      await until('the video to be deleted from Google', async () => fake.requests((q) => q.method === 'DELETE').length >= 1, { timeout: 15_000 });
+      assert.equal(fake.requests((q) => q.method === 'DELETE').length, 1, 'the video was deleted from Google once watched');
+      pass(`video: opened in the viewer (muted, closed by ${viewers[0].how}), ${Math.round(clip.size / 1024)} KB captured whole, streamed to Google, watched, answered`);
+
+      // Read again later with the video still unanswered (ask first mode: nothing was sent), after the tab reloaded so it
+      // forgot what it opened: the worker remembers the video was sent, so the tab does not open it again and nothing is
+      // uploaded or counted twice.
+      {
+        await api('/api/settings/channels', { method: 'PUT', body: { whatsapp: { mode: 'review' } } });
+        try {
+          const KAI = '447700900883@c.us';
+          await mock('receive', '+44 7700 900883', 'is this normal', { kind: 'video', photo: true, video: true });
+          const kaiConv = await until('the video to be read and decided', async () => {
+            const c = await conversation(KAI);
+            return c && (await sql(`SELECT id FROM outbox WHERE conversation_id = ? AND status = 'review'`, [c.id]))[0] ? c : null;
+          }, { timeout: 90_000 });
+          const ups = () => fake.requests((q) => q.path === '/upload/v1beta/files' && /finalize/.test(q.headers['x-goog-upload-command'] || '')).length;
+          const upsBefore = ups();
+          const opened = (await mock('viewerLog')).length;
+          assert.ok(opened >= 2, 'the video was opened once to send it');
+          const today = (await api('/api/connections')).vision.videos_today;
+          await mock('set', { openJid: null }); // no chat open after the reload: the follow up gets a badge
+          await wa.reload();
+          await wa.waitForFunction(() => document.body.dataset.mockReady === '1');
+          await until('ready after the reload', async () => (await channelState()) === 'ready');
+          await mock('receive', '+44 7700 900883', 'hello??');
+          await until('the follow up to be read', async () => (await messagesOf(kaiConv.id)).some((m) => m.body === 'hello??'), { timeout: 60_000 });
+          await until('the follow up to be decided', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE conversation_id = ? AND status IN ('review', 'cancelled')`, [kaiConv.id]))[0].n >= 2, { timeout: 60_000 }).catch(() => null);
+          assert.equal((await mock('viewerLog')).length, 0, 'the video was not opened again after the reload');
+          assert.equal(ups(), upsBefore, 'not uploaded again');
+          assert.equal((await api('/api/connections')).vision.videos_today, today, 'not counted again');
+          pass('a video read again after a reload is not opened, uploaded or counted again');
+        } finally {
+          await api('/api/settings/channels', { method: 'PUT', body: { whatsapp: { mode: 'auto' } } });
+          await sql(`UPDATE outbox SET status = 'cancelled' WHERE status = 'review'`);
+        }
+      }
+
+      // A slow laptop: the viewer shows only after the agent stopped waiting for it. It is still muted and closed, never left
+      // playing the customer's clip on the owner's laptop.
+      await mock('set', { viewerDelayMs: 4600 });
+      try {
+        const MIA = '447700900884@c.us';
+        const before = (await mock('viewerLog')).length;
+        await mock('receive', '+44 7700 900884', 'and now this', { kind: 'video', photo: true, video: true });
+        await until('reply to the video whose viewer was slow', async () => (await sentTo(MIA))[0], { timeout: 90_000 });
+        await until('the late viewer to be closed', async () => !(await mock('viewerOpen')), { timeout: 10_000 });
+        const log = await mock('viewerLog');
+        assert.equal(log.length, before + 1, 'the late viewer was closed by the agent');
+        assert.equal(log.at(-1).muted, true, 'and muted first');
+        pass('a media viewer that opens late is still muted and closed');
+      } finally {
+        await mock('set', { viewerDelayMs: 0 });
+      }
+
+      // Over the daily cap: the laptop sends a few frames of the video instead of the file.
+      const today = (await api('/api/connections')).vision.videos_today;
+      await api('/api/connections/vision', { method: 'PUT', body: { video_daily_cap: today } });
+      await until('the laptop to hear the video cap is reached', async () => (await laptopVision())?.whole_videos === false);
+      await sleep(10_500); // the tab's own copy of the setting lives 10 s
+      const LEO = '447700900882@c.us';
+      const finals = () => fake.requests((q) => q.path === '/upload/v1beta/files' && /finalize/.test(q.headers['x-goog-upload-command'] || '')).length;
+      const uploadsBefore = finals();
+      await mock('receive', '+44 7700 900882', 'and this one', { kind: 'video', photo: true, video: true });
+      await until('reply to the second video', async () => (await sentTo(LEO))[0], { timeout: 90_000 });
+      const framesRow = (await rowsOf(LEO))[0];
+      const via = JSON.parse(framesRow.vision).via;
+      const last = fake.generateCalls().at(-1);
+      const pictures = last.json.contents[0].parts.filter((p) => p.inlineData).length;
+      assert.equal(via, 'frames', `looked at frames of the video (${pictures} pictures)`);
+      assert.ok(pictures >= 2, 'the cover and at least one frame');
+      assert.equal(finals(), uploadsBefore, 'no upload over the cap');
+      pass(`video over the daily cap: ${pictures} pictures of it looked at instead of the file`);
+    } finally {
+      await api('/api/connections/vision', { method: 'PUT', body: { gemini_api_key: '', video_daily_cap: 20 } }).catch(() => {});
+      await api('/api/connections/brain', { method: 'PUT', body: { provider: 'auto' } }).catch(() => {});
+      await fake.stop();
+    }
   }
 
   // ---- final sweep ---------------------------------------------------------------------------------------------------------------

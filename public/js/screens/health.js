@@ -1,6 +1,6 @@
 // Health: is everything working, and what went wrong if not.
 import { del, get, post } from '../api.js';
-import { $, html, icon, setHTML, unavailable, skeletonCards, ago, dayClock, chBadge, chName, CHANNELS, num, plural, copyText, toastError, clock } from '../ui.js';
+import { $, html, icon, setHTML, unavailable, skeletonCards, ago, dayClock, chBadge, chName, CHANNELS, num, plural, copyText, toastError, clock, span } from '../ui.js';
 import { channelState } from './live.js';
 
 const LIMITS = { read: 5000000, write: 100000 };
@@ -10,9 +10,9 @@ const JOB_ERRORS = {
   not_on_whatsapp: 'That number is not on WhatsApp', invalid_number: 'The phone number is not valid', logged_out: 'The laptop was signed out of the site', tab_missing: 'The tab was closed on the laptop',
   blocked: 'The site blocked the action', timeout: 'It took too long and gave up', unknown: 'Something unexpected happened on the page',
 };
-const SOURCE = { auto: 'Agent reply', manual: 'Your message', review: 'Reply you approved', urgent: 'Your answer', recovery: 'Checkout reminder', alert: 'Alert to you', holding: 'Holding line' };
+const SOURCE = { auto: 'Agent reply', manual: 'Your message', review: 'Reply you approved', urgent: 'Your answer', recovery: 'Checkout reminder', alert: 'Alert to you', holding: 'Holding line', discount: 'Code message' };
 const KIND = { selector_miss: 'Could not find part of the page', dom_snapshot: 'Saved a copy of the page for fixing', error: 'Problem on the page', note: 'Note from the laptop' };
-const PROVIDER = { anthropic: 'Claude', workers_ai: 'Backup brain', mock: 'Test brain' };
+const PROVIDER = { anthropic: 'Claude', workers_ai: 'Backup brain', mock: 'Test brain', gemini: 'Photos and videos' };
 
 function jobError(text) {
   if (!text) return JOB_ERRORS.unknown;
@@ -77,6 +77,8 @@ export default {
           })}</ul>` : ''}
         </section>
 
+        ${replyCard(data.reply_time)}
+
         ${mon.ai_failing ? html`<p class="banner banner--down" role="status">${icon('i-stop')}<span><b>The AI is failing.</b> It did not answer 3 times in a row. Check the key or the free daily limit in <a href="#/connections">Connections</a>.</span></p>` : ''}
 
         ${u ? html`<section class="card stack" aria-labelledby="hd-h">
@@ -111,6 +113,20 @@ export default {
             <tbody>${usage.map((u) => html`<tr><th scope="row">${PROVIDER[u.provider] || 'AI'}<span class="rowline__sub">${String(u.model || '').replace(/^@cf\/[^/]+\//, '').replace(/^claude-/, 'Claude ').replace(/-/g, ' ')}</span></th><td class="r num">${num(u.calls)}</td><td class="r num">${num((u.calls || 0) - (u.ok || 0))}</td><td class="r num">${((u.avg_ms || 0) / 1000).toFixed(1)}s</td><td class="r num">${num(Math.round(((u.input_tokens || 0) + (u.cache_read_tokens || 0)) * 0.75))}</td><td class="r num">${num(Math.round((u.output_tokens || 0) * 0.75))}</td></tr>`)}</tbody></table></div>
             <p class="field__hint">Words are a rough count. Your Anthropic bill is based on these.</p>` : html`<p class="voice muted">The AI has not been used in the last day.</p>`}
         </section>`);
+    }
+
+    /** How fast the agent answered today: the average, the slowest one, and each channel. */
+    function replyCard(rt) {
+      rt = rt || {};
+      const slow = rt.slowest;
+      const per = CHANNELS.filter((c) => rt.by_channel?.[c]);
+      return html`<section class="card stack" aria-labelledby="hr-h">
+        <div class="card__head"><h2 class="eyebrow" id="hr-h">Reply time today</h2>${rt.count ? html`<span class="meta num">${plural(rt.count, 'reply', 'replies')}</span>` : ''}</div>
+        ${rt.count ? html`<p class="muted">Average reply time today: <b class="num">${span(rt.avg_ms)}</b>.${slow ? html` The slowest took <b class="num">${span(slow.ms)}</b>, to ${slow.conversation_id ? html`<a href="#/inbox/${slow.conversation_id}">${slow.customer}</a>` : slow.customer} at ${clock(slow.sent_at)}.` : ''}</p>
+          ${per.length > 1 ? html`<ul class="rows">${per.map((c) => html`<li class="rowline">${chBadge(c)}<span>Average ${span(rt.by_channel[c].avg_ms)}</span><span class="meta num">${plural(rt.by_channel[c].count, 'reply', 'replies')}</span></li>`)}</ul>` : ''}
+          <p class="field__hint">From the customer's last message to the reply going out. Drafts you approve and answers you write are left out.</p>`
+        : html`<p class="voice muted">The agent has not sent a reply today yet.</p>`}
+      </section>`;
     }
 
     function meter(what, n, limit, pct) {

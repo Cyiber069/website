@@ -77,6 +77,16 @@ export function waited(ts, now = Date.now()) {
   if (m < 60 * 24) return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
   return `${Math.floor(m / 1440)}d`;
 }
+/** A length of time for the owner: "38s", "2 min 5s", "1 hr 10 min". */
+export function span(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '';
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return r ? `${m} min ${r}s` : `${m} min`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h} hr ${m % 60} min` : `${h} hr`;
+}
 export const clock = (ts) => new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 export function dayClock(ts) {
   const d = new Date(ts);
@@ -244,18 +254,25 @@ export function transition(fn) {
 const mediaUrl = (id) => `/api/media/${encodeURIComponent(id)}`;
 const mediaAlt = (m) => (m.kind === 'video_frame' ? 'One frame of a video the customer sent' : 'Photo the customer sent');
 
-/** Small thumbnail for a message's `media` ({ id, kind } or null). Tap opens it full size. */
+/** Small thumbnail for a message's `media` ({ id, kind, description } or null). Tap opens it full size. */
 export function mediaThumb(media) {
   if (!media || !media.id) return '';
-  return html`<button type="button" class="thumb" data-media="${media.id}" data-media-kind="${media.kind}" aria-label="${mediaAlt(media)}. Open full size">
-    <img class="thumb__img" src="${mediaUrl(media.id)}" alt="" loading="lazy" decoding="async">${media.kind === 'video_frame' ? html`<span class="thumb__tag">Video frame</span>` : ''}</button>`;
+  return html`<button type="button" class="thumb" data-media="${media.id}" data-media-kind="${media.kind}" data-media-desc="${media.description || ''}" aria-label="${mediaAlt(media)}. Open full size">
+    <img class="thumb__img" src="${mediaUrl(media.id)}" alt="" loading="lazy" decoding="async">${media.kind === 'video_frame' ? html`<span class="thumb__tag">Video</span>` : ''}</button>`;
 }
 
-function openMedia(id, kind) {
+/** What Google AI Studio saw in the photo or video, under its thumbnail. Nothing when it has not looked. */
+export function mediaNote(media) {
+  if (!media || !media.description) return '';
+  return html`<p class="media__desc"><b>Google AI saw:</b> ${media.description}</p>`;
+}
+
+function openMedia(id, kind, desc = '') {
   const d = el(html`<dialog class="lightbox" aria-label="${mediaAlt({ kind })}">
     <form method="dialog" class="lightbox__body">
       <img class="lightbox__img" src="${mediaUrl(id)}" alt="${mediaAlt({ kind })}">
-      ${kind === 'video_frame' ? html`<p class="lightbox__note">One frame of a video. Open the chat to watch it.</p>` : ''}
+      ${kind === 'video_frame' ? html`<p class="lightbox__note">One picture from a video. Open the chat to watch it.</p>` : ''}
+      ${desc ? html`<p class="lightbox__note"><b>Google AI saw:</b> ${desc}</p>` : ''}
       <button class="btn btn--ghost btn--sm lightbox__close">Close</button>
     </form></dialog>`);
   document.body.append(d);
@@ -269,7 +286,7 @@ if (typeof document !== 'undefined') {
     const b = e.target.closest && e.target.closest('[data-media]');
     if (!b) return;
     e.preventDefault();
-    openMedia(b.dataset.media, b.dataset.mediaKind);
+    openMedia(b.dataset.media, b.dataset.mediaKind, b.dataset.mediaDesc || '');
   });
   // A photo older than 14 days is gone from the server: drop the empty frame.
   document.addEventListener('error', (e) => {
@@ -283,7 +300,7 @@ export function bubbles(messages) {
   return messages.map((m) => {
     const who = m.author === 'customer' || (m.direction === 'in' && !m.author) ? 'customer' : m.author === 'owner' ? 'owner' : 'agent';
     const by = who === 'customer' ? 'Customer' : who === 'owner' ? 'You' : 'Agent';
-    return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div>${m.ts ? html`<span class="msg__meta">${dayClock(m.ts)}</span>` : ''}</div>`;
+    return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}${mediaNote(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div>${m.ts ? html`<span class="msg__meta">${dayClock(m.ts)}</span>` : ''}</div>`;
   });
 }
 export function kindLabel(kind) {

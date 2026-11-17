@@ -28,10 +28,16 @@ async function queueAnswer(db: D1Database, urgent: UrgentRow, conv: Conversation
     }),
     parts,
     expires_at: Date.now() + 3 * DAY,
-    pacing: { delay_ms: 1500, typing_cps: settings.pacing.typing_cps },
+    pacing: { delay_ms: 0, typing_cps: 0 }, // sent as soon as the laptop has it, pasted whole
     dedupe_key: `urgent:${urgent.id}:${Date.now()}`,
   });
   if (!id) throw new HttpError(409, 'already_queued', 'That answer is already on its way');
+  if (status === 'pending') {
+    // A holding line that has not gone out yet ("I'm checking with the team") is out of date once the
+    // answer is on its way. Only a one part line: a two part one starts with part of the answer.
+    await run(db, `UPDATE outbox SET status = 'cancelled', last_error = 'owner answered: the answer is on its way'
+      WHERE source = 'holding' AND ref_id = ? AND status = 'pending' AND json_array_length(parts) = 1`, urgent.id);
+  }
   return id;
 }
 

@@ -12,6 +12,10 @@
 //                           messages: [{ external_id, direction: 'in'|'out', body, kind, ts, media? }] }   oldest first, max 40
 //                         `media` is { kind: 'image' | 'video_frame', mime: 'image/jpeg', data: <base64> } when
 //                         ACX.captureMedia could copy the photo (or one frame of the video) out of the bubble.
+//                         For the newest customer video ACX.captureVideo may add `video` ({ token, bytes, mime,
+//                         seconds } held in this page, or { url, mime }), `frames` (small JPEGs) and `seconds`.
+//                         `shared` ({ author, caption }) marks a shared post (TikTok). The worker uploads
+//                         `video` first and replaces it with `video_ref` (see sw.js attachVideo).
 //   send({ job })      -> { sent_external_ids: [] }         types job.parts in order into job.target and sends them
 //   prepare({ job })   -> { navigate: url } | { ready: true }   optional, for new_chat jobs that need a page load first
 //   selftest()         -> { checks: [{ name, ok, detail }] }    optional
@@ -19,9 +23,14 @@
 //                         message is from the customer, whatever their unread badge says. Run every
 //                         10 minutes as a safety net for messages the normal scan missed.
 //
+//   read() may also return `tail` (ACX.tailRef(messages)): the service worker hands it back to send()
+//   as `newer_than`, and send() refuses with newer_message when the customer wrote again meanwhile.
+//   send() args: { job, navigated, newer_than?, budget_ms? }. typing_cps 0 in job.pacing means no
+//   typing pauses at all (each part goes in whole).
+//
 // Throw new ACX.Fail(code, message, retryable) for expected failures. Codes the server understands:
-// thread_not_found, composer_missing, composer_busy, send_not_confirmed, not_on_whatsapp, invalid_number,
-// logged_out, blocked, timeout, unknown.
+// thread_not_found, composer_missing, composer_busy (the box changed while typing), draft_in_chat (text that is not ours in this chat's box), owner_busy (the owner is using the tab), owner_replied (the owner answered by hand after the read), send_not_confirmed, send_not_synced (TikTok did not take the pasted text), not_on_whatsapp, invalid_number,
+// logged_out, blocked, timeout, newer_message, unknown.
 //
 // Everything site specific (selectors, text patterns) comes from the selector pack: ACX.q('group.name').
 (() => {
@@ -363,18 +372,180 @@
     await sleep(120);
   }
 
+  // ---- pacing of a send ----------------------------------------------------------------------------
+  // The server sends typing_cps 0 for "as fast as possible": each part goes in whole, no pauses.
+  // Older servers send a typing speed (11): then the old human pauses stay, shrunk to short floor
+  // pauses when the service worker says other customers are waiting (`budget_ms`).
+
+  /** True for typing_cps 0 or a speed nobody types at. A missing value is the old default (11), not instant. */
+  const instant = (cps) => typeof cps === 'number' && Number.isFinite(cps) && (cps <= 0 || cps >= 200);
+  /** The typing speed to use for the old human pacing: the job's, else 11. */
+  const cpsOf = (cps) => (typeof cps === 'number' && Number.isFinite(cps) && cps > 0 ? cps : 11);
+  /** Factor for the human pauses of one send: 1 normally, down to 0.15 when the budget is tight. */
+  function pauseScale(budgetMs, nominalMs) {
+    if (!(budgetMs > 0) || !(nominalMs > 0)) return 1;
+    return Math.min(1, Math.max(0.15, budgetMs / nominalMs));
+  }
+  /** One human pause, scaled, never below the 0.3 s floor (so "typing..." still shows). */
+  const humanPause = (ms, scale = 1) => sleep(Math.max(300, ms * scale));
+
   /**
    * Type like a person: a pause that scales with length (so the other side sees "typing..."),
-   * then the text. `cps` is characters per second from the job's pacing.
+   * then the text. `cps` is characters per second from the job's pacing; 0 puts the text in at once.
    */
-  async function humanType(el, text, cps = 11) {
-    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, cps)) * 1000));
+  async function humanType(el, text, cps = 11, { scale = 1 } = {}) {
     el.focus();
-    await sleep(total * rand(0.25, 0.4));
+    if (instant(cps)) return insertText(el, text);
+    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, cpsOf(cps))) * 1000));
+    await humanPause(total * rand(0.25, 0.4), scale);
     const how = await insertText(el, text);
-    await sleep(total * rand(0.2, 0.35));
+    await humanPause(total * rand(0.2, 0.35), scale);
     return how;
   }
+
+  // ---- what the end of a thread looked like when it was read ------------------------------------------
+  // A reply is decided on the messages a read saw. If the customer writes again before it is sent,
+  // the reply is out of date: send() refuses it (newer_message) and the worker reads the chat again,
+  // so one fresh decision covers everything.
+  const normBody = (s) => squash(s).toLowerCase().slice(0, 200);
+  const usableMsgs = (messages) => (Array.isArray(messages) ? messages : []).filter((m) => m && (m.direction === 'in' || m.direction === 'out'));
+
+  /**
+   * { last_in_id, last_in_body, same, outs_after }: the last customer message, how many with the same
+   * words, and how many of our messages (the agent's or the owner's) came after it when the chat was read.
+   */
+  function tailRef(messages) {
+    const list = usableMsgs(messages);
+    let at = -1;
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].direction === 'in') { at = i; break; }
+    if (at < 0) return { last_in_id: null, last_in_body: null, same: 0, outs_after: 0 };
+    const body = normBody(list[at].body);
+    return {
+      last_in_id: list[at].external_id ? String(list[at].external_id) : null,
+      last_in_body: body,
+      same: list.filter((m) => m.direction === 'in' && normBody(m.body) === body).length,
+      outs_after: list.length - 1 - at,
+    };
+  }
+
+  /** Where the message `ref` describes is in `list` (by id, else by its words), or -1. */
+  function tailIndex(list, ref) {
+    if (!ref || (ref.last_in_id == null && ref.last_in_body == null)) return -1;
+    if (ref.last_in_id) {
+      for (let i = list.length - 1; i >= 0; i--) if (String(list[i].external_id || '') === ref.last_in_id) return i;
+    }
+    if (ref.last_in_body == null) return -1;
+    let at = -1;
+    list.forEach((m, i) => { if (m.direction === 'in' && normBody(m.body) === ref.last_in_body) at = i; });
+    return at;
+  }
+
+  // What this page sent for the agent lately (words, when), so the owner's own messages can be told apart.
+  const ownSent = new Map();
+  /** Call after each part the agent sent. */
+  function noteSent(text) {
+    const now = Date.now();
+    ownSent.set(normBody(text), now);
+    for (const [k, at] of ownSent) if (now - at > 2 * 3600_000) ownSent.delete(k);
+  }
+
+  /**
+   * True when the owner answered the customer by hand after the read `ref` describes: an outgoing
+   * message came after the read that is not one of `parts` (this job) and not something the agent sent
+   * from this page (`ownIds`, `noteSent`). Needs a reference from a newer build (outs_after). When the
+   * reference cannot be found the answer is false: nothing is refused on a guess.
+   */
+  function ownerReplied(messages, ref, parts = [], isOurs = null) {
+    if (!ref || typeof ref.outs_after !== 'number') return false;
+    const list = usableMsgs(messages);
+    const at = tailIndex(list, ref);
+    if (at < 0) return false;
+    const mine = [...(Array.isArray(parts) ? parts : []).map(normBody), ...ownSent.keys()].filter(Boolean);
+    // An email shows our text with a signature after it: our words at the start count as ours.
+    const ours = (body) => mine.some((x) => body === x || (x.length >= 8 && body.startsWith(x)));
+    const outs = list.slice(at + 1).filter((m) => m.direction === 'out');
+    // The first `outs_after` were there when the chat was read; the rest came after it.
+    return outs.slice(ref.outs_after).some((m) => !ours(normBody(m.body)) && !(isOurs && isOurs(m)));
+  }
+
+  /**
+   * True when `messages` (collected right before sending) hold a customer message newer than the one
+   * `ref` describes. Found by message id, else by its words (a repeat of the same words counts as new).
+   * When the reference cannot be found at all the answer is false: nothing is refused on a guess.
+   */
+  function newerInbound(messages, ref) {
+    if (!ref || (ref.last_in_id == null && ref.last_in_body == null)) return false;
+    const list = usableMsgs(messages);
+    let at = -1;
+    if (ref.last_in_id) {
+      for (let i = list.length - 1; i >= 0; i--) if (String(list[i].external_id || '') === ref.last_in_id) { at = i; break; }
+    }
+    if (at < 0) {
+      if (ref.last_in_body == null) return false;
+      const hits = [];
+      list.forEach((m, i) => { if (m.direction === 'in' && normBody(m.body) === ref.last_in_body) hits.push(i); });
+      if (!hits.length) return false;
+      if (hits.length > Math.max(1, ref.same || 1)) return true; // the same words came again
+      at = hits[hits.length - 1];
+    }
+    return list.slice(at + 1).some((m) => m.direction === 'in');
+  }
+
+  // ---- time labels in chat lists ("20:14", "Yesterday", "5m", "just now") -----------------------------------
+  const CLOCK = /^(\d{1,2})[:.](\d{2})(?:\s*([ap])\.?\s*m\.?)?$/i;
+  const RELATIVE = /^(\d{1,3})\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)\b(?:\s*ago)?$/i;
+  const UNIT = { s: 1000, m: 60_000, h: 3600_000, d: 86_400_000, w: 7 * 86_400_000 };
+
+  /** True for a clock time label: the list shows those for today's messages. */
+  const isClock = (label) => CLOCK.test(String(label || '').trim());
+
+  /** Age a relative label says ("5m" = 5 minutes, "just now" = 0), else null. */
+  function labelAge(label) {
+    const t = String(label || '').trim().toLowerCase();
+    if (/^(now|just now)$/.test(t)) return 0;
+    const m = RELATIVE.exec(t);
+    if (!m) return null;
+    const unit = m[2].startsWith('mi') || m[2] === 'm' ? 'm' : m[2][0];
+    return Number(m[1]) * (UNIT[unit] || 0);
+  }
+
+  /**
+   * The latest time (ms) the last message of a list row can have been written, from its label, or
+   * null when the label does not say. A clock label has minute steps, so a minute is added.
+   */
+  function labelTimeMax(label, now = Date.now()) {
+    const t = String(label || '').trim();
+    const age = labelAge(t);
+    if (age !== null) return age > 0 ? now - age : null;
+    const m = CLOCK.exec(t);
+    if (!m) return null;
+    let hour = Number(m[1]);
+    if (m[3]) hour = (hour % 12) + (m[3].toLowerCase() === 'p' ? 12 : 0);
+    const d = new Date(now);
+    const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hour, Number(m[2])).getTime() + 60_000;
+    return at <= now + 60_000 ? Math.min(at, now) : null; // a clock time later than now is yesterday's
+  }
+
+  /**
+   * Did a row's time label move because of a new message? A clock label that changed, or a relative
+   * age that went down ("3m" to "now"), or a relative label replacing a clock or date. Labels only
+   * ageing ("1m" to "2m", "23:50" to "Yesterday") are not new messages.
+   */
+  function timeMoved(prev, cur) {
+    const a = String(prev || '').trim();
+    const b = String(cur || '').trim();
+    if (!b || a === b) return false;
+    const ageB = labelAge(b);
+    if (ageB !== null) {
+      const ageA = labelAge(a);
+      return ageA === null ? true : ageB < ageA; // a fresh relative label after a clock or date is new
+    }
+    if (isClock(b)) return labelAge(a) === null; // clock to another clock, or a date to today's clock
+    return false;
+  }
+
+  /** A time key for a row signature that never churns while the label only ages. */
+  const stableTime = (prevKey, label) => (isClock(label) ? String(label).trim() : prevKey || (label ? 'd' : ''));
 
   // ---- photos and video frames ------------------------------------------------------------------------------
   // The newest customer messages of a thread may hold a photo or a video. captureMedia copies each one
@@ -560,6 +731,242 @@
     return captured;
   }
 
+
+  // ---- whole videos, for the vision model ----------------------------------------------------------------------
+  // When Google AI Studio is connected (config.vision from the server), the newest unanswered customer video
+  // of a read can go to the server whole: the adapter finds the file, this part checks the caps (20 MB,
+  // about 2 minutes), keeps the bytes in this page until the service worker pulls them (op video_chunk),
+  // and samples a few small frames as the fallback. A video too big or too long, or one whose bytes cannot
+  // be had, gets the frames (or only its cover, as before). Never throws, never runs past its time limit.
+  // budget_ms: how long finding a video may hold the tab (reads and sends of other chats wait behind it).
+  const VIDEO = { max_bytes: 20 * 1024 * 1024, max_seconds: 130, budget_ms: 8000, frames: 4, frame_max_base64: 80_000, keep_ms: 5 * 60_000, chunk_max: 2 * 1024 * 1024 };
+  const FRAME_STEPS = [[512, 0.55], [448, 0.5], [384, 0.45], [320, 0.4]];
+  const heldVideos = new Map(); // token -> { blob, at }
+  const capturedVideos = new Map(); // message id -> { at, video, frames, seconds } of a video already captured
+  // Message ids of videos the worker already sent or found described (it says so with each read): left shut.
+  let doneVideos = new Set();
+
+  /** Keep a video's bytes in this page for a few minutes and return the token the worker asks for. */
+  function holdVideo(blob) {
+    const now = Date.now();
+    for (const [k, v] of heldVideos) if (now - v.at > VIDEO.keep_ms) heldVideos.delete(k);
+    while (heldVideos.size >= 3) heldVideos.delete(heldVideos.keys().next().value);
+    const token = `v${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    heldVideos.set(token, { blob, at: now });
+    return token;
+  }
+
+  const blobBase64 = (blob) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => { const s = String(r.result || ''); resolve(s.slice(s.indexOf(',') + 1)); };
+    r.onerror = () => reject(r.error || new Error('read_failed'));
+    r.readAsDataURL(blob);
+  });
+
+  /** One piece of a held video for the worker: { data (base64), offset, total, done, mime }. */
+  async function videoChunk({ token, offset = 0, size = 1024 * 1024 } = {}) {
+    const held = heldVideos.get(String(token || ''));
+    if (!held) throw new Fail('unknown', 'That video is no longer here', false);
+    const start = Math.max(0, Math.floor(Number(offset) || 0));
+    const end = Math.min(held.blob.size, start + Math.min(VIDEO.chunk_max, Math.max(64 * 1024, Math.floor(Number(size) || 0))));
+    const data = await blobBase64(held.blob.slice(start, end));
+    const done = end >= held.blob.size;
+    if (done) heldVideos.delete(String(token)); // pulled once: free the memory
+    return { data, offset: start, total: held.blob.size, done, mime: held.blob.type || '' };
+  }
+
+  /** A small JPEG of the frame a video element shows now, or null (nothing decoded, or a cross origin video). */
+  function frameJpeg(video) {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h || video.readyState < 2) return null;
+    try {
+      for (const [side, quality] of FRAME_STEPS) {
+        const scale = Math.min(1, side / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const url = canvas.toDataURL('image/jpeg', quality);
+        const data = url.slice(url.indexOf(',') + 1);
+        if (url.startsWith('data:image/jpeg') && data.length > 100 && data.length <= VIDEO.frame_max_base64) return data;
+      }
+    } catch { /* a tainted canvas: frames of this video cannot be read here */ }
+    return null;
+  }
+
+  /** Resolve with the first of `events` the element fires, or 'timeout'. */
+  function once(el, events, ms) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; clearTimeout(t); for (const e of events) el.removeEventListener(e, on); resolve(v); };
+      const on = (e) => finish(e.type);
+      for (const e of events) el.addEventListener(e, on);
+      const t = setTimeout(() => finish('timeout'), Math.max(0, ms));
+    });
+  }
+
+  /**
+   * Up to `n` frames spread over the clip. Seeks when the length is known; a recording with no index
+   * (no length yet) is played muted and fast instead and a frame is taken now and then.
+   */
+  async function sampleFrames(video, n, deadline) {
+    const frames = [];
+    const left = () => deadline - Date.now();
+    try {
+      video.muted = true;
+      if (video.readyState < 1) await once(video, ['loadedmetadata', 'error'], Math.min(3000, left()));
+      const dur = video.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        for (let i = 0; i < n && left() > 300; i++) {
+          const at = dur * (0.1 + (0.8 * i) / Math.max(1, n - 1));
+          try { video.currentTime = Math.max(0, Math.min(dur - 0.05, at)); } catch { break; }
+          await once(video, ['seeked', 'error'], Math.min(1500, left()));
+          if (video.readyState < 2) await once(video, ['loadeddata', 'canplay'], Math.min(800, left()));
+          const f = frameJpeg(video);
+          if (f) frames.push(f);
+        }
+      } else if (left() > 600) {
+        video.playbackRate = 2;
+        try { await Promise.race([video.play(), new Promise((r) => setTimeout(r, 800))]); } catch { /* cannot play here */ }
+        let last = -1;
+        while (frames.length < n && left() > 300 && !video.ended && !video.error) {
+          await new Promise((r) => setTimeout(r, 150));
+          if (last < 0 || video.currentTime - last >= 0.25) {
+            const f = frameJpeg(video);
+            if (f) { frames.push(f); last = video.currentTime; }
+          }
+        }
+        try { video.pause(); } catch { /* ignore */ }
+      }
+    } catch { /* frames are a bonus */ }
+    return frames;
+  }
+
+  const withLimit = (p, ms) => Promise.race([Promise.resolve(p).catch(() => null), new Promise((r) => setTimeout(() => r(null), Math.max(0, ms)))]);
+
+  /**
+   * What to send for one video, from what the adapter found:
+   *   { blob, seconds?, mime? }        the file itself (kept here until the worker pulls it)
+   *   { url, mime?, seconds?, el? }    an https address the worker may fetch (Gmail, TikTok CDN)
+   *   { el, seconds? }                 a video element that plays here: frames only
+   * Resolves to { video?, frames?, seconds?, fail? }.
+   */
+  async function videoPayload(found, deadline) {
+    const out = {};
+    const left = () => deadline - Date.now();
+    let seconds = Number.isFinite(found.seconds) && found.seconds > 0 ? found.seconds : null;
+    if (found.blob) {
+      const blob = found.blob;
+      let el = null;
+      let url = '';
+      try { url = URL.createObjectURL(blob); el = document.createElement('video'); el.muted = true; el.preload = 'auto'; el.src = url; } catch { el = null; }
+      if (el && seconds === null) {
+        await once(el, ['loadedmetadata', 'error'], Math.min(2000, left()));
+        if (Number.isFinite(el.duration) && el.duration > 0) seconds = el.duration;
+      }
+      if (blob.size > VIDEO.max_bytes) out.fail = 'too_big';
+      else if (seconds !== null && seconds > VIDEO.max_seconds) out.fail = 'too_long';
+      else out.video = { token: holdVideo(blob), bytes: blob.size, mime: (blob.type || found.mime || 'video/mp4').split(';')[0], seconds };
+      if (el && left() > 800) out.frames = await sampleFrames(el, VIDEO.frames, deadline);
+      try { el && el.removeAttribute('src'); el && el.load(); } catch { /* ignore */ }
+      if (url) URL.revokeObjectURL(url);
+    } else if (found.url) {
+      out.video = { url: found.url, mime: found.mime || '', seconds };
+      // Frames from a copy of the player (a CDN video without CORS taints the canvas: then there are none).
+      if (left() > 1200) {
+        try {
+          const el = document.createElement('video');
+          el.muted = true; el.preload = 'auto'; el.crossOrigin = 'anonymous'; el.src = found.url;
+          out.frames = await sampleFrames(el, VIDEO.frames, deadline);
+          el.removeAttribute('src'); el.load();
+        } catch { /* no frames */ }
+      }
+    } else if (found.el) {
+      if (seconds === null && Number.isFinite(found.el.duration) && found.el.duration > 0) seconds = found.el.duration;
+      out.fail = 'no_bytes';
+      out.frames = await sampleFrames(found.el, VIDEO.frames, deadline);
+    }
+    if (out.frames && !out.frames.length) delete out.frames;
+    if (seconds !== null) out.seconds = Math.round(seconds * 10) / 10;
+    return out;
+  }
+
+  let visionCache = { at: 0, v: null };
+  /** What the server said about Google AI Studio on the last sync: { active, whole_videos }. */
+  async function visionConfig() {
+    if (Date.now() - visionCache.at < 10_000) return visionCache.v;
+    let v = null;
+    try { v = (await chrome.storage.local.get('config')).config?.vision || null; } catch { v = null; }
+    visionCache = { at: Date.now(), v };
+    return v;
+  }
+
+  /**
+   * For the newest unanswered customer video of a read (one per read): ask the adapter for the file
+   * (`find(m, deadline)` resolves to what videoPayload takes, optionally with `done()` to tidy up, or
+   * null) and add the result to that message's media: media.video, media.frames, media.seconds. A video
+   * whose cover could not be copied gets its first frame as the cover. Only when the vision model is
+   * connected. Never throws; about VIDEO.budget_ms at most.
+   */
+  async function captureVideo(messages, find) {
+    const started = Date.now();
+    const fails = [];
+    let pick = null;
+    try {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!m || m.direction !== 'in') break;
+        if (m._media && m._media.kind === 'video') { pick = m; break; }
+      }
+      if (!pick) return false;
+      const vision = await visionConfig();
+      if (!vision || !vision.active) return false;
+      // Read again before it was answered (a retry): the same video is not opened twice. The worker
+      // remembers the upload by message id, so a token already pulled does not matter.
+      const id = pick.external_id ? String(pick.external_id) : '';
+      // Sent or described already (the worker's list): never opened again, the cover is enough.
+      if (id && doneVideos.has(id)) return false;
+      for (const [k, v] of capturedVideos) if (Date.now() - v.at > VIDEO.keep_ms * 2) capturedVideos.delete(k);
+      const again = id ? capturedVideos.get(id) : null;
+      if (again) {
+        if (!pick.media && again.frames && again.frames.length) pick.media = { kind: 'video_frame', mime: 'image/jpeg', data: again.frames[0] };
+        if (pick.media) Object.assign(pick.media, again.video && vision.whole_videos !== false ? { video: again.video } : {}, again.frames ? { frames: again.frames } : {}, again.seconds ? { seconds: again.seconds } : {});
+        return Boolean(pick.media);
+      }
+      const deadline = started + VIDEO.budget_ms;
+      let found = null;
+      // Kept: when the find runs past its time, what it opened (a media viewer) is still closed once it ends.
+      const finding = Promise.resolve().then(() => find(pick, deadline)).catch((err) => { fails.push(`find:${errName(err)}`); return null; });
+      const LATE = Symbol('late');
+      const first = await Promise.race([finding, sleep(Math.max(0, deadline - Date.now() + 500)).then(() => LATE)]);
+      if (first === LATE) {
+        fails.push('find_timeout');
+        await withLimit(finding.then((late) => (late && typeof late.done === 'function' ? late.done() : null)), 5000);
+      } else found = first;
+      try {
+        if (!found || (!found.blob && !found.url && !found.el)) fails.push(found && found.why ? found.why : 'no_file');
+        else {
+          const p = (await withLimit(videoPayload(found, deadline), deadline - Date.now() + 1500)) || { fail: 'timeout' };
+          if (p.fail) fails.push(p.fail);
+          if (!pick.media && p.frames && p.frames.length) pick.media = { kind: 'video_frame', mime: 'image/jpeg', data: p.frames[0] };
+          if (pick.media) {
+            if (p.video && vision.whole_videos !== false) pick.media.video = p.video;
+            if (p.frames && p.frames.length) pick.media.frames = p.frames.slice(0, VIDEO.frames);
+            if (p.seconds) pick.media.seconds = p.seconds;
+          } else if (p.video) fails.push('no_cover');
+          if (id && (p.video || (p.frames && p.frames.length))) capturedVideos.set(id, { at: Date.now(), video: p.video || null, frames: p.frames ? p.frames.slice(0, VIDEO.frames) : null, seconds: p.seconds || null });
+        }
+      } finally {
+        // Close what the adapter opened (a media viewer), whatever happened.
+        if (found && typeof found.done === 'function') { try { await withLimit(found.done(), 3000); } catch { /* ignore */ } }
+      }
+    } catch (err) { fails.push(`error:${errName(err)}`); }
+    if (fails.length) diag('note', { video_capture: fails.slice(0, 4), ms: Date.now() - started, path: location.pathname.slice(0, 60) });
+    return Boolean(pick && pick.media && (pick.media.video || pick.media.frames));
+  }
+
   // ---- diagnostics ---------------------------------------------------------------------------------------
   let diagCount = 0;
   let diagWindow = Date.now();
@@ -609,12 +1016,23 @@
   }
 
   // ---- activity nudges --------------------------------------------------------------------------------------
+  // At most one nudge every 2.5 s, and a change inside that window is never dropped: it sends one more
+  // nudge at the end of the window, so the last message of a burst is always announced.
   let nudgeAt = 0;
+  let nudgeTimer = null;
   function nudge() {
-    const now = Date.now();
-    if (now - nudgeAt < 2500) return;
-    nudgeAt = now;
-    toWorker({ type: 'activity' });
+    const wait = nudgeAt + 2500 - Date.now();
+    if (wait <= 0) {
+      nudgeAt = Date.now();
+      toWorker({ type: 'activity' });
+      return;
+    }
+    if (nudgeTimer) return; // one trailing nudge is already planned
+    nudgeTimer = setTimeout(() => {
+      nudgeTimer = null;
+      nudgeAt = Date.now();
+      toWorker({ type: 'activity' });
+    }, wait);
   }
 
   /** Tell the service worker when something changes under the element returned by `getRoot`. */
@@ -680,11 +1098,15 @@
       }
       case 'scan': return adapter.scan(args || {});
       case 'sweep': return adapter.sweep ? adapter.sweep(args || {}) : { threads: [] };
-      case 'read': return adapter.read(args || {});
+      case 'read': {
+        doneVideos = new Set(Array.isArray(args && args.videos_done) ? args.videos_done.map(String).slice(0, 200) : []);
+        return adapter.read(args || {});
+      }
       case 'send': return adapter.send(args || {});
       case 'prepare': return adapter.prepare ? adapter.prepare(args || {}) : { ready: true };
       case 'selftest': return adapter.selftest ? adapter.selftest(args || {}) : { checks: [] };
       case 'health': return { hits: { ...hits }, pack_keys: Object.keys(pack).length };
+      case 'video_chunk': return videoChunk(args || {});
       default: throw new Fail('unknown', `Unknown operation ${op}`, false);
     }
   }
@@ -692,9 +1114,10 @@
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
       if (!msg || msg.acx !== true || !msg.op) return false;
-      // probe and health may run while a long send is in progress; everything else waits its turn.
+      // probe, health and video_chunk (the worker pulling a held video) may run while a long send is in
+      // progress; everything else waits its turn.
       const job = () => handle(msg.op, msg.args);
-      const run = msg.op === 'probe' || msg.op === 'health' ? job() : serial(msg.op, job);
+      const run = msg.op === 'probe' || msg.op === 'health' || msg.op === 'video_chunk' ? job() : serial(msg.op, job);
       Promise.resolve(run).then(
         (data) => respond({ ok: true, data: data ?? null }),
         (err) => {
@@ -722,12 +1145,14 @@
     visible, textOf, click, key, squash, placeCaretAtEnd, selectAllIn,
     // time
     sleep, rand, waitFor,
-    // typing
-    insertText, humanType, clearComposer,
+    // typing and pacing
+    insertText, humanType, clearComposer, instant, cpsOf, pauseScale, humanPause,
+    // the end of a thread, and list time labels
+    tailRef, newerInbound, ownerReplied, noteSent, isClock, labelAge, labelTimeMax, timeMoved, stableTime,
     // diagnostics + activity
     diag, snapshot, skeleton, watch, nudge, toWorker,
-    // photos
-    captureMedia, hasMedia,
+    // photos, and whole videos for the vision model
+    captureMedia, hasMedia, captureVideo, videoPayload, sampleFrames, frameJpeg, holdVideo,
     get alive() { return alive; },
   };
 })();

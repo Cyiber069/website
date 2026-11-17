@@ -44,7 +44,8 @@ describe('inbound to reply', () => {
     expect(job.kind).toBe('reply');
     expect(job.target.thread_external_id).toBe(t);
     expect(job.parts[0]).toContain('Mock reply to: yo how long is delivery');
-    expect(job.pacing.delay_ms).toBeGreaterThan(0);
+    // As fast as possible: no extra wait by default, each part pasted whole.
+    expect(job.pacing).toEqual({ delay_ms: 0, typing_cps: 0 });
 
     // Reporting the same thread again while the job is out does nothing.
     expect((await inbound('whatsapp', t, [msg('m1', 'yo how long is delivery')])).action).toBe('none');
@@ -304,19 +305,32 @@ describe('owner in the loop', () => {
 });
 
 describe('queue safety', () => {
-  it('hands out one job per ready channel and only to ready channels', async () => {
-    const a = await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')]);
-    const b = await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')]);
-    await api(`/api/conversations/${a.conversation_id}/send`, { body: { text: 'first' } });
-    await api(`/api/conversations/${b.conversation_id}/send`, { body: { text: 'second' } });
+  it('hands out up to three due jobs per ready channel, in order, and only to ready channels', async () => {
+    await sql(`UPDATE outbox SET status = 'cancelled' WHERE status IN ('pending', 'leased') AND channel = 'whatsapp'`);
+    const convs: string[] = [];
+    for (let i = 0; i < 4; i++) convs.push((await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')])).conversation_id!);
+    for (const [i, id] of convs.entries()) await api(`/api/conversations/${id}/send`, { body: { text: `message ${i}` } });
     expect((await sync(['gmail'])).data.jobs).toHaveLength(0);
-    const one = await sync(['whatsapp']);
-    expect(one.data.jobs).toHaveLength(1);
-    expect((await sync(['whatsapp'])).data.jobs).toHaveLength(0); // first still out
-    await finish(one.data.jobs[0]!.id);
-    const two = await sync(['whatsapp']);
-    expect(two.data.jobs).toHaveLength(1);
-    await finish(two.data.jobs[0]!.id);
+    const first = await sync(['whatsapp']);
+    expect(first.data.jobs.map((j) => j.parts[0])).toEqual(['message 0', 'message 1', 'message 2']);
+    // The extension queues what it holds, so the next due job is not held back by them. Nothing is handed out twice.
+    const second = await sync(['whatsapp']);
+    expect(second.data.jobs.map((j) => j.parts[0])).toEqual(['message 3']);
+    expect((await sync(['whatsapp'])).data.jobs).toHaveLength(0);
+    for (const j of [...first.data.jobs, ...second.data.jobs]) await finish(j.id);
+  });
+
+  it('leaves a busy channel alone for an older extension, and leases while a newer one reads', async () => {
+    await sql(`UPDATE outbox SET status = 'cancelled' WHERE status IN ('pending', 'leased') AND channel = 'whatsapp'`);
+    const a = await inbound('whatsapp', wa(), [msg('m1', 'ignore-me')]);
+    await api(`/api/conversations/${a.conversation_id}/send`, { body: { text: 'while reading' } });
+    const status = (wa: Record<string, unknown>) => api<{ jobs: any[] }>('/api/agent/sync', { as: 'device', body: { version: 'test', status: { channels: { whatsapp: { state: 'ready', unread: 0, ...wa } } } } });
+    // An older extension says busy while it types a job: nothing more for that tab.
+    expect((await status({ busy: true })).data.jobs).toHaveLength(0);
+    // A newer one says busy while it reads and reports sending apart: it gets the job and queues it.
+    const got = await status({ busy: true, sending: false });
+    expect(got.data.jobs.map((j) => j.parts[0])).toEqual(['while reading']);
+    await finish(got.data.jobs[0].id);
   });
 
   it('retries a failed send, then gives up, and returns stuck jobs to the queue', async () => {

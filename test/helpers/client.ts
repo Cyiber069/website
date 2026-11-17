@@ -18,7 +18,7 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
 }
 
 export interface Job { id: string; channel: string; kind: string; source: string; parts: string[]; target: Record<string, string | null>; pacing: { delay_ms: number; typing_cps: number } }
-export interface Outcome { type: 'decision'; conversation_id: string | null; action: string; reason: string; jobs: Job[]; new_inbound: number; queries?: number }
+export interface Outcome { type: 'decision'; conversation_id: string | null; action: string; reason: string; jobs: Job[]; new_inbound: number; queries?: number; fetches?: number }
 
 let seq = 0;
 export const unique = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -26,7 +26,7 @@ export const unique = (prefix: string) => `${prefix}${Date.now().toString(36)}${
 export interface Msg { external_id?: string | null; direction: 'in' | 'out'; body: string; kind?: string; ts?: number | null }
 
 /** Post what the extension saw in a thread and return the final decision line of the stream. */
-export async function inbound(channel: string, threadId: string, messages: Msg[], extra: Record<string, unknown> = {}): Promise<Outcome> {
+export async function inbound(channel: string, threadId: string, messages: Msg[], extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}): Promise<Outcome> {
   const res = await fetch(`${BASE()}/api/agent/inbound`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.ACX_TEST_DEVICE!}` },
@@ -34,13 +34,16 @@ export async function inbound(channel: string, threadId: string, messages: Msg[]
       channel,
       thread: { external_id: threadId, title: `Customer ${threadId.slice(0, 6)}`, contact: { name: `Customer ${threadId.slice(0, 6)}` }, ...extra },
       messages,
+      ...top,
     }),
   });
   const lines = (await res.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
   const decision = lines.find((l) => l.type === 'decision');
   if (!decision) throw new Error(`no decision in stream: ${JSON.stringify(lines)}`);
   // D1 queries the whole request made (test mode adds this last line).
-  return { ...decision, queries: lines.find((l) => l.type === 'queries')?.n } as Outcome;
+  // Calls to Google AI Studio it made (src/vision counts them: at most 20 of the 50 subrequests allowed).
+  const tail = lines.find((l) => l.type === 'queries');
+  return { ...decision, queries: tail?.n, fetches: tail?.fetches } as Outcome;
 }
 
 export const sync = (channels: string[] = ['whatsapp', 'gmail', 'tiktok']) =>
