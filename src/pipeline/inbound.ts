@@ -379,12 +379,14 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
   const last = p.messages[p.messages.length - 1];
   if (last) {
     const preview = clip(last.body || placeholderFor(last.kind), 140);
+    // Every message of this report is stored now: the same report again needs no message lookups (quickRepeat).
+    const key = await reportKey(p);
     await run(
       db,
       `UPDATE conversations SET last_preview = ?, last_direction = ?, last_inbound_at = COALESCE(?, last_inbound_at), updated_at = ?,
-         needs_reply_since = CASE WHEN ? > 0 THEN COALESCE(needs_reply_since, ?) ELSE needs_reply_since END
+         needs_reply_since = CASE WHEN ? > 0 THEN COALESCE(needs_reply_since, ?) ELSE needs_reply_since END, report_key = ?
        WHERE id = ?`,
-      preview, last.direction, lastInboundAt, newInbound > 0 || takeover ? now : conv.updated_at, newInbound, now, conv.id,
+      preview, last.direction, lastInboundAt, newInbound > 0 || takeover ? now : conv.updated_at, newInbound, now, key, conv.id,
     );
   }
   if (takeover) {
@@ -423,9 +425,23 @@ export const SWEEP_BUDGET_MS = 90_000;
 const LOCK_AFTER_DEADLINE_MS = 20_000;
 /** After a failed brain call the sweeper leaves that chat for this long, so it never holds up the others. */
 const SWEEP_RETRY_MS = 5 * MIN;
+/**
+ * Brain calls that failed in a row for one chat (conversations.brain_fails) wait longer each time: the
+ * model's own retry time (about 8 s) after the first, then 30 s, 2 min and 5 min. Until then the chat
+ * posted again with nothing new is answered "try later" in one query, without the history, the
+ * knowledge or a model call. A new customer message is always tried at once. Exported for tests.
+ */
+export function brainBackoffMs(fails: number, modelAfterMs: number): number {
+  if (fails <= 1) return modelAfterMs;
+  if (fails === 2) return Math.max(modelAfterMs, 30_000);
+  if (fails === 3) return Math.max(modelAfterMs, 2 * MIN);
+  return Math.max(modelAfterMs, 5 * MIN);
+}
 
 /** How long the extension should wait before posting the chat again, with a little spread. */
 const retryIn = (ms: number) => Math.round(ms + Math.random() * 1500);
+/** The longest wait the extension accepts in retry_after_ms (it clamps to 120 s). */
+const MAX_RETRY_AFTER_MS = 115_000;
 
 /**
  * The extra wait before an agent reply. None by default: the reply goes out as soon as it is ready.
@@ -499,7 +515,7 @@ const none = (conversation_id: string | null, reason: string, new_inbound = 0, e
 export async function clearIfAnswered(db: D1Database, convId: string, answeredTs: number): Promise<void> {
   await run(
     db,
-    `UPDATE conversations SET needs_reply_since = CASE WHEN last_inbound_at > ? THEN needs_reply_since ELSE NULL END, processing_until = NULL, retry_at = NULL WHERE id = ?`,
+    `UPDATE conversations SET needs_reply_since = CASE WHEN last_inbound_at > ? THEN needs_reply_since ELSE NULL END, processing_until = NULL, retry_at = NULL, brain_fails = 0 WHERE id = ?`,
     answeredTs, convId,
   );
 }
@@ -530,7 +546,7 @@ export async function processConversation(env: Env, convId: string, device: Devi
   const contact = opts.loaded?.conv.id === convId && opts.loaded.contact.id === conv.contact_id
     ? opts.loaded.contact
     : (await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id))!;
-  const clearAll = () => run(db, 'UPDATE conversations SET needs_reply_since = NULL, processing_until = NULL, retry_at = NULL WHERE id = ?', convId);
+  const clearAll = () => run(db, 'UPDATE conversations SET needs_reply_since = NULL, processing_until = NULL, retry_at = NULL, brain_fails = 0 WHERE id = ?', convId);
 
   if (!settings.agent.enabled) return none(convId, 'agent_off', newInbound);
   const mode = settings.channels[conv.channel].mode;
@@ -674,16 +690,20 @@ export async function processConversation(env: Env, convId: string, device: Devi
       const retryable = !(err instanceof LlmError) || err.retryable;
       const timedOut = err instanceof LlmError && err.code === 'timeout';
       // Keep needs_reply_since: a live request is posted again by the extension, and the sweeper tries
-      // later. The sweeper leaves this chat alone for a while so it never holds up the others.
-      if (device) await run(db, 'UPDATE conversations SET processing_until = NULL WHERE id = ?', convId);
-      else await run(db, 'UPDATE conversations SET processing_until = NULL, retry_at = ? WHERE id = ?', now + SWEEP_RETRY_MS, convId);
+      // later. The sweeper leaves this chat alone for a while so it never holds up the others. Each
+      // failure in a row waits longer (brainBackoffMs), for the laptop's next post and the sweeper alike.
+      const modelAfter = err instanceof LlmError && err.retryAfterMs ? Math.min(60_000, err.retryAfterMs) : timedOut ? 2000 : 8000;
+      const fails = (Number(conv!.brain_fails) || 0) + 1;
+      const wait = device ? brainBackoffMs(fails, modelAfter) : Math.max(SWEEP_RETRY_MS, brainBackoffMs(fails, modelAfter));
+      // After a first failure the laptop simply posts again (as it always did); from the second the chat waits.
+      const retryAt = device && fails < 2 ? null : now + wait;
+      await run(db, 'UPDATE conversations SET processing_until = NULL, retry_at = ?, brain_fails = ? WHERE id = ?', retryAt, fails, convId);
       const again = Boolean(device) && retryable;
       await logEvent(db, {
         level: again ? 'warn' : 'error', type: 'brain_error', channel: conv!.channel, conversation_id: convId,
         message: `Could not work out a reply for ${contact.display_name || 'a customer'}${again ? ' yet, trying again' : ''}: ${clip(String((err as Error)?.message ?? err), 200)}`,
       });
-      const after = err instanceof LlmError && err.retryAfterMs ? Math.min(60_000, err.retryAfterMs) : timedOut ? 2000 : 8000;
-      return none(convId, timedOut ? 'deadline' : 'brain_error', newInbound, again ? { final: false, retry_after_ms: retryIn(after) } : {});
+      return none(convId, timedOut ? 'deadline' : 'brain_error', newInbound, again ? { final: false, retry_after_ms: retryIn(Math.min(MAX_RETRY_AFTER_MS, wait)) } : {});
     }
 
     await run(db, 'UPDATE contacts SET tone_profile = ?, updated_at = ? WHERE id = ?', JSON.stringify(decision.tone), now, contact.id);
@@ -795,6 +815,74 @@ export async function processConversation(env: Env, convId: string, device: Devi
   }
 }
 
+/**
+ * A short hash of a report's message ids, or null when a message has no id or carries a picture (those
+ * always take the full path). Exported for tests.
+ */
+export async function reportKey(p: Pick<InboundPayload, 'messages'>): Promise<string | null> {
+  if (!p.messages.length || p.messages.some((m) => !m.external_id || m.media)) return null;
+  return (await sha256Hex(p.messages.map((m) => m.external_id).join('\n'))).slice(0, 32);
+}
+
+/**
+ * A chat the laptop posts again when every message in it is already stored, its title, name and preview
+ * are unchanged and nothing else came with it (pictures, refused jobs, an accepted request). The full
+ * path would store nothing and answer from the stored chat, so the answer comes from one query instead:
+ * nothing_new, already_processing while another run holds the chat, or brain_error while a chat whose
+ * brain keeps failing waits for its next try (brainBackoffMs). Null: take the full path. The reply
+ * leased to this laptop (newer builds) and the "sync now" hint are handed out as the full path does.
+ */
+async function quickRepeat(env: Env, device: DeviceRow, p: InboundPayload, settings: Settings, opts: ProcessOptions): Promise<Outcome | null> {
+  const msgs = p.messages;
+  if (!msgs.length || p.thread.just_accepted || p.refused_job_ids?.length || p.media_rejected?.length) return null;
+  const key = await reportKey(p);
+  if (!key) return null;
+  const ids = [...new Set(msgs.map((m) => m.external_id!))];
+  const now = Date.now();
+  const row = await one<{
+    id: string; title: string; last_preview: string; last_direction: string; needs_reply_since: number | null; processing_until: number | null;
+    retry_at: number | null; brain_fails: number; paused_until: number | null; display_name: string; known: number; pending_job: number | null; own_leased: number | null;
+  }>(
+    env.DB,
+    // The pending and leased checks read the few rows in those states (outbox_due), not every job of the chat.
+    // The same report as the last one stored: every message is known without looking. Otherwise each id
+    // is looked up in the messages_external index (two rows each).
+    `SELECT cv.id, cv.title, cv.last_preview, cv.last_direction, cv.needs_reply_since, cv.processing_until, cv.retry_at, cv.brain_fails, cv.paused_until, ct.display_name,
+       CASE WHEN cv.report_key = ? THEN ${ids.length} ELSE
+         (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = cv.id AND m.external_id IN (${ids.map(() => '?').join(', ')})) END AS known,
+       (SELECT 1 FROM outbox o INDEXED BY outbox_due WHERE o.status = 'pending' AND o.not_before <= ? AND o.conversation_id = cv.id LIMIT 1) AS pending_job,
+       (SELECT 1 FROM outbox o INDEXED BY outbox_due WHERE o.status = 'leased' AND o.conversation_id = cv.id AND o.lease_device = ? AND o.lease_until > ? LIMIT 1) AS own_leased
+     FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id WHERE cv.channel = ? AND cv.external_thread_id = ?`,
+    key, ...ids, now, device.id, now, p.channel, p.thread.external_id,
+  );
+  if (!row || Number(row.known) !== ids.length) return null;
+  // What the full path would write: a new title or name, or the preview of the last message.
+  const last = msgs[msgs.length - 1]!;
+  const name = p.thread.contact.name || p.thread.title;
+  if ((p.thread.title && p.thread.title !== row.title) || (name && name !== row.display_name)) return null;
+  if (row.last_preview !== clip(last.body || placeholderFor(last.kind), 140) || row.last_direction !== last.direction) return null;
+
+  let outcome: Outcome;
+  if (!row.needs_reply_since) {
+    outcome = none(row.id, 'nothing_new');
+  } else if (!settings.agent.enabled || settings.channels[p.channel].mode === 'off' || (row.paused_until && row.paused_until > now)) {
+    return null; // the full path says why and tidies up
+  } else if (row.processing_until && row.processing_until > now) {
+    outcome = none(row.id, 'already_processing', 0, { final: false, retry_after_ms: retryIn(Math.min(10_000, Math.max(2000, row.processing_until - now + 500))) });
+  } else if (Number(row.brain_fails) > 0 && row.retry_at && row.retry_at > now + 1000) {
+    outcome = none(row.id, 'brain_error', 0, { final: false, retry_after_ms: retryIn(Math.min(MAX_RETRY_AFTER_MS, row.retry_at - now)) });
+  } else {
+    return null; // a customer is waiting and nothing holds the chat: decide it
+  }
+  const live = opts.live ?? (() => true);
+  if (outcome.reason === 'nothing_new' && row.own_leased && live() && !isLegacyExtension(device.version)) {
+    outcome.jobs = await reofferOwn(env.DB, device, row.id, settings);
+  }
+  // As the full path: a reply for this chat waiting in the queue means "sync now".
+  if (!outcome.jobs.length && outcome.reason !== 'brain_error') outcome.jobs_pending = Boolean(row.pending_job);
+  return outcome;
+}
+
 /** Full inbound path used by the extension endpoint. */
 export async function handleInbound(
   env: Env, device: DeviceRow, payload: InboundPayload,
@@ -803,6 +891,9 @@ export async function handleInbound(
   const startedAt = opts.startedAt ?? Date.now();
   if (payload.thread.is_group) return none(null, 'group_chat');
   const settings = await getSettings(env.DB);
+  // Posted again with nothing new (older builds do this whenever a chat's preview changes): one query.
+  const quick = await quickRepeat(env, device, payload, settings, opts).catch((err) => { console.error('quick repeat check failed', err); return null; });
+  if (quick) { onStored?.({ conversation_id: quick.conversation_id!, new_inbound: 0 }); return quick; }
   const stored = await storeInbound(env, payload, settings);
   if (payload.media_rejected?.length) {
     // Shows up next to the extension's own notes when a channel's photos are not being read.

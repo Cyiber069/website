@@ -2,7 +2,7 @@ import type { DeviceRow, Env } from '../types';
 import { hashPassword, randomToken, sha256Hex, timingSafeEqual } from './crypto';
 import { one, run } from './db';
 import { HttpError } from './http';
-import { getState, setState } from './settings';
+import { getState, noteSettingsRev, setState } from './settings';
 import { DAY, MIN } from './time';
 
 const COOKIE = 'acx_session';
@@ -95,8 +95,12 @@ export async function hasOwnerSession(env: Env, req: Request): Promise<boolean> 
   if (!token) return false;
   const id = await sha256Hex(token);
   const now = Date.now();
-  const row = await one<{ expires_at: number; last_seen_at: number }>(env.DB, 'SELECT expires_at, last_seen_at FROM sessions WHERE id = ?', id);
+  // The settings revision rides along (one row more, no extra query): settings changed through another
+  // isolate are read fresh before this request uses them (src/lib/settings.ts).
+  const row = await one<{ expires_at: number; last_seen_at: number; settings_rev: unknown }>(env.DB,
+    `SELECT expires_at, last_seen_at, (SELECT value FROM settings WHERE key = 'state:settings_rev') AS settings_rev FROM sessions WHERE id = ?`, id);
   if (!row || row.expires_at < now) return false;
+  noteSettingsRev(row.settings_rev);
   if (now - row.last_seen_at > 10 * MIN) await run(env.DB, 'UPDATE sessions SET last_seen_at = ? WHERE id = ?', now, id);
   return true;
 }
@@ -116,7 +120,11 @@ export async function deviceFromRequest(env: Env, req: Request): Promise<DeviceR
   const header = req.headers.get('authorization') ?? '';
   const m = /^Bearer\s+(\S+)$/i.exec(header);
   if (!m) return null;
-  const row = await one<DeviceRow>(env.DB, 'SELECT * FROM devices WHERE token_hash = ?', await sha256Hex(m[1]!));
+  // With the settings revision, as for the owner's session above.
+  const row = await one<DeviceRow & { settings_rev?: unknown }>(env.DB,
+    `SELECT d.*, (SELECT value FROM settings WHERE key = 'state:settings_rev') AS settings_rev FROM devices d WHERE d.token_hash = ?`, await sha256Hex(m[1]!));
   if (!row || row.revoked_at) return null;
+  noteSettingsRev(row.settings_rev);
+  delete row.settings_rev;
   return row;
 }

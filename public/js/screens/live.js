@@ -48,7 +48,9 @@ function warnings(ov) {
   if (stuck) out.push(html`<p class="banner banner--wait" role="status">${icon('i-dot')}<span><b>${stuck === 1 ? 'One customer has' : `${stuck} customers have`} waited over 15 min with no reply.</b> The agent keeps trying. <a href="#/health">See Health</a></span></p>`);
   const u = ov.usage;
   const pct = u ? Math.max(u.read_pct || 0, u.write_pct || 0) : 0;
-  if (pct > 60) out.push(html`<p class="banner ${pct >= 85 ? 'banner--down' : 'banner--wait'}" role="status">${icon('i-dot')}<span><b>Database use is high today.</b> About ${Math.round(pct)}% of the free daily ${(u.read_pct || 0) >= (u.write_pct || 0) ? 'reads' : 'writes'} are used. This is an estimate. <a href="#/health">See Health</a></span></p>`);
+  // From 70% the server slows down background work and this page refreshes every 2 min (ov.budget).
+  const slowing = ov.budget && ov.budget.level !== 'normal' ? ' The agent is slowing down background work so it keeps replying.' : '';
+  if (pct > 60) out.push(html`<p class="banner ${pct >= 85 ? 'banner--down' : 'banner--wait'}" role="status">${icon('i-dot')}<span><b>Database use is high today.</b> About ${Math.round(pct)}% of the free daily ${(u.read_pct || 0) >= (u.write_pct || 0) ? 'reads' : 'writes'} are used. This is an estimate.${slowing} <a href="#/health">See Health</a></span></p>`);
   return out;
 }
 
@@ -235,18 +237,19 @@ export default {
         paintTakeovers();
       } catch { /* the rest of the screen still works */ }
     }
-    let beat = 0;
+    // The countdowns tick every second on the page itself. The list is read again with the rest of
+    // the screen (the app's refresh), and once when a countdown reaches zero.
+    const reloadedFor = new Set();
     const timer = setInterval(() => {
       if (!view.isConnected) { clearInterval(timer); return; }
-      // Every 15 s look again too, so a chat you take over while this screen is open shows up.
-      let ended = ++beat % 15 === 0;
+      let ended = false;
       for (const el of view.querySelectorAll('[data-until]')) {
         const until = Number(el.dataset.until);
         if (!until) continue;
         el.textContent = left(until);
-        if (until - (Date.now() + skew) <= 0) ended = true;
+        if (until - (Date.now() + skew) <= 0 && !reloadedFor.has(until)) { reloadedFor.add(until); ended = true; }
       }
-      if (ended) loadTakeovers();
+      if (ended && !document.hidden) loadTakeovers();
     }, 1000);
     view.addEventListener('click', async (e) => {
       const back = e.target.closest('[data-handback]');

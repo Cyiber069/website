@@ -340,6 +340,8 @@ export interface ConversationRow {
   last_direction: string; created_at: number; updated_at: number;
   /** The cron sweeper waits until then after a failed brain call (migration 0008). */
   retry_at?: number | null;
+  /** Brain calls that failed in a row (migration 0012): the next try waits longer each time. */
+  brain_fails?: number;
   /** Sales columns (migration 0006). */
   sales_stage?: SalesStage | null; sales_product?: string | null; sales_link?: string | null; sales_link_at?: number | null;
   sales_stage_at?: number | null; interested_at?: number | null; ready_at?: number | null; bought_at?: number | null;

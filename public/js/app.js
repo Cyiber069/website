@@ -1,4 +1,4 @@
-// App shell: sign in, navigation, the 5 second poll, and the bits every screen shares.
+// App shell: sign in, navigation, the refresh while the page is in use, and the bits every screen shares.
 import { api, get, post, setSignedOutHandler } from './api.js';
 import { $, $$, html, icon, raw, setHTML, toast, toastError, refreshTimes, confirmDialog, friendly } from './ui.js';
 import authScreen from './screens/auth.js';
@@ -13,6 +13,7 @@ import sales from './screens/sales.js';
 import connections from './screens/connections.js';
 import health from './screens/health.js';
 import more from './screens/more.js';
+import { nextRefreshIn, refreshOnWake } from './poll.js';
 
 const SCREENS = { live, urgent, inbox, knowledge, voice, recovery, sales, discounts, connections, health, more };
 const NAV = [
@@ -21,10 +22,7 @@ const NAV = [
 ];
 const TABS = [['live', 'Live', 'i-live'], ['inbox', 'Inbox', 'i-inbox'], ['urgent', 'Urgent', 'i-urgent'], ['recovery', 'Recovery', 'i-recovery'], ['more', 'More', 'i-more']];
 const UNDER_MORE = ['knowledge', 'voice', 'sales', 'discounts', 'connections', 'health', 'more'];
-// Refresh every 15 seconds while someone is using the page. Each refresh reads the database, and the
-// free plan allows 5 million rows a day, so an open but idle page stops refreshing after 10 minutes.
-const POLL_MS = 15000;
-const IDLE_MS = 10 * 60 * 1000;
+// How often the page refreshes (every 30 s while in use, 2 min behind another window, never hidden or idle): poll.js.
 
 const root = $('#root');
 const state = { overview: null, overviewError: null, signedIn: false, current: null, route: '', timer: null, shell: false };
@@ -251,25 +249,44 @@ function markNav(name) {
 
 window.addEventListener('hashchange', route);
 
-// ---- Polling: every 15 seconds, only while the tab is visible and in use -----------------------------------
+// ---- Polling: only while the page is visible and in use -----------------------------------------------------
 let lastActive = Date.now();
-let idlePaused = false;
-for (const ev of ['pointerdown', 'keydown', 'scroll', 'touchstart', 'focus']) {
-  window.addEventListener(ev, () => {
-    lastActive = Date.now();
-    if (idlePaused && !document.hidden && state.signedIn) { idlePaused = false; tick(); }
-  }, { passive: true, capture: true });
+let lastTick = 0;
+let lastMove = 0;
+const focused = () => (typeof document.hasFocus === 'function' ? document.hasFocus() : true);
+const pollState = () => ({ now: Date.now(), lastTick, lastActive, hidden: document.hidden, focused: focused(), budgetSeconds: state.overview?.budget?.poll_seconds });
+/** Plan the next refresh: none while hidden, signed out or idle. */
+function schedule() {
+  stopPolling();
+  if (!state.signedIn) return;
+  const wait = nextRefreshIn(pollState());
+  if (wait !== null) state.timer = setTimeout(tick, wait);
 }
 async function tick() {
-  if (document.hidden || !state.signedIn) return;
-  if (Date.now() - lastActive > IDLE_MS) { idlePaused = true; return; }
+  state.timer = null;
+  if (!state.signedIn || nextRefreshIn({ ...pollState(), lastTick: 0 }) === null) return; // hidden or idle: stopped until someone is back
+  lastTick = Date.now();
   refreshOverview();
   try { await state.current?.tick?.(); } catch (err) { if (err?.name !== 'AuthError') console.warn('refresh failed', err?.message); }
   refreshTimes();
+  schedule();
 }
-function startPolling() { stopPolling(); state.timer = setInterval(tick, POLL_MS); }
-function stopPolling() { if (state.timer) clearInterval(state.timer); state.timer = null; }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && state.signedIn) { lastActive = Date.now(); idlePaused = false; tick(); } });
+/** Someone is here: refresh at once if the page had stopped, else keep the plan (sooner when focused). */
+function wake() {
+  const stopped = !state.timer;
+  lastActive = Date.now();
+  if (!state.signedIn || document.hidden) return;
+  if (refreshOnWake({ now: Date.now(), lastTick, stopped })) { tick(); return; }
+  schedule();
+}
+function startPolling() { lastActive = Date.now(); lastTick = Date.now(); schedule(); }
+function stopPolling() { if (state.timer) clearTimeout(state.timer); state.timer = null; }
+// Only real input counts: a refresh that repaints (and scrolls) the page is not someone using it.
+for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) window.addEventListener(ev, wake, { passive: true, capture: true });
+window.addEventListener('pointermove', () => { const now = Date.now(); if (now - lastMove > 5000) { lastMove = now; wake(); } }, { passive: true, capture: true });
+window.addEventListener('focus', wake);
+window.addEventListener('blur', () => schedule());
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopPolling(); else wake(); });
 
 // Keyboard height, so sticky bars sit above the phone keyboard.
 if (window.visualViewport) {

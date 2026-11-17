@@ -1,5 +1,5 @@
 // Owner facing API for the core screens: Live, Urgent, Inbox, Settings, Health.
-import type { Channel, ContactRow, ConversationRow, JobTarget, MessageRow, OutboxRow, Settings, UrgentRow } from '../types';
+import type { Channel, ContactRow, ConversationRow, Env, JobTarget, MessageRow, OutboxRow, Settings, UrgentRow } from '../types';
 import { CHANNELS } from '../types';
 import { pairingCode, sha256Hex } from '../lib/crypto';
 import { all, clip, one, parseJson, run } from '../lib/db';
@@ -16,7 +16,10 @@ import { checkDiscountPatch } from '../discounts/rules';
 import { checkVisionPatch } from '../vision';
 import { monitorRows } from '../pipeline/monitor';
 import { usageToday } from '../lib/usage';
-import { replyTimes } from '../pipeline/replytime';
+import { todayStats } from '../pipeline/today';
+import { cachedAnswer, onReset } from '../lib/cache';
+import { DASHBOARD_SECONDS, budget, type Budget, type BudgetLevel } from '../lib/budget';
+import { kbTotals } from '../kb/cache';
 
 const count = async (db: D1Database, sql: string, ...p: (string | number)[]) => (await one<{ n: number }>(db, sql, ...p))?.n ?? 0;
 
@@ -29,19 +32,30 @@ function startOfLondonDay(now: number): number {
 const byIds = <T>(db: D1Database, sql: string, ids: string[]) => (ids.length ? all<T>(db, sql, JSON.stringify([...new Set(ids)])) : Promise.resolve([] as T[]));
 const IDS = 'SELECT value FROM json_each(?)';
 
-/** The last `n` messages of each conversation, oldest first. One query for all of them. */
+/**
+ * The last `n` messages of each conversation, oldest first. One query for all of them, and it reads only
+ * those messages (through the messages_conv index), not every message of the chats.
+ */
 async function recentMessages(db: D1Database, convIds: string[], n: number, direction?: 'in'): Promise<Map<string, MessageRow[]>> {
   const rows = await byIds<MessageRow>(
     db,
-    `SELECT * FROM (SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.conversation_id ORDER BY m.ts DESC, m.created_at DESC) AS rn
-       FROM messages m WHERE m.conversation_id IN (${IDS})${direction ? ` AND m.direction = '${direction}'` : ''})
-     WHERE rn <= ${n} ORDER BY ts ASC, created_at ASC`,
+    `SELECT m.* FROM json_each(?) j JOIN messages m ON m.rowid IN (
+       SELECT rowid FROM messages WHERE conversation_id = j.value${direction ? ` AND direction = '${direction}'` : ''} ORDER BY ts DESC, created_at DESC LIMIT ${n})
+     ORDER BY m.ts ASC, m.created_at ASC`,
     convIds,
   );
   const out = new Map<string, MessageRow[]>();
   for (const m of rows) { const list = out.get(m.conversation_id) ?? []; list.push(m); out.set(m.conversation_id, list); }
   return out;
 }
+
+/**
+ * How long a dashboard answer is kept in memory. Any D1 write in this isolate (an owner action, a new
+ * message, a sync that changed something) drops them all at once (src/lib/cache.ts), so a screen is never
+ * behind its own changes. Longer when the day's database use is high.
+ */
+const answerTtl = (level: BudgetLevel) => (level === 'normal' ? 20_000 : 60_000);
+const budgetView = (b: Budget) => ({ level: b.level, poll_seconds: DASHBOARD_SECONDS[b.level], read_pct: b.read_pct, write_pct: b.write_pct });
 
 /**
  * The picture a message came with, for a thumbnail: { id, kind } or null, plus description (what the
@@ -100,73 +114,160 @@ function reviewView(row: OutboxRow, conv: ConversationRow | null, lastInbound: s
   };
 }
 
+/** What Live shows. Today's numbers come from the running count (src/pipeline/today.ts), not a full count each time. */
+async function overview(env: Env, db: D1Database, now: number) {
+  const settings = await getSettings(db);
+  const day = startOfLondonDay(now);
+  const [devices, hints, mon, today, kb] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db), todayStats(db, day, now), kbTotals(env)]);
+  const device = devices[0] ?? null;
+  const [urgentOpen, reviewPending, queued] = await Promise.all([
+    count(db, `SELECT COUNT(*) AS n FROM urgent WHERE status = 'open'`),
+    count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status = 'review'`),
+    count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status IN ('pending', 'leased')`),
+  ]);
+  const lastRun = await one<Record<string, unknown>>(db, `SELECT * FROM recovery_runs WHERE trigger != 'dry_run' ORDER BY started_at DESC LIMIT 1`);
+  const hasClaude = Boolean(hints.anthropic_api_key || env.ANTHROPIC_API_KEY);
+  const shopifyApi = Boolean(hints.shopify_client_secret || hints.shopify_admin_token);
+  const shopifyHook = Boolean(hints.shopify_webhook_secret);
+  const brainProvider = settings.brain.provider === 'workers_ai' ? 'workers_ai' : hasClaude ? 'anthropic' : env.AI ? 'workers_ai' : 'none';
+  const pushCount = await count(db, 'SELECT COUNT(*) AS n FROM push_subscriptions');
+  return {
+    now,
+    agent: { enabled: settings.agent.enabled },
+    device,
+    channels: settings.channels,
+    // Channel problems, chats waiting with no reply and AI failures found by the every minute check.
+    monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
+    usage: usageToday(mon.usage, now),
+    // How fast the agent answered today: average and slowest, from the customer's message to sent.
+    reply_time: today.reply_time,
+    counts: {
+      urgent_open: urgentOpen, review_pending: reviewPending, inbound_today: today.inbound_today, sent_today: today.sent_today,
+      queued, conversations_today: today.conversations_today, auto_today: today.auto_today, escalated_today: today.escalated_today,
+    },
+    brain: { provider: brainProvider, model: brainProvider === 'anthropic' ? settings.brain.model : settings.brain.workers_ai_model, claude_key: hasClaude },
+    shopify: { connected: shopifyApi || shopifyHook, mode: shopifyApi ? 'api' : shopifyHook ? 'webhook' : 'none' },
+    kb: { docs: kb.docs, tokens: kb.tokens },
+    recovery: {
+      enabled: settings.recovery.enabled,
+      template_ready: settings.recovery.template.approved && settings.recovery.template.text.trim().length > 0 && settings.recovery.consent_confirmed,
+      next_run_at: nextLondonHour(now, settings.recovery.send_hour_london),
+      last_run: lastRun,
+    },
+    setup: {
+      device_paired: devices.length > 0,
+      brain_ready: brainProvider !== 'none',
+      knowledge_added: kb.docs > 0,
+      shopify_connected: shopifyApi || shopifyHook,
+      recovery_taught: settings.recovery.template.approved,
+      push_enabled: pushCount > 0,
+    },
+  };
+}
+
+/** The Urgent screen: open questions with their chats, and the drafts waiting for an OK. A few queries for the whole list. */
+async function urgentList(db: D1Database, status: 'open' | 'done', now: number) {
+  const rows = status === 'open'
+    ? await all<UrgentRow>(db, `SELECT * FROM urgent WHERE status = 'open' ORDER BY created_at ASC LIMIT 100`)
+    : await all<UrgentRow>(db, `SELECT * FROM urgent WHERE status != 'open' ORDER BY COALESCE(answered_at, created_at) DESC LIMIT 50`);
+  const reviewOut = [];
+  if (status === 'open') {
+    const review = await all<OutboxRow>(db, `SELECT * FROM outbox WHERE status = 'review' ORDER BY created_at ASC LIMIT 100`);
+    const convIds = review.map((r) => r.conversation_id).filter((x): x is string => Boolean(x));
+    const [convs, lastIn] = await Promise.all([conversationsById(db, convIds), recentMessages(db, convIds, 1, 'in')]);
+    for (const row of review) {
+      const conv = row.conversation_id ? convs.get(row.conversation_id) ?? null : null;
+      reviewOut.push(reviewView(row, conv, (row.conversation_id && lastIn.get(row.conversation_id)?.[0]?.body) || ''));
+    }
+  }
+  return { urgent: await urgentView(db, rows, now), review: reviewOut };
+}
+
+/** One chat for the Inbox thread view: the newest 120 messages and what is waiting to send. Null when there is no such chat. */
+async function conversationView(db: D1Database, id: string, now: number) {
+  const conv = await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', id);
+  if (!conv) return null;
+  const contact = (await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id))!;
+  const [messages, pending] = await Promise.all([
+    all<MessageRow>(db, 'SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 120) ORDER BY ts ASC, created_at ASC', conv.id),
+    // What waits to send is few rows: read through the status index, not every job the chat ever had.
+    all<OutboxRow>(db, `SELECT * FROM outbox INDEXED BY outbox_due WHERE status IN ('pending', 'leased', 'review') AND conversation_id = ? ORDER BY created_at ASC`, conv.id),
+  ]);
+  return {
+    conversation: {
+      id: conv.id, contact_id: contact.id, channel: conv.channel, customer: contact.display_name || conv.title || 'Customer', subject: conv.subject,
+      status: conv.status, paused_until: conv.paused_until && conv.paused_until > now ? conv.paused_until : null, pause_reason: conv.pause_reason,
+      phone: contact.phone, email: contact.email, handle: contact.handle, opted_out: Boolean(contact.opted_out),
+      tone: parseJson(contact.tone_profile, {}),
+    },
+    messages: messages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, kind: m.kind, status: m.status, ts: m.ts, media: mediaOf(m, now) })),
+    pending: pending.map((p) => ({ id: p.id, status: p.status, source: p.source, parts: parseJson<string[]>(p.parts, []) })),
+  };
+}
+
+/** Rows in the Inbox list. */
+const CONVERSATION_LIST_LIMIT = 50;
+
+/**
+ * AI calls of the last 24 hours by model, for Health. It reads every call of the day (about 600 rows on a
+ * busy day), so it is kept for 5 minutes whatever else changes: Health may stay open for a long time.
+ */
+const LLM_USAGE_MS = 5 * MIN;
+let llmUsage: { at: number; rows: Promise<unknown[]> } | null = null;
+onReset(() => { llmUsage = null; });
+function llmUsageDay(db: D1Database, now: number): Promise<unknown[]> {
+  if (llmUsage && now - llmUsage.at < LLM_USAGE_MS && now >= llmUsage.at) return llmUsage.rows;
+  const rows = all(db, `SELECT provider, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, AVG(ms) AS avg_ms, SUM(ok) AS ok FROM llm_usage WHERE ts > ? GROUP BY provider, model`, now - DAY);
+  llmUsage = { at: now, rows };
+  rows.catch(() => { if (llmUsage?.rows === rows) llmUsage = null; });
+  return rows;
+}
+
+/** The Health screen: the last day of problems, the laptop, the monitor and today's reply times. */
+async function healthView(db: D1Database, now: number) {
+  const since = now - DAY;
+  const [devices, misses, failed, errors, usage, sel, mon, today] = await Promise.all([
+    currentDevice(db, now),
+    all(db, `SELECT id, ts, channel, kind, data FROM diagnostics WHERE ts > ? ORDER BY id DESC LIMIT 60`, since),
+    all<OutboxRow>(db, `SELECT * FROM outbox WHERE status IN ('failed', 'expired') AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
+    all(db, `SELECT id, ts, type, channel, message FROM events WHERE level = 'error' AND ts > ? ORDER BY id DESC LIMIT 30`, since),
+    llmUsageDay(db, now),
+    selectorPack(db),
+    monitorRows(db),
+    todayStats(db, startOfLondonDay(now), now),
+  ]);
+  return {
+    now,
+    devices,
+    monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
+    // Rows this Worker used today, counted in the Worker itself. An estimate: see src/lib/usage.ts.
+    d1_usage: usageToday(mon.usage, now),
+    // Agent replies sent today (London day): average and slowest time from the customer's message to sent.
+    reply_time: today.reply_time,
+    diagnostics: misses.map((m) => ({ ...(m as object), data: parseJson((m as { data: string }).data, {}) })),
+    failed_jobs: failed.map((f) => ({ id: f.id, channel: f.channel, source: f.source, status: f.status, error: f.status === 'expired' ? `expired: not sent in time${f.last_error ? ` (${f.last_error})` : ''}` : f.last_error, created_at: f.created_at, target: parseJson<JobTarget>(f.target, emptyTarget()).title })),
+    errors,
+    llm_usage: usage,
+    selectors_version: sel.version,
+  };
+}
+
 export function register(r: Router): void {
   // ---- Live ------------------------------------------------------------------------------------
   r.get('/api/overview', 'owner', async (c) => {
-    const db = c.db;
-    const now = c.now;
-    const settings = await getSettings(db);
-    const day = startOfLondonDay(now);
-    const [devices, hints, mon, replies] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db), replyTimes(db, day)]);
-    const device = devices[0] ?? null;
-    const [urgentOpen, reviewPending, inboundToday, sentToday, queued, convToday, kbDocs, kbTokens, autoToday, escalatedToday] = await Promise.all([
-      count(db, `SELECT COUNT(*) AS n FROM urgent WHERE status = 'open'`),
-      count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status = 'review'`),
-      count(db, `SELECT COUNT(*) AS n FROM messages WHERE direction = 'in' AND status = 'received' AND created_at >= ?`, day),
-      count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND source != 'alert' AND sent_at >= ?`, day),
-      count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status IN ('pending', 'leased')`),
-      count(db, `SELECT COUNT(*) AS n FROM conversations WHERE last_inbound_at >= ?`, day),
-      count(db, `SELECT COUNT(*) AS n FROM kb_docs WHERE enabled = 1`),
-      count(db, `SELECT COALESCE(SUM(token_estimate), 0) AS n FROM kb_docs WHERE enabled = 1`),
-      count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status = 'sent' AND source = 'auto' AND sent_at >= ?`, day),
-      count(db, `SELECT COUNT(*) AS n FROM urgent WHERE created_at >= ?`, day),
-    ]);
-    const lastRun = await one<Record<string, unknown>>(db, `SELECT * FROM recovery_runs WHERE trigger != 'dry_run' ORDER BY started_at DESC LIMIT 1`);
-    const hasClaude = Boolean(hints.anthropic_api_key || c.env.ANTHROPIC_API_KEY);
-    const shopifyApi = Boolean(hints.shopify_client_secret || hints.shopify_admin_token);
-    const shopifyHook = Boolean(hints.shopify_webhook_secret);
-    const brainProvider = settings.brain.provider === 'workers_ai' ? 'workers_ai' : hasClaude ? 'anthropic' : c.env.AI ? 'workers_ai' : 'none';
-    const pushCount = await count(db, 'SELECT COUNT(*) AS n FROM push_subscriptions');
-    return json({
-      now,
-      agent: { enabled: settings.agent.enabled },
-      device,
-      channels: settings.channels,
-      // Channel problems, chats waiting with no reply and AI failures found by the every minute check.
-      monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
-      usage: usageToday(mon.usage, now),
-      // How fast the agent answered today: average and slowest, from the customer's message to sent.
-      reply_time: replies,
-      counts: {
-        urgent_open: urgentOpen, review_pending: reviewPending, inbound_today: inboundToday, sent_today: sentToday,
-        queued, conversations_today: convToday, auto_today: autoToday, escalated_today: escalatedToday,
-      },
-      brain: { provider: brainProvider, model: brainProvider === 'anthropic' ? settings.brain.model : settings.brain.workers_ai_model, claude_key: hasClaude },
-      shopify: { connected: shopifyApi || shopifyHook, mode: shopifyApi ? 'api' : shopifyHook ? 'webhook' : 'none' },
-      kb: { docs: kbDocs, tokens: kbTokens },
-      recovery: {
-        enabled: settings.recovery.enabled,
-        template_ready: settings.recovery.template.approved && settings.recovery.template.text.trim().length > 0 && settings.recovery.consent_confirmed,
-        next_run_at: nextLondonHour(now, settings.recovery.send_hour_london),
-        last_run: lastRun,
-      },
-      setup: {
-        device_paired: devices.length > 0,
-        brain_ready: brainProvider !== 'none',
-        knowledge_added: kbDocs > 0,
-        shopify_connected: shopifyApi || shopifyHook,
-        recovery_taught: settings.recovery.template.approved,
-        push_enabled: pushCount > 0,
-      },
-    });
+    const guard = await budget(c.db, c.now);
+    // Polled by every open dashboard: kept in memory for a short while (see answerTtl).
+    const data = await cachedAnswer('overview', answerTtl(guard.level), c.now, () => overview(c.env, c.db, c.now));
+    return json({ ...data, budget: budgetView(guard) });
   });
 
   r.get('/api/events', 'owner', async (c) => {
     const after = int(c.url.searchParams.get('after'), 'after', 0, Number.MAX_SAFE_INTEGER, 0);
     const limit = int(c.url.searchParams.get('limit'), 'limit', 1, 200, 60);
-    const rows = after
-      ? await all(c.db, 'SELECT * FROM (SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?) ORDER BY id DESC', after, limit)
-      : await all(c.db, 'SELECT * FROM events ORDER BY id DESC LIMIT ?', limit);
+    const level = (await budget(c.db, c.now)).level;
+    const rows = await cachedAnswer(`events:${after}:${limit}`, answerTtl(level), c.now, () => after
+      ? all(c.db, 'SELECT * FROM (SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?) ORDER BY id DESC', after, limit)
+      : all(c.db, 'SELECT * FROM events ORDER BY id DESC LIMIT ?', limit));
     return json({ events: rows });
   });
 
@@ -190,20 +291,8 @@ export function register(r: Router): void {
   // ---- Urgent -------------------------------------------------------------------------------------
   r.get('/api/urgent', 'owner', async (c) => {
     const status = c.url.searchParams.get('status') === 'done' ? 'done' : 'open';
-    const rows = status === 'open'
-      ? await all<UrgentRow>(c.db, `SELECT * FROM urgent WHERE status = 'open' ORDER BY created_at ASC LIMIT 100`)
-      : await all<UrgentRow>(c.db, `SELECT * FROM urgent WHERE status != 'open' ORDER BY COALESCE(answered_at, created_at) DESC LIMIT 50`);
-    const reviewOut = [];
-    if (status === 'open') {
-      const review = await all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status = 'review' ORDER BY created_at ASC LIMIT 100`);
-      const convIds = review.map((r) => r.conversation_id).filter((x): x is string => Boolean(x));
-      const [convs, lastIn] = await Promise.all([conversationsById(c.db, convIds), recentMessages(c.db, convIds, 1, 'in')]);
-      for (const row of review) {
-        const conv = row.conversation_id ? convs.get(row.conversation_id) ?? null : null;
-        reviewOut.push(reviewView(row, conv, (row.conversation_id && lastIn.get(row.conversation_id)?.[0]?.body) || ''));
-      }
-    }
-    return json({ urgent: await urgentView(c.db, rows, c.now), review: reviewOut });
+    const level = (await budget(c.db, c.now)).level;
+    return json(await cachedAnswer(`urgent:${status}`, answerTtl(level), c.now, () => urgentList(c.db, status, c.now)));
   });
 
   r.post('/api/urgent/:id/answer', 'owner', async (c) => {
@@ -254,43 +343,36 @@ export function register(r: Router): void {
   r.get('/api/conversations', 'owner', async (c) => {
     const channel = c.url.searchParams.get('channel');
     const q = (c.url.searchParams.get('q') ?? '').trim().slice(0, 80);
-    const where: string[] = [];
-    const params: (string | number)[] = [];
-    if (channel && CHANNELS.includes(channel as Channel)) { where.push('cv.channel = ?'); params.push(channel); }
-    if (q) { where.push('(cv.title LIKE ? OR cv.last_preview LIKE ? OR ct.display_name LIKE ?)'); const like = `%${q.replace(/[%_]/g, '')}%`; params.push(like, like, like); }
-    const rows = await all<ConversationRow & { display_name: string; opted_out: number }>(
-      c.db,
-      `SELECT cv.*, ct.display_name, ct.opted_out FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY cv.updated_at DESC LIMIT 80`,
-      ...params,
-    );
-    return json({
-      conversations: rows.map((cv) => ({
+    const ch = channel && CHANNELS.includes(channel as Channel) ? channel : '';
+    const level = (await budget(c.db, c.now)).level;
+    const conversations = await cachedAnswer(`conversations:${ch}:${q}`, answerTtl(level), c.now, async () => {
+      const where: string[] = [];
+      const params: (string | number)[] = [];
+      if (ch) { where.push('cv.channel = ?'); params.push(ch); }
+      if (q) { where.push('(cv.title LIKE ? OR cv.last_preview LIKE ? OR ct.display_name LIKE ?)'); const like = `%${q.replace(/[%_]/g, '')}%`; params.push(like, like, like); }
+      // Only the columns the list shows, the newest 50 (conversations_updated, or conversations_channel_updated for one channel).
+      const rows = await all<Pick<ConversationRow, 'id' | 'channel' | 'title' | 'subject' | 'status' | 'last_preview' | 'last_direction' | 'updated_at' | 'paused_until'> & { display_name: string; opted_out: number }>(
+        c.db,
+        `SELECT cv.id, cv.channel, cv.title, cv.subject, cv.status, cv.last_preview, cv.last_direction, cv.updated_at, cv.paused_until, ct.display_name, ct.opted_out
+         FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
+         ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY cv.updated_at DESC LIMIT ${CONVERSATION_LIST_LIMIT}`,
+        ...params,
+      );
+      return rows.map((cv) => ({
         id: cv.id, channel: cv.channel, customer: cv.display_name || cv.title || 'Customer', subject: cv.subject, status: cv.status,
         preview: cv.last_preview, last_direction: cv.last_direction, updated_at: cv.updated_at,
-        paused: Boolean(cv.paused_until && cv.paused_until > c.now), opted_out: Boolean(cv.opted_out),
-      })),
+        paused_until: cv.paused_until, opted_out: Boolean(cv.opted_out),
+      }));
     });
+    // Paused is worked out now, not when the list was read.
+    return json({ conversations: conversations.map(({ paused_until, ...cv }) => ({ ...cv, paused: Boolean(paused_until && paused_until > c.now) })) });
   });
 
   r.get('/api/conversations/:id', 'owner', async (c) => {
-    const conv = await one<ConversationRow>(c.db, 'SELECT * FROM conversations WHERE id = ?', c.params.id!);
-    if (!conv) throw new HttpError(404, 'not_found');
-    const contact = (await one<ContactRow>(c.db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id))!;
-    const messages = await all<MessageRow>(
-      c.db, 'SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 120) ORDER BY ts ASC, created_at ASC', conv.id,
-    );
-    const pending = await all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE conversation_id = ? AND status IN ('pending', 'leased', 'review') ORDER BY created_at ASC`, conv.id);
-    return json({
-      conversation: {
-        id: conv.id, contact_id: contact.id, channel: conv.channel, customer: contact.display_name || conv.title || 'Customer', subject: conv.subject,
-        status: conv.status, paused_until: conv.paused_until && conv.paused_until > c.now ? conv.paused_until : null, pause_reason: conv.pause_reason,
-        phone: contact.phone, email: contact.email, handle: contact.handle, opted_out: Boolean(contact.opted_out),
-        tone: parseJson(contact.tone_profile, {}),
-      },
-      messages: messages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, kind: m.kind, status: m.status, ts: m.ts, media: mediaOf(m, c.now) })),
-      pending: pending.map((p) => ({ id: p.id, status: p.status, source: p.source, parts: parseJson<string[]>(p.parts, []) })),
-    });
+    const level = (await budget(c.db, c.now)).level;
+    const res = await cachedAnswer(`conversation:${c.params.id!}`, answerTtl(level), c.now, () => conversationView(c.db, c.params.id!, c.now));
+    if (!res) throw new HttpError(404, 'not_found');
+    return json(res);
   });
 
   // A photo or video frame a customer sent, for the thumbnails on the Urgent card and in the chat view.
@@ -325,21 +407,26 @@ export function register(r: Router): void {
 
   // Chats the agent is staying out of: taken over by the owner or paused, with when it may reply again.
   r.get('/api/takeovers', 'owner', async (c) => {
-    const rows = await all<ConversationRow & { display_name: string; last_in: string | null }>(
-      c.db,
-      `SELECT cv.*, ct.display_name,
-         (SELECT direction FROM messages m WHERE m.conversation_id = cv.id ORDER BY ts DESC, created_at DESC LIMIT 1) AS last_in
-       FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
-       WHERE cv.paused_until IS NOT NULL AND cv.paused_until > ? ORDER BY cv.paused_until ASC LIMIT 50`,
-      c.now,
-    );
+    const level = (await budget(c.db, c.now)).level;
+    const chats = await cachedAnswer('takeovers', answerTtl(level), c.now, async () => {
+      // Only the columns the card shows (conversations_paused index).
+      const rows = await all<Pick<ConversationRow, 'id' | 'channel' | 'title' | 'last_preview' | 'paused_until' | 'pause_reason'> & { display_name: string; last_in: string | null }>(
+        c.db,
+        `SELECT cv.id, cv.channel, cv.title, cv.last_preview, cv.paused_until, cv.pause_reason, ct.display_name,
+           (SELECT direction FROM messages m WHERE m.conversation_id = cv.id ORDER BY ts DESC, created_at DESC LIMIT 1) AS last_in
+         FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id
+         WHERE cv.paused_until IS NOT NULL AND cv.paused_until > ? ORDER BY cv.paused_until ASC LIMIT 50`,
+        c.now,
+      );
+      return rows.map((cv) => ({
+        id: cv.id, channel: cv.channel, customer: cv.display_name || cv.title || 'Customer', preview: cv.last_preview,
+        paused_until: cv.paused_until, reason: cv.pause_reason || '', customer_waiting: cv.last_in === 'in',
+      }));
+    });
+    // The time and what has ended are worked out now: the countdown on Live uses this clock.
     return json({
       now: c.now,
-      chats: rows.map((cv) => ({
-        id: cv.id, channel: cv.channel, customer: cv.display_name || cv.title || 'Customer', preview: cv.last_preview,
-        paused_until: cv.paused_until, reason: cv.pause_reason || '', until_unpaused: (cv.paused_until ?? 0) - c.now > 30 * DAY,
-        customer_waiting: cv.last_in === 'in',
-      })),
+      chats: chats.filter((cv) => (cv.paused_until ?? 0) > c.now).map((cv) => ({ ...cv, until_unpaused: (cv.paused_until ?? 0) - c.now > 30 * DAY })),
     });
   });
 
@@ -385,7 +472,10 @@ export function register(r: Router): void {
   });
 
   // ---- Devices -----------------------------------------------------------------------------------------
-  r.get('/api/devices', 'owner', async (c) => json({ devices: await currentDevice(c.db, c.now) }));
+  r.get('/api/devices', 'owner', async (c) => {
+    const level = (await budget(c.db, c.now)).level;
+    return json({ devices: await cachedAnswer('devices', answerTtl(level), c.now, () => currentDevice(c.db, c.now)) });
+  });
 
   r.post('/api/devices/pair-code', 'owner', async (c) => {
     const code = pairingCode();
@@ -400,31 +490,9 @@ export function register(r: Router): void {
 
   // ---- Health -------------------------------------------------------------------------------------------
   r.get('/api/health', 'owner', async (c) => {
-    const since = c.now - DAY;
-    const [devices, misses, failed, errors, usage, sel, mon, replies] = await Promise.all([
-      currentDevice(c.db, c.now),
-      all(c.db, `SELECT id, ts, channel, kind, data FROM diagnostics WHERE ts > ? ORDER BY id DESC LIMIT 60`, since),
-      all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status IN ('failed', 'expired') AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
-      all(c.db, `SELECT id, ts, type, channel, message FROM events WHERE level = 'error' AND ts > ? ORDER BY id DESC LIMIT 30`, since),
-      all(c.db, `SELECT provider, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, AVG(ms) AS avg_ms, SUM(ok) AS ok FROM llm_usage WHERE ts > ? GROUP BY provider, model`, since),
-      selectorPack(c.db),
-      monitorRows(c.db),
-      replyTimes(c.db, startOfLondonDay(c.now)),
-    ]);
-    return json({
-      now: c.now,
-      devices,
-      monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
-      // Rows this Worker used today, counted in the Worker itself. An estimate: see src/lib/usage.ts.
-      d1_usage: usageToday(mon.usage, c.now),
-      // Agent replies sent today (London day): average and slowest time from the customer's message to sent.
-      reply_time: replies,
-      diagnostics: misses.map((m) => ({ ...(m as object), data: parseJson((m as { data: string }).data, {}) })),
-      failed_jobs: failed.map((f) => ({ id: f.id, channel: f.channel, source: f.source, status: f.status, error: f.status === 'expired' ? `expired: not sent in time${f.last_error ? ` (${f.last_error})` : ''}` : f.last_error, created_at: f.created_at, target: parseJson<JobTarget>(f.target, emptyTarget()).title })),
-      errors,
-      llm_usage: usage,
-      selectors_version: sel.version,
-    });
+    const guard = await budget(c.db, c.now);
+    const data = await cachedAnswer('health', answerTtl(guard.level), c.now, () => healthView(c.db, c.now));
+    return json({ ...data, budget: budgetView(guard) });
   });
 
   // Selector fixes saved here reach the laptop on its next sync, no reinstall needed.

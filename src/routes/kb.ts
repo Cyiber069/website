@@ -1,11 +1,11 @@
 // Owner facing API for the Knowledge screen: documents, uploads, store sync and open questions.
-import { one } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError, bad, bool, json, notFound, oneOf, str, type Router } from '../lib/http';
 import {
   KB_CATEGORIES, MAX_UPLOAD_BYTES, answerGap, deleteDocument, dismissGap, docView, ensureSeeded, extractText, getDocument, getGaps,
-  ingestDocument, listDocuments, searchKb, syncStore, updateDocument, type KbDocRow,
+  ingestDocument, searchKb, syncStore, updateDocument, type KbDocRow,
 } from '../kb';
+import { getCorpus } from '../kb/cache';
 
 const MAX_TEXT = 1_000_000;
 
@@ -16,10 +16,11 @@ function fullDoc(d: KbDocRow) {
 export function register(r: Router): void {
   r.get('/api/kb', 'owner', async (c) => {
     await ensureSeeded(c.env);
-    // Only the start of each text is read: the list can hold hundreds of long documents.
-    const rows = await listDocuments(c.env, { contentChars: 400 });
-    const totals = await one<{ docs: number; tokens: number }>(c.db, 'SELECT COUNT(*) AS docs, COALESCE(SUM(token_estimate), 0) AS tokens FROM kb_docs WHERE enabled = 1');
-    return json({ docs: rows.map(docView), totals: { docs: totals?.docs ?? 0, tokens: totals?.tokens ?? 0 }, gaps: await getGaps(c.env) });
+    // The knowledge base in memory (src/kb/cache.ts): read from D1 once per change, not on every refresh.
+    const corpus = await getCorpus(c.env);
+    const on = corpus.docs.filter((d) => d.enabled === 1);
+    const totals = { docs: on.length, tokens: on.reduce((n, d) => n + d.token_estimate, 0) };
+    return json({ docs: corpus.docs.map(docView), totals, gaps: await getGaps(c.env) });
   });
 
   // Not in the dashboard contract: lets the owner (and the tests) see what the brain would be shown for a question.

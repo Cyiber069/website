@@ -10,12 +10,13 @@ import { logEvent } from '../lib/events';
 import { HttpError, json, ndjsonStream, oneOf, str, type Ctx, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
 import { MIN } from '../lib/time';
+import { onReset } from '../lib/cache';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
 import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
 import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
 import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
+import { SYNC_SECONDS, budget } from '../lib/budget';
 
-const POLL_SECONDS = 20;
 export const ONLINE_WINDOW_MS = 100_000;
 
 export interface ChannelStatus {
@@ -69,7 +70,7 @@ export async function selectorPack(db: D1Database): Promise<{ version: string; p
   return { version: `${BASE_VERSION}.${override?.rev ?? 0}`, pack };
 }
 
-function clientConfig(settings: Settings, selectorsVersion: string, origin: string, vision: { active: boolean; whole_videos: boolean }, legacy = false) {
+function clientConfig(settings: Settings, selectorsVersion: string, origin: string, vision: { active: boolean; whole_videos: boolean }, legacy = false, pollSeconds = SYNC_SECONDS.normal) {
   return {
     // Google AI Studio reads photos and videos: the tabs only open and send videos while it does.
     vision,
@@ -78,7 +79,8 @@ function clientConfig(settings: Settings, selectorsVersion: string, origin: stri
     // Builds before 0.4.0 have no newer_message re-read: a short settle would let them answer the
     // first of two quick messages and lose the second, so they keep the long quiet wait they had.
     pacing: { settle_seconds: legacy ? Math.max(settings.pacing.settle_seconds, LEGACY_SETTLE_SECONDS) : settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
-    poll_seconds: POLL_SECONDS,
+    // 20 s, or 60 s when the day's database use is high (src/lib/budget.ts). Every build reads it (8 to 60).
+    poll_seconds: pollSeconds,
     selectors_version: selectorsVersion,
     dashboard_url: origin,
     gmail_account: settings.gmail.account.trim().toLowerCase(),
@@ -137,6 +139,28 @@ async function visionState(db: D1Database, settings: Settings, now: number): Pro
     `SELECT (SELECT 1 FROM secrets WHERE key = ?) AS k, (${VIDEOS_TODAY_SQL}) AS n`, VISION_SECRET, londonDayStart(now), now);
   const active = Boolean(row?.k);
   return { active, whole_videos: active && Number(row?.n ?? 0) < settings.vision.video_daily_cap };
+}
+
+/** Diagnostics kept: about the newest 400 rows, trimmed every 20th insert. */
+export const DIAGNOSTICS_KEEP = 400;
+export const DIAGNOSTICS_TRIM_EVERY = 20;
+/** At most this many diagnostics of one kind from one laptop an hour (a stuck page can post one every few seconds). */
+export const DIAGNOSTICS_PER_HOUR = 30;
+const diagCounts = new Map<string, { hour: number; n: number }>();
+onReset(() => diagCounts.clear());
+
+/** Counted in this isolate: a laptop's requests nearly always reach the same one, and a missed count costs a few rows only. */
+export function diagnosticAllowed(deviceId: string, kind: string, now: number): boolean {
+  const hour = Math.floor(now / 3_600_000);
+  const key = `${deviceId}:${kind}`;
+  const c = diagCounts.get(key);
+  if (!c || c.hour !== hour) {
+    if (diagCounts.size > 200) diagCounts.clear();
+    diagCounts.set(key, { hour, n: 1 });
+    return true;
+  }
+  c.n++;
+  return c.n <= DIAGNOSTICS_PER_HOUR;
 }
 
 function requireDevice(c: Ctx): DeviceRow {
@@ -203,10 +227,10 @@ export function register(r: Router): void {
     // out, a takeover) are named so they are dropped instead of sent.
     const rawStatus = (body.status && typeof body.status === 'object' ? body.status : {}) as Record<string, unknown>;
     const held = Array.isArray(rawStatus.held) ? rawStatus.held.filter((x): x is string => typeof x === 'string' && x.length <= 40).slice(0, 40) : [];
-    const [sel, vision, cancelled] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now), droppedJobs(c.db, held)]);
+    const [sel, vision, cancelled, guard] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now), droppedJobs(c.db, held), budget(c.db, c.now)]);
     return json({
       server_time: c.now,
-      config: clientConfig(settings, sel.version, c.url.origin, vision, legacy),
+      config: clientConfig(settings, sel.version, c.url.origin, vision, legacy, SYNC_SECONDS[guard.level]),
       jobs,
       cancelled,
       selectors: body.selectors_version === sel.version ? null : sel,
@@ -260,10 +284,15 @@ export function register(r: Router): void {
     const body = await c.body<Record<string, unknown>>(120_000);
     const kind = oneOf(body.kind, 'kind', ['selector_miss', 'dom_snapshot', 'error', 'note'] as const);
     const channel = CHANNELS.includes(body.channel as Channel) ? (body.channel as Channel) : null;
+    // Answered ok either way, so no build posts it again. Not kept when this laptop already sent its
+    // share of this kind this hour, or when the day's database use is critical (only replies and sends run).
+    if (!diagnosticAllowed(device.id, kind, c.now) || (await budget(c.db, c.now)).level === 'critical') return json({ ok: true, kept: false });
     const data = JSON.stringify(body.data ?? {}).slice(0, 100_000);
-    await run(c.db, 'INSERT INTO diagnostics (ts, device_id, channel, kind, data) VALUES (?, ?, ?, ?, ?)', c.now, device.id, channel, kind, data);
-    // Keep the table small: newest 400 rows.
-    await run(c.db, 'DELETE FROM diagnostics WHERE id <= (SELECT id FROM diagnostics ORDER BY id DESC LIMIT 1 OFFSET 400)');
+    const rows = await all<{ id: number }>(c.db, 'INSERT INTO diagnostics (ts, device_id, channel, kind, data) VALUES (?, ?, ?, ?, ?) RETURNING id', c.now, device.id, channel, kind, data);
+    // Keep the table small, about the newest 400 rows: every 20th row trims by id range below the new one,
+    // which reads only the rows it deletes (it used to read 400 rows on every insert).
+    const id = Number(rows[0]?.id ?? 0);
+    if (id > DIAGNOSTICS_KEEP && id % DIAGNOSTICS_TRIM_EVERY === 0) await run(c.db, 'DELETE FROM diagnostics WHERE id <= ?', id - DIAGNOSTICS_KEEP);
     return json({ ok: true });
   });
 
@@ -272,7 +301,9 @@ export function register(r: Router): void {
 
 /** Latest live device with its parsed status, for the dashboard. */
 export async function currentDevice(db: D1Database, now: number) {
-  const rows = await all<DeviceRow>(db, 'SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY COALESCE(last_seen_at, 0) DESC LIMIT 5');
+  // Only what the dashboard shows (never the token hash), newest first.
+  const rows = await all<Pick<DeviceRow, 'id' | 'name' | 'version' | 'last_seen_at' | 'status'>>(db,
+    'SELECT id, name, version, last_seen_at, status FROM devices WHERE revoked_at IS NULL ORDER BY COALESCE(last_seen_at, 0) DESC LIMIT 5');
   return rows.map((d) => ({
     id: d.id,
     name: d.name,

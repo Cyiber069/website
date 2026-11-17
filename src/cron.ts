@@ -4,8 +4,9 @@ import { stmt } from './lib/db';
 import { MEDIA_KEEP_DAYS } from './lib/media';
 import { VISION_FILES_KEEP_MS, tidyVisionFiles } from './vision';
 import { getSettings, getState, setState } from './lib/settings';
-import { DAY } from './lib/time';
-import { watchHealth } from './pipeline/monitor';
+import { DAY, MIN } from './lib/time';
+import { SLOW_CRON_EVERY_MIN, budget } from './lib/budget';
+import { watchHealth, watchUsageOnly } from './pipeline/monitor';
 import { sweepConversations } from './pipeline/inbound';
 import { sweepOutbox } from './pipeline/outbox';
 import { syncStore } from './kb';
@@ -48,19 +49,29 @@ async function dailyStoreSync(env: Env): Promise<boolean> {
   return true;
 }
 
-export async function runCron(env: Env): Promise<void> {
+/**
+ * The daily database budget (src/lib/budget.ts) decides what runs. Normal: everything. High (70%):
+ * customer replies, sends and the checkout reminders every minute, the rest of the background work
+ * every 5th minute. Critical (90%): only customer replies and sends.
+ */
+export async function runCron(env: Env, opts: { now?: number } = {}): Promise<void> {
+  const now = opts.now ?? Date.now();
+  const { level } = await budget(env.DB, now).catch(() => ({ level: 'normal' as const }));
+  const background = level === 'normal' || (level === 'high' && Math.floor(now / MIN) % SLOW_CRON_EVERY_MIN === 0);
   await safely('outbox', () => sweepOutbox(env.DB));
   // One cron run may make 50 D1 queries and fetches on the free plan. A brain call for a chat takes
   // about 20, so the sweeper answers one chat a minute, and none in the minute a daily job runs.
   let busy = false;
-  await safely('recovery', async () => { busy = await recoveryTick(env); });
-  if (!busy) await safely('store-sync', async () => { busy = await dailyStoreSync(env); });
+  if (level !== 'critical') await safely('recovery', async () => { busy = await recoveryTick(env); });
+  if (!busy && background) await safely('store-sync', async () => { busy = await dailyStoreSync(env); });
   if (!busy) await safely('conversations', async () => { busy = (await sweepConversations(env, 1)) > 0; });
   // One follow up for warm leads, and the daily cleanup. Skipped in a minute the sweeper answered a
   // chat (that alone can be about 40 queries) or a recovery run or store sync started.
-  if (!busy) await safely('sales', () => salesTick(env));
+  if (!busy && background) await safely('sales', () => salesTick(env));
   // Customer videos Google still holds that nothing described: deleted a few at a time (a few fetches).
-  if (!busy) await safely('vision-files', () => tidyVisionFiles(env));
-  await safely('health', () => watchHealth(env));
-  if (!busy) await safely('cleanup', () => cleanup(env));
+  if (!busy && background) await safely('vision-files', () => tidyVisionFiles(env));
+  if (background) await safely('health', () => watchHealth(env));
+  // The owner hears once that the agent is slowing down, even in the minutes the health check waits.
+  else await safely('usage', () => watchUsageOnly(env));
+  if (!busy && background) await safely('cleanup', () => cleanup(env));
 }

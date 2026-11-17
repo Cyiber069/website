@@ -1,5 +1,6 @@
 import type { Settings } from '../types';
-import { all, one, run } from './db';
+import { all, one, run, stmt } from './db';
+import { onReset } from './cache';
 
 /**
  * Version of the pacing group. Version 1 rows (no `schema` key) hold the old slow values (wait 12 s
@@ -161,13 +162,46 @@ export function migratePacing(raw: unknown, value: Settings['pacing']): boolean 
   return true;
 }
 
-let cache: { at: number; value: Settings } | null = null;
-const CACHE_MS = 5_000;
+/**
+ * State rows read in the same query as the settings groups, so knowing them costs no extra query:
+ * today's database use (the budget guard, src/lib/budget.ts), the knowledge version (src/kb/cache.ts)
+ * and the settings revision (below).
+ */
+const BUNDLED_STATE = ['d1_usage', 'kb_version', 'settings_rev'] as const;
+export type BundledState = (typeof BUNDLED_STATE)[number];
 
-export async function getSettings(db: D1Database, fresh = false): Promise<Settings> {
-  if (!fresh && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
-  // Only the group rows (by primary key), not the state:* rows that share the table.
-  const rows = await all<{ key: string; value: string }>(db, `SELECT key, value FROM settings WHERE key IN (${GROUPS.map(() => '?').join(', ')})`, ...GROUPS);
+interface Bundle { at: number; value: Settings; state: Partial<Record<BundledState, unknown>>; rev: number }
+
+/**
+ * One read of the settings per isolate every 30 s: it was the most read table (once a request). A change
+ * made here empties it at once. A change made through another isolate is seen within 30 s, or sooner:
+ * every signed in request reads the revision with its session or device row (src/lib/auth.ts) and a
+ * newer one empties the cache before the request reads the settings.
+ */
+export const SETTINGS_CACHE_MS = 30_000;
+let cache: Bundle | null = null;
+let loading: Promise<Bundle> | null = null;
+let newestRev = 0;
+onReset(() => { cache = null; loading = null; newestRev = 0; }, 'settings');
+
+const asNumber = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+/** The settings revision a request saw (a JSON number in state:settings_rev). Newer than the cache: it is dropped. */
+export function noteSettingsRev(raw: unknown): void {
+  const n = asNumber(typeof raw === 'string' ? raw.replace(/"/g, '') : raw);
+  if (n > newestRev) newestRev = n;
+}
+
+/** Forget the cached settings in this isolate (the next read goes to D1). */
+export function invalidateSettings(): void {
+  cache = null;
+  loading = null;
+}
+
+async function loadBundle(db: D1Database): Promise<Bundle> {
+  // Only the group rows and the bundled state rows, by primary key: never the whole table.
+  const keys = [...GROUPS, ...BUNDLED_STATE.map((k) => `state:${k}`)];
+  const rows = await all<{ key: string; value: string }>(db, `SELECT key, value FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`, ...keys);
   const stored: Record<string, unknown> = {};
   for (const r of rows) {
     try { stored[r.key] = JSON.parse(r.value); } catch { /* ignore a corrupt row, defaults apply */ }
@@ -179,8 +213,36 @@ export async function getSettings(db: D1Database, fresh = false): Promise<Settin
     // Saved straight away so it happens once. If the write fails the same values are used and it is tried again.
     await run(db, 'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', JSON.stringify(pacing), Date.now(), 'pacing').catch((err) => console.error('pacing upgrade not saved', err));
   }
-  cache = { at: Date.now(), value: value as unknown as Settings };
-  return cache.value;
+  const state: Bundle['state'] = {};
+  for (const k of BUNDLED_STATE) if (`state:${k}` in stored) state[k] = stored[`state:${k}`];
+  const rev = asNumber(state.settings_rev);
+  if (rev > newestRev) newestRev = rev;
+  return { at: Date.now(), value: value as unknown as Settings, state, rev };
+}
+
+async function bundle(db: D1Database, fresh = false): Promise<Bundle> {
+  const now = Date.now();
+  if (!fresh && cache && now - cache.at < SETTINGS_CACHE_MS && now >= cache.at && cache.rev >= newestRev) return cache;
+  if (!fresh && loading) return loading;
+  const p = loadBundle(db);
+  if (!fresh) loading = p;
+  try {
+    const b = await p;
+    cache = b;
+    return b;
+  } finally {
+    if (loading === p) loading = null;
+  }
+}
+
+export async function getSettings(db: D1Database, fresh = false): Promise<Settings> {
+  return (await bundle(db, fresh)).value;
+}
+
+/** A state row that comes with the settings read (no extra query, up to 30 s old). */
+export async function cachedState<T>(db: D1Database, key: BundledState, fallback: T): Promise<T> {
+  const b = await bundle(db);
+  return key in b.state ? (b.state[key] as T) : fallback;
 }
 
 /** Shallow-merge a patch into one settings group and persist it. Unknown keys are dropped. */
@@ -188,12 +250,17 @@ export async function patchSettings<G extends Group>(db: D1Database, group: G, p
   const current = (await getSettings(db, true))[group];
   const next = upgrade(group, mergeKnown(DEFAULT_SETTINGS[group], { ...(current as object), ...(patch as object) }));
   if (group === 'pacing') (next as Settings['pacing']).schema = PACING_SCHEMA; // never set back by a client
-  await run(
-    db,
-    'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-    group, JSON.stringify(next), Date.now(),
-  );
-  cache = null;
+  const now = Date.now();
+  const rev = Math.max(now, newestRev + 1);
+  // The new revision goes in the same round trip: other isolates drop their cached settings on their next signed in request.
+  await db.batch([
+    stmt(db, 'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
+      group, JSON.stringify(next), now),
+    stmt(db, `INSERT INTO settings (key, value, updated_at) VALUES ('state:settings_rev', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      JSON.stringify(rev), now),
+  ]);
+  invalidateSettings();
+  newestRev = rev;
   return next;
 }
 

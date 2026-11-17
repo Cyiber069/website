@@ -8,6 +8,7 @@ import { logEvent } from '../lib/events';
 import { getSettings, setState } from '../lib/settings';
 import { HOUR, MIN } from '../lib/time';
 import { usageToday, type D1Usage } from '../lib/usage';
+import { HIGH_PCT } from '../lib/budget';
 import { ONLINE_WINDOW_MS, type ChannelStatus, type DeviceStatus } from '../routes/agent';
 import { alertOwner } from './alerts';
 
@@ -15,7 +16,6 @@ import { alertOwner } from './alerts';
 export const CHANNEL_DOWN_MS = 10 * MIN;
 /** A customer message nobody is working on after this long means the brain is failing quietly. */
 export const STUCK_MS = 15 * MIN;
-const USAGE_ALERT_PCT = 70;
 
 export interface ChannelProblem { since: number; alerted: boolean; reason: string }
 
@@ -140,21 +140,34 @@ async function watchAi(env: Env, settings: Settings, m: MonitorState, now: numbe
   }
 }
 
+/** Owner copy for the budget guard (src/lib/budget.ts): it starts at the same 70%. */
+export const USAGE_ALERT_BODY = 'The agent is slowing down background work so it keeps replying.';
+
 async function watchUsage(env: Env, settings: Settings, stored: D1Usage | null, m: MonitorState, now: number): Promise<void> {
   const u = usageToday(stored, now);
   if (m.usage_alert_day === u.day) return;
   const pct = Math.max(u.read_pct, u.write_pct);
-  if (pct < USAGE_ALERT_PCT) return;
+  if (pct < HIGH_PCT) return;
   const what = u.read_pct >= u.write_pct ? 'reads' : 'writes';
   const sent = await alertOwner(env, settings, {
     kind: 'usage',
     title: 'Database use is high today',
-    body: `About ${Math.round(pct)}% of today's free database ${what} are used (estimate). If it reaches 100% the agent stops until the count resets at midnight UTC.`,
+    body: USAGE_ALERT_BODY,
     path: '/#/health',
   });
   if (!sent) return;
   m.usage_alert_day = u.day;
-  await logEvent(env.DB, { level: 'warn', type: 'usage_high', message: `About ${Math.round(pct)}% of today's free database ${what} are used. This is an estimate.` });
+  await logEvent(env.DB, { level: 'warn', type: 'usage_high', message: `Database use is high today. About ${Math.round(pct)}% of the free daily ${what} are used. This is an estimate. ${USAGE_ALERT_BODY}` });
+}
+
+/** Only the database use alert: the minutes the rest of the health check waits for (src/cron.ts). A few rows. */
+export async function watchUsageOnly(env: Env, now = Date.now()): Promise<void> {
+  const settings = await getSettings(env.DB);
+  const { monitor, usage } = await monitorRows(env.DB);
+  const m: MonitorState = JSON.parse(JSON.stringify(monitor));
+  const before = JSON.stringify(m);
+  await watchUsage(env, settings, usage, m, now);
+  if (JSON.stringify(m) !== before) await setState(env.DB, 'monitor', m);
 }
 
 async function watchOffline(env: Env, settings: Settings, d: Pick<DeviceRow, 'name' | 'last_seen_at'>, alerted: boolean, now: number): Promise<void> {

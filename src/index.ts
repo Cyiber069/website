@@ -5,6 +5,7 @@ import { ensureSchema } from './lib/schema';
 import { buildRouter } from './routes';
 import type { Env } from './types';
 import { flushUsage, meteredDb } from './lib/usage';
+import { bumpDashboard } from './lib/cache';
 
 const router = buildRouter();
 
@@ -103,8 +104,11 @@ export default {
     const counters = { fetches: 0, videos: 0 };
     try {
       await ensureSchema(env.DB);
-      // Every request counts the D1 rows it uses for the Health screen's estimate (src/lib/usage.ts).
-      const metered = meteredDb(env.DB);
+      // Every request counts the D1 rows it uses for the Health screen's estimate and the budget guard
+      // (src/lib/usage.ts, src/lib/budget.ts), and any write makes the cached dashboard answers stale.
+      // The tests' own SQL and cache helpers (test mode only) are left out of the estimate.
+      const helper = env.ACX_TEST_MODE === '1' && (url.pathname === '/api/test/sql' || url.pathname === '/api/test/bust');
+      const metered = helper ? env.DB : meteredDb(env.DB, bumpDashboard);
       const e: Env = { ...env, DB: env.ACX_TEST_MODE === '1' ? countingDb(metered, queries) : metered, counters, waitUntil: (p) => exec.waitUntil(p.catch(() => undefined)) };
       res = await handleApi(req, e, exec, url);
       exec.waitUntil(flushUsage(env.DB));
@@ -135,7 +139,7 @@ export default {
   },
 
   async scheduled(_event: ScheduledController, env: Env, exec: ExecutionContext): Promise<void> {
-    const e: Env = { ...env, DB: meteredDb(env.DB), counters: { fetches: 0, videos: 0 }, waitUntil: (p) => exec.waitUntil(p.catch(() => undefined)) };
+    const e: Env = { ...env, DB: meteredDb(env.DB, bumpDashboard), counters: { fetches: 0, videos: 0 }, waitUntil: (p) => exec.waitUntil(p.catch(() => undefined)) };
     exec.waitUntil(ensureSchema(env.DB).then(() => runCron(e)).finally(() => flushUsage(env.DB)));
   },
 } satisfies ExportedHandler<Env>;

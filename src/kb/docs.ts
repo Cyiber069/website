@@ -3,6 +3,7 @@
 import type { Env } from '../types';
 import { all, clip, estimateTokens, one, stmt, uid } from '../lib/db';
 import { chunkMarkdown } from './chunk';
+import { kbChanged, kbVersionStatement } from './cache';
 
 export const KB_CATEGORIES = ['products', 'policies', 'shipping', 'faq', 'learned', 'general'] as const;
 export type KbCategory = (typeof KB_CATEGORIES)[number];
@@ -112,7 +113,8 @@ export async function ingestDocument(env: Env, input: IngestInput): Promise<KbDo
   const db = env.DB;
   const existing = input.id ? await one<KbDocRow>(db, 'SELECT * FROM kb_docs WHERE id = ?', input.id) : null;
   const row = buildRow(input, existing, Date.now());
-  await db.batch(rowStatements(db, row));
+  // The version goes up in the same batch, so every isolate's copy in memory is refreshed (src/kb/cache.ts).
+  try { await db.batch([...rowStatements(db, row), kbVersionStatement(db)]); } finally { kbChanged(); }
   return row;
 }
 
@@ -131,14 +133,14 @@ export async function ingestBulk(env: Env, items: { input: IngestInput; existing
     const list = rowStatements(db, row);
     // Keep each batch modest: a document's statements stay together, about 400 KB of text at most.
     if (batch.length && (batch.length + list.length > 60 || size + row.content.length * 2 > 400_000)) {
-      await db.batch(batch);
+      await db.batch([...batch, kbVersionStatement(db)]).finally(kbChanged);
       batch = [];
       size = 0;
     }
     batch.push(...list);
     size += row.content.length * 2;
   }
-  if (batch.length) await db.batch(batch);
+  if (batch.length) await db.batch([...batch, kbVersionStatement(db)]).finally(kbChanged);
   return rows;
 }
 
@@ -164,7 +166,10 @@ export async function updateDocument(env: Env, id: string, patch: DocPatch): Pro
     pinned: patch.pinned !== undefined ? (patch.pinned ? 1 : 0) : existing.pinned,
   };
   const now = Date.now();
-  await stmt(db, 'UPDATE kb_docs SET category = ?, enabled = ?, pinned = ?, updated_at = ? WHERE id = ?', next.category, next.enabled, next.pinned, now, id).run();
+  await db.batch([
+    stmt(db, 'UPDATE kb_docs SET category = ?, enabled = ?, pinned = ?, updated_at = ? WHERE id = ?', next.category, next.enabled, next.pinned, now, id),
+    kbVersionStatement(db),
+  ]).finally(kbChanged);
   return { ...existing, ...next, updated_at: now };
 }
 
@@ -174,7 +179,8 @@ export async function deleteDocument(env: Env, id: string): Promise<boolean> {
     stmt(db, 'DELETE FROM kb_fts WHERE rowid IN (SELECT id FROM kb_chunks WHERE doc_id = ?)', id),
     stmt(db, 'DELETE FROM kb_chunks WHERE doc_id = ?', id),
     stmt(db, 'DELETE FROM kb_docs WHERE id = ?', id),
-  ]);
+    kbVersionStatement(db),
+  ]).finally(kbChanged);
   return (res[2]?.meta?.changes ?? 0) > 0;
 }
 

@@ -3,7 +3,7 @@ export const BASE = () => process.env.ACX_TEST_URL!;
 
 type As = 'owner' | 'device' | 'public';
 
-export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; as?: As; headers?: Record<string, string> } = {}): Promise<{ status: number; data: T; queries: number }> {
+export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; as?: As; headers?: Record<string, string> } = {}): Promise<{ status: number; data: T; queries: number; rows: number; written: number }> {
   const as = opts.as ?? 'owner';
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
   if (opts.body !== undefined) headers['content-type'] = 'application/json';
@@ -13,12 +13,16 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
   const text = await res.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  // D1 queries the request made (test mode header). The free plan allows 50 per request.
-  return { status: res.status, data, queries: Number(res.headers.get('x-acx-d1-queries') ?? 0) };
+  // D1 queries the request made (test mode header). The free plan allows 50 per request. Rows read and
+  // written too: the free plan allows 5 million and 100,000 a day.
+  return {
+    status: res.status, data, queries: Number(res.headers.get('x-acx-d1-queries') ?? 0),
+    rows: Number(res.headers.get('x-acx-d1-rows') ?? 0), written: Number(res.headers.get('x-acx-d1-rows-written') ?? 0),
+  };
 }
 
 export interface Job { id: string; channel: string; kind: string; source: string; parts: string[]; target: Record<string, string | null>; pacing: { delay_ms: number; typing_cps: number } }
-export interface Outcome { type: 'decision'; conversation_id: string | null; action: string; reason: string; jobs: Job[]; new_inbound: number; queries?: number; fetches?: number }
+export interface Outcome { type: 'decision'; conversation_id: string | null; action: string; reason: string; jobs: Job[]; new_inbound: number; queries?: number; fetches?: number; rows?: number; written?: number; final?: boolean; retry_after_ms?: number | null; jobs_pending?: boolean }
 
 let seq = 0;
 export const unique = (prefix: string) => `${prefix}${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -43,7 +47,7 @@ export async function inbound(channel: string, threadId: string, messages: Msg[]
   // D1 queries the whole request made (test mode adds this last line).
   // Calls to Google AI Studio it made (src/vision counts them: at most 20 of the 50 subrequests allowed).
   const tail = lines.find((l) => l.type === 'queries');
-  return { ...decision, queries: tail?.n, fetches: tail?.fetches } as Outcome;
+  return { ...decision, queries: tail?.n, fetches: tail?.fetches, rows: tail?.rows, written: tail?.written } as Outcome;
 }
 
 export const sync = (channels: string[] = ['whatsapp', 'gmail', 'tiktok']) =>

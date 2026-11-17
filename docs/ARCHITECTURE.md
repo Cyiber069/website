@@ -36,7 +36,7 @@ This file is the contract between the parts. Keep it true when you change code.
 | `migrations/` | D1 schema | add new numbered files, never edit applied ones |
 | `src/index.ts` | entry: API router, static assets, cron | |
 | `src/types.ts` | shared types | the brain / pipeline contract lives here |
-| `src/lib/` | http router, db helpers, auth, crypto, settings, time, events, push | |
+| `src/lib/` | http router, db helpers, auth, crypto, settings, time, events, push, in-isolate caches (`cache.ts`), the daily database budget guard (`budget.ts`) | |
 | `src/pipeline/` | inbound (store + decide + queue), outbox, urgent, alerts | the spine |
 | `src/brain/` | tone profile, style sanitizer, prompts, LLM providers | exports via `src/brain/index.ts` |
 | `src/kb/` | knowledge base: extract, chunk, search, store sync | exports via `src/kb/index.ts` |
@@ -63,7 +63,56 @@ use over 70% of a free daily limit (`usage_high`, once a UTC day). State lives i
 
 D1 usage meter (`src/lib/usage.ts`): env.DB is wrapped to sum `meta.rows_read` / `rows_written` of all(),
 run() and batch() (first() is not counted; `one()` in db.ts uses all()). Flushed to `state:d1_usage` at most
-every 5 min per isolate. An estimate: `usage` on overview, `d1_usage` on health.
+every 5 min per isolate. An estimate: `usage` on overview, `d1_usage` on health. The same wrapper calls
+`bumpDashboard()` after any statement that wrote a row (see "D1 rows a day" below). The tests' own
+`/api/test/sql` and `/api/test/bust` are not counted.
+
+### D1 rows a day (free plan: 5 million read, 100,000 written, reset at 00:00 UTC)
+
+On 2026-11-17 the read limit ran out at 19:18 UTC and every call failed until midnight. What keeps a busy day
+(300 customer messages, Live open all day) at about 450,000 rows read and 25,000 written, measured with the
+test mode headers:
+
+* In-isolate caches (`src/lib/cache.ts`), each with a short life because every isolate has its own copy:
+  * Settings: one read per isolate every 30 s (`SETTINGS_CACHE_MS`), dropped at once by `patchSettings` in the same
+    isolate. `patchSettings` also writes `state:settings_rev` in the same batch; every signed in request reads it with
+    its session or device row (`src/lib/auth.ts`, one row more, no extra query) and a newer one drops the cache, so
+    the agent switch is seen by the next sync wherever it was changed. The settings query also brings
+    `state:d1_usage` and `state:kb_version` (`cachedState`). No code reads the whole settings table
+    (`test/unit/d1-diet.test.ts` checks it; the unfiltered read in the live list came from the server before 98c4aee).
+  * Dashboard answers (`cachedAnswer`): overview, events, takeovers, the Inbox list and thread, Urgent, devices, Health,
+    20 s (60 s when the budget level is not normal). Any D1 write in the isolate starts a new generation, so an owner
+    action, a new message or a sync that changed the laptop's status shows at once. Takeovers and the Inbox list work out
+    what has ended with the request's own clock. Health's AI usage summary is kept 5 min.
+  * Today's numbers on Live and Health (`src/pipeline/today.ts`): counted once per isolate and London day, then only the
+    rows since the last look, with a 2 minute overlap; rows are kept by id so nothing counts twice.
+  * Knowledge (`src/kb/cache.ts`): the documents and chunks with their text, loaded once per `state:kb_version` (every
+    knowledge write adds one in the same batch, `kbVersionStatement`) or after 30 min; search results for the same
+    words 5 min. The full text index only ranks: `rank MATCH 'bm25(6.0, 3.0, 1.0)' ORDER BY rank LIMIT n` reads about one
+    row per result and gives the same order as `bm25(kb_fts, 6.0, 3.0, 1.0)`; it fetches as many more as there are
+    chunks of disabled (or, when left out, pinned) documents. A knowledge row changed by hand in D1 should add one to
+    `state:kb_version`.
+* Diagnostics: the insert returns its id and every 20th insert deletes by id range below the newest 400 (it used to read
+  400 rows each time). At most 30 of one kind from one laptop an hour (counted per isolate); the rest answer
+  `{ ok: true, kept: false }`.
+* A chat posted again with nothing new (`quickRepeat` in `src/pipeline/inbound.ts`): one query answers it before the
+  history or the knowledge are read (section 5).
+* A chat whose brain keeps failing waits longer each time (`conversations.brain_fails`, `brainBackoffMs`).
+* Indexes from `migrations/0012_d1_diet.sql`: `conversations (channel, updated_at DESC)` for the Inbox list of one
+  channel, `recovery_runs (started_at DESC)` for the last run on Live.
+* The dashboard refreshes every 30 s while visible and focused, every 2 min while visible behind another window, never
+  while hidden, and not after 5 min with no click, key, touch, wheel or mouse move; it refreshes at once on focus or
+  activity (`public/js/app.js`). A refresh that repaints or scrolls the page is not activity.
+
+Budget guard (`src/lib/budget.ts`), from the usage estimate (the stored count plus this isolate's own rows):
+
+| Level | From | What changes |
+|---|---|---|
+| normal | | everything as usual |
+| high | 70% of the reads or the writes | sync `poll_seconds` 60; overview and health say `budget { level, poll_seconds: 120 }` and the dashboard refreshes every 2 min; cron runs the store sync, sales follow ups, old video tidy, health check and cleanup only in every 5th minute; the owner gets one alert a UTC day, "Database use is high today. The agent is slowing down background work so it keeps replying." |
+| critical | 90% | only customer replies and sends: cron runs the outbox sweep and the conversation sweeper (and the usage alert check); no checkout reminder run, no background work; diagnostics are not kept |
+
+The level follows the UTC day of the count, so it is normal again at 00:00 UTC.
 
 ## 3. Data model
 
@@ -73,6 +122,7 @@ See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Ke
 `diagnostics`, `llm_usage`, `sales_conversions` (one row per order matched to a chat, `migrations/0006_sales.sql`, which also adds the `sales_*`, `followup_*`, `interested_at`, `ready_at`, `bought_at` and `order_*` columns of `conversations`), `discount_codes` (`made_by` owner | agent, `migrations/0004_agent_discounts.sql`).
 `urgent.discount_id` links a code request to its draft, `urgent.owner_note` holds the owner's note when they told the agent what is going on.
 `outbox.reply_to_id` / `outbox.reply_to_ts` and `conversations.retry_at` (`migrations/0008_reply_speed.sql`): the customer message an agent reply answers and when it arrived (the page time, a minute label read as half way through the minute, never later than first seen), and when the sweeper may try a chat again after a failed brain call.
+`conversations.brain_fails` and `conversations.report_key` (`migrations/0012_d1_diet.sql`): brain calls that failed in a row for the chat (the next try waits longer each time), and a hash of the message ids of the last report stored (the same report again is answered from the chat row).
 `outbox.busy_since` / `outbox.busy_warned` (`migrations/0010_send_waits.sql`): when the owner typing or a draft first held a job up, and whether the owner was told (see job results below).
 `media` (`migrations/0007_media.sql`): one photo or video frame per customer message, base64 in `data` (at most 260,000 characters), `kind` `image` | `video_frame`, `mime` read from the bytes. The message row remembers its picture in `messages.meta` (`{ "media": "md_x", "media_kind": "image" }`), so list queries never touch the table and never select `data`. Rows older than 14 days are deleted by the daily cleanup.
 `migrations/0009_vision.sql` adds to `media`: `description` (what Google AI Studio saw, plain text, at most 900 characters), `vision` (small JSON: `model`, `via` `image` | `frames` | `video` | `cover`, `unclear`, `problem` `none` | `damage` | `fault` | `safety`, `ms`, `tries`, `error`, `shared`, `seconds`) and `video_ref`; the message meta gets `media_desc` (the description, 600 characters) once it is written. Table `vision_files`: one row per video the laptop uploaded (`file_name`, `file_uri` at Google, `mime`, `bytes`, `seconds`, `channel`, `device_id`, `created_at`, and from `0011_waits_and_videos.sql` `video_key` and `gone_at`), kept 2 days; today's count of distinct videos (London day) is the video cap. Video bytes are never stored in D1.
@@ -116,7 +166,7 @@ Errors are `{ "error": "<code>", "message": "<human text>" }` with a 4xx/5xx sta
 // response
 { "server_time": 0,
   "config": { "enabled": true, "channels": { "whatsapp": { "mode": "auto" } },
-              "pacing": { "settle_seconds": 4, "typing_cps": 11 }, "poll_seconds": 20,
+              "pacing": { "settle_seconds": 4, "typing_cps": 11 }, "poll_seconds": 20,   // 60 when the day's database use is high
               "selectors_version": "1.0", "dashboard_url": "https://...",
               "vision": { "active": true, "whole_videos": true } },   // Google AI Studio on; whole videos may still go today
   "jobs": [ AgentJob ],            // up to 3 due jobs per ready channel, most urgent first (urgent and
@@ -166,6 +216,15 @@ side and the jobs arrive on the next sync.
   handed over, or a reply for this chat is due in the queue). Sync now.
 * A reply already leased to this laptop for the chat (the answer that carried it was cut on the way) is handed back in
   `jobs` when the chat is posted again with nothing new (`reply_queued` or `nothing_new`, `reofferOwn`). 0.4.0 and up only.
+* Posted again with nothing new (every message has an `external_id` already stored in the chat, the title, name and
+  preview are unchanged, no pictures, no `refused_job_ids`, not `just_accepted`): answered from one query
+  (`quickRepeat`), before the history or the knowledge are read. `conversations.report_key` (a hash of the last stored
+  report's ids) spares the message lookups when the report is exactly the same again. The answer is `nothing_new`, or
+  `already_processing` while another run holds a waiting chat, or `brain_error` (`final: false`) while a waiting chat
+  whose brain failed twice or more in a row waits for its next try. Anything else takes the full path.
+* A brain error in a row for the same chat (`conversations.brain_fails`, reset by an answer) waits longer each time:
+  the model's own time after the first (as before), then 30 s, 2 min and 5 min (`retry_at`, also for the sweeper,
+  which waits at least 5 min). A new customer message is always tried at once.
 * Jobs are only leased inline while the extension is still connected (`ndjsonStream` `isOpen()`: false once
   a write fails or the reader goes away). If the decision line itself cannot be written, its leases are
   released (`releaseLeases`, no try counted) so the next sync hands them over.
@@ -267,13 +326,14 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_
   replies after a quick failure (`timeout`, `no_content_script`, `tab_missing`, `send_not_confirmed`,
   `thread_not_found`, `composer_missing`, `send_not_synced`: TikTok did not take the pasted text), otherwise `attempts x 60 s`.
 
-`POST /api/agent/diagnostics` `{ "channel", "kind": "selector_miss" | "dom_snapshot" | "error" | "note", "data": {} }`.
+`POST /api/agent/diagnostics` `{ "channel", "kind": "selector_miss" | "dom_snapshot" | "error" | "note", "data": {} }` -> `{ ok: true }`, or
+`{ ok: true, kept: false }` when that laptop already sent 30 of that kind this hour or the day's database use is critical.
 `GET /api/agent/selectors` returns `{ version, pack }`.
 
 ### Dashboard (`owner`) implemented in `src/routes/dashboard.ts`
 
 `GET /api/session` (public), `POST /api/setup`, `POST /api/login`, `POST /api/logout`, `POST /api/password`,
-`GET /api/overview` (with `reply_time`, see below), `GET /api/events?after=&limit=`, `POST /api/agent-toggle {enabled}`, `POST /api/panic`,
+`GET /api/overview` (with `reply_time`, see below, and `budget { level: normal | high | critical, poll_seconds, read_pct, write_pct }`), `GET /api/events?after=&limit=`, `POST /api/agent-toggle {enabled}`, `POST /api/panic`,
 `GET /api/urgent?status=open|done` (returns `urgent[]` and `review[]`),
 `POST /api/urgent/:id/answer {answer, learn}`, `POST /api/urgent/:id/note {note, remember}` (section 6), `POST /api/urgent/:id/send-draft {text?}`,
 `POST /api/urgent/:id/dismiss`, `POST /api/review/:id/approve {text?}`, `POST /api/review/:id/reject`,
@@ -432,8 +492,9 @@ Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook
    marks the day last).
 7. An escalation opens an Urgent item only when the chat has no open one (one conditional insert), so two overlapping runs
    never send two holding lines or alert twice. Answering on Urgent cancels a one part holding line that has not gone out.
-   A chat whose brain call failed there waits 5 min (`retry_at`) so it never holds up the chats behind it; the health
-   check still counts it as waiting.
+   A chat whose brain call failed there waits 5 min or more (`retry_at`, `brainBackoffMs`) so it never holds up the chats
+   behind it; the health check still counts it as waiting. From 70% of the day's database budget the background work
+   waits for every 5th minute, from 90% only the outbox sweep and this sweeper run (`src/lib/budget.ts`).
 
 Urgent: `answerUrgent` calls `brain.polishOwnerAnswer` (owner's rough words to a customer ready reply
 in the customer's tone), queues it, and stores a reusable fact through `kb.addLearnedFact`.
@@ -558,7 +619,11 @@ conversations with a context note about the checkout.
 * Cloudflare D1 database: `acx-agent` (id in `wrangler.jsonc`). Query it with the Cloudflare D1 tools.
 * Teach or change the recovery message: update the `recovery` row in `settings` (`template.text`,
   `template.approved`) or use the dashboard Recovery screen.
-* Add knowledge: insert through the dashboard, or `kb_docs` + `kb_chunks` rows.
+* Add knowledge: insert through the dashboard, or `kb_docs` + `kb_chunks` + `kb_fts` rows, then add one to
+  `state:kb_version` (`UPDATE settings SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'state:kb_version'`)
+  so the Worker's copy in memory is read again.
+* Database use is high: `state:d1_usage` holds today's estimate (UTC day). From 70% the agent slows down background work
+  on its own (section 2, "D1 rows a day"); D1 Insights shows which queries read the most.
 * A channel's photos are not being read: look for `note` rows in `diagnostics` with `media_capture` (extension) or `media_rejected` (server), then fix the `media.*` selectors of that channel like any other selector.
 * Photos or videos are not being described: `note` rows with `vision_error` (Google said no: the code and message), `video_capture` (the tab could not get the file, for example `no_viewer`, `no_video_in_viewer`, `viewer_still_open`) or `video_upload` (the worker could not send it, for example `daily_cap`). `media.vision` holds the last error per picture. Test the key on the Connections screen.
 * Fix a broken selector: `PUT /api/selectors` or the `state:selectors_override` settings row, shape

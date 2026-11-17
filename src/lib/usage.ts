@@ -28,8 +28,13 @@ function add(meta: { rows_read?: number; rows_written?: number } | undefined, no
   pending.written += Number(meta.rows_written) || 0;
 }
 
-/** env.DB with a light counter on it. No logging, almost no cost. */
-export function meteredDb(db: D1Database): D1Database {
+const wrote = (meta: { rows_written?: number; changes?: number } | undefined) => Boolean(meta && ((Number(meta.rows_written) || 0) > 0 || (Number(meta.changes) || 0) > 0));
+
+/**
+ * env.DB with a light counter on it. No logging, almost no cost. `onWrite` runs after every statement
+ * that wrote a row: the dashboard answers cached in this isolate (src/lib/cache.ts) are then out of date.
+ */
+export function meteredDb(db: D1Database, onWrite?: () => void): D1Database {
   const real = new WeakMap<object, D1PreparedStatement>();
   const wrap = (st: D1PreparedStatement): D1PreparedStatement => {
     const proxy = new Proxy(st, {
@@ -39,6 +44,7 @@ export function meteredDb(db: D1Database): D1Database {
           return async (...args: unknown[]) => {
             const out = await (target[key] as (...a: unknown[]) => Promise<D1Result>).apply(target, args);
             add(out?.meta);
+            if (onWrite && wrote(out?.meta)) onWrite();
             return out;
           };
         }
@@ -56,6 +62,7 @@ export function meteredDb(db: D1Database): D1Database {
       if (key === 'batch') return async (list: D1PreparedStatement[]) => {
         const rs = await target.batch(list.map((s) => real.get(s) ?? s));
         for (const r of rs) add(r?.meta);
+        if (onWrite && rs.some((r) => wrote(r?.meta))) onWrite();
         return rs;
       };
       const v = Reflect.get(target, key, target);
