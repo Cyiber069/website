@@ -1,8 +1,8 @@
 {
-  "version": 2,
+  "version": 3,
   "_meta": {
     "pack": "whatsapp-web",
-    "built": "2026-11-14",
+    "built": "2026-11-17",
     "note": "Each key is an ordered list of fallbacks: first match wins. Entries are a CSS selector string or {s, attr, closest}. Keys under text and icons are regular expression sources (case insensitive) and are the only language dependent part."
   },
   "typing": { "order": ["paste", "exec", "beforeinput"] },
@@ -19,16 +19,17 @@
   },
   "chatList": {
     "scroller": ["#pane-side"],
-    "grid": ["#pane-side [role=\"grid\"]", "[data-testid=\"chat-list\"]", "[aria-label=\"Chat list\"][role=\"grid\"]"],
-    "row": ["div[role=\"row\"]", "[data-testid^=\"list-item-\"]"],
+    "grid": ["#pane-side [role=\"grid\"]", "[data-testid=\"chat-list\"]", "[aria-label=\"Chat list\"][role=\"grid\"]", "#pane-side [role=\"list\"]"],
+    "row": ["div[role=\"row\"]", "[data-testid^=\"list-item-\"]", "div[role=\"listitem\"]"],
     "rowActivator": [":scope > [role=\"gridcell\"] > [tabindex][aria-selected]", ":scope > [role=\"gridcell\"] > [tabindex]", "[data-testid=\"cell-frame-container\"]"],
     "rowSelected": ["[aria-selected=\"true\"]"],
     "rowTitle": [{ "s": "[data-testid=\"cell-frame-title\"] [title]", "attr": "title" }, { "s": "span[title]", "attr": "title" }],
     "rowTime": ["[data-testid=\"cell-frame-primary-detail\"]"],
-    "rowPreview": ["[data-testid=\"cell-frame-secondary\"]"],
-    "rowLastMine": ["[data-testid=\"last-msg-status\"]"],
-    "unreadBadge": ["[data-testid=\"icon-unread-count\"]", "[data-testid=\"icon-unread\"]", "span[aria-label*=\"unread\" i]", "span[aria-label*=\"no leído\" i]", "span[aria-label*=\"no leídos\" i]"],
-    "searchInput": ["#side input[type=\"text\"][role=\"textbox\"]", "#side [data-testid=\"chat-list-search-container\"] input", "#side div[contenteditable=\"true\"][data-tab=\"3\"]"],
+    "rowPreview": ["[data-testid=\"cell-frame-secondary\"]", "[data-testid=\"last-msg-status\"]"],
+    "rowLastMine": ["[data-testid=\"last-msg-status\"] svg:not([data-testid=\"chat-msg-symbol\"] svg)", "[data-testid=\"last-msg-status\"] [data-icon]:not([data-testid=\"chat-msg-symbol\"] [data-icon])"],
+    "rowMediaSymbol": ["[data-testid=\"chat-msg-symbol\"]"],
+    "unreadBadge": ["[data-testid=\"icon-unread-count\"]", "[data-testid=\"icon-unread\"]", "span[aria-label*=\"unread\" i]", "span[aria-label*=\"no leído\" i]", "span[aria-label*=\"no leídos\" i]", "[aria-label*=\"unread\" i]", "[aria-label*=\"no leído\" i]"],
+    "searchInput": ["#side input[type=\"text\"][role=\"textbox\"]", "#side [data-testid=\"chat-list-search-container\"] input", "#side div[contenteditable=\"true\"][data-tab=\"3\"]", "#side input[data-tab=\"3\"]", "#side input[role=\"textbox\"]"],
     "filterTab": ["#side button[role=\"tab\"]"],
     "filterAll": ["#all-filter", "#side button[role=\"tab\"]:first-of-type"]
   },
@@ -38,18 +39,18 @@
     "messagesPanel": ["#main [data-testid=\"conversation-panel-messages\"]", "#main [data-testid=\"conversation-panel-body\"]", "#main [role=\"application\"]", "#main"],
     "messageRow": ["div[data-testid^=\"conv-msg-\"]", ".focusable-list-item", "div[role=\"row\"]"],
     "messageId": [{ "s": "[data-id]", "attr": "data-id" }],
-    "tailOut": ["[data-testid=\"tail-out\"]"],
-    "tailIn": ["[data-testid=\"tail-in\"]"],
+    "tailOut": ["[data-testid=\"tail-out\"]", "[data-icon=\"tail-out\"]"],
+    "tailIn": ["[data-testid=\"tail-in\"]", "[data-icon=\"tail-in\"]"],
     "classOut": [".message-out"],
     "classIn": [".message-in"],
     "youLabel": ["[aria-label=\"You:\"]", "[aria-label=\"Tú:\"]"],
     "prePlainText": [{ "s": ".copyable-text[data-pre-plain-text]", "attr": "data-pre-plain-text" }, { "s": "[data-pre-plain-text]", "attr": "data-pre-plain-text" }],
-    "text": ["[data-testid=\"selectable-text\"]", "span.selectable-text.copyable-text > span", "span.selectable-text.copyable-text:not([title])", ".copyable-text[data-pre-plain-text] span[dir=\"ltr\"], .copyable-text[data-pre-plain-text] span[dir=\"rtl\"]"],
+    "text": ["[data-testid=\"selectable-text\"]", "span.selectable-text.copyable-text > span", "span.selectable-text.copyable-text:not([title])", ".copyable-text[data-pre-plain-text] span[dir=\"ltr\"], .copyable-text[data-pre-plain-text] span[dir=\"rtl\"]", "[data-testid~=\"selectable-text\"]"],
     "caption": ["[data-testid~=\"image-caption\"]", "[data-testid~=\"video-caption\"]", "[data-testid~=\"document-caption\"]", "[data-testid~=\"album-caption\"]", "[data-testid=\"caption\"]"],
     "readMore": ["[data-testid=\"caption-read-more-button\"]"],
     "quoted": ["[data-testid=\"quoted-message\"], [aria-label=\"Quoted message\"], [aria-label=\"Mensaje citado\"]"],
     "msgMeta": ["[data-testid=\"msg-meta\"]"],
-    "kindSticker": ["[data-testid=\"sticker-container\"]"],
+    "kindSticker": ["[data-testid=\"sticker-container\"]", "[data-testid=\"sticker\"]"],
     "kindVoice": ["[data-testid=\"ptt-status\"]", "[data-icon=\"ptt-status\"]", "button[aria-label*=\"voice\" i]", "button[aria-label*=\"voz\" i]", "[role=\"slider\"][aria-valuetext]"],
     "kindDocument": ["[data-testid=\"document-thumb\"]", "span[data-icon*=\"document\"]", "[data-testid*=\"document\"]"],
     "kindVideo": ["video", "[data-testid*=\"video\"]"],
@@ -66,7 +67,8 @@
       "#main footer [aria-label*=\"Enviar\"]",
       { "s": "#main footer [data-icon=\"wds-ic-send-filled\"]", "closest": "button,[role=\"button\"]" },
       { "s": "#main footer [data-icon=\"send\"]", "closest": "button,[role=\"button\"]" },
-      "#main footer [data-testid=\"compose-btn-send\"]"
+      "#main footer [data-testid=\"compose-btn-send\"]",
+      { "s": "#main footer [data-testid=\"send\"]", "closest": "button,[role=\"button\"]" }
     ]
   },
   "text": {
@@ -84,14 +86,15 @@
     "phoneTitle": "^\\+?[\\d\\s().-]{7,}$"
   },
   "icons": {
-    "pending": "msg-time",
-    "sent": "msg-check|ic-check",
+    "pending": "msg-time|ic-schedule",
+    "sent": "msg-check|ic-check|wds-ic-delivered",
     "delivered": "msg-dblcheck|ic-dblcheck|ic-done-all",
     "read": "msg-dblcheck-ack|ic-read",
     "voice": "keyboard-voice|ptt",
     "document": "document",
     "defaultGroup": "default-group|default-community",
-    "muted": "notifications-off|mute"
+    "muted": "notifications-off|mute",
+    "rowTick": "msg-(dbl)?check|msg-time|status-(dbl)?check|status-time|ic-(dbl)?check|ic-done|ic-read|ic-delivered|ic-schedule|ic-msg-time|message-fail"
   },
   "dataId": {
     "compound": "^(true|false)_([^_]+@[^_]+)_([^_]+)(?:_(.+))?$",
