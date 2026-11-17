@@ -4,6 +4,7 @@ import { CHANNELS } from '../types';
 import { pairingCode, sha256Hex } from '../lib/crypto';
 import { all, clip, one, parseJson, run } from '../lib/db';
 import { logEvent } from '../lib/events';
+import { MEDIA_KEEP_DAYS, base64Bytes, type MediaRef } from '../lib/media';
 import { HttpError, bad, bool, int, json, str, type Router } from '../lib/http';
 import { getSettings, getState, isSettingsGroup, patchSettings, secretHints, setState } from '../lib/settings';
 import { DAY, HOUR, MIN, londonTime, nextLondonHour } from '../lib/time';
@@ -40,6 +41,14 @@ async function recentMessages(db: D1Database, convIds: string[], n: number, dire
   return out;
 }
 
+/** The picture a message came with, for a thumbnail: { id, kind } or null. Read from the message row, no extra query. */
+function mediaOf(m: MessageRow, now: number): { id: string; kind: string } | null {
+  const ref = parseJson<MediaRef>(m.meta, {});
+  // Pictures are deleted after 14 days (src/cron.ts): do not point at one that is gone.
+  if (typeof ref.media !== 'string' || m.created_at < now - MEDIA_KEEP_DAYS * DAY) return null;
+  return { id: ref.media, kind: ref.media_kind === 'video_frame' ? 'video_frame' : 'image' };
+}
+
 async function conversationsById(db: D1Database, ids: string[]): Promise<Map<string, ConversationRow & { display_name: string | null }>> {
   const rows = await byIds<ConversationRow & { display_name: string | null }>(
     db, `SELECT cv.*, ct.display_name FROM conversations cv LEFT JOIN contacts ct ON ct.id = cv.contact_id WHERE cv.id IN (${IDS})`, ids,
@@ -47,7 +56,7 @@ async function conversationsById(db: D1Database, ids: string[]): Promise<Map<str
   return new Map(rows.map((r) => [r.id, r]));
 }
 
-async function urgentView(db: D1Database, rows: UrgentRow[]) {
+async function urgentView(db: D1Database, rows: UrgentRow[], now: number) {
   // A few queries for the whole list, not four per card: the free plan allows 50 per request.
   const convIds = rows.map((u) => u.conversation_id);
   const discountIds = rows.map((u) => u.discount_id).filter((x): x is string => Boolean(x));
@@ -69,7 +78,7 @@ async function urgentView(db: D1Database, rows: UrgentRow[]) {
       owner_answer: u.owner_answer, owner_note: u.owner_note, sent_text: u.status !== 'open' ? u.polished_answer : null,
       created_at: u.created_at, answered_at: u.answered_at, sent_at: u.sent_at,
       conversation_id: u.conversation_id, customer: conv?.display_name || conv?.title || 'Customer',
-      recent: recent.map((m) => ({ direction: m.direction, author: m.author, body: m.body, ts: m.ts })),
+      recent: recent.map((m) => ({ direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts, media: mediaOf(m, now) })),
       discount: dc ? { id: dc.id, code: dc.code, amount: dc.amount, status: dc.status, shopify_status: dc.shopify_status, error: dc.error, message_text: dc.message_text } : null,
     });
   }
@@ -186,7 +195,7 @@ export function register(r: Router): void {
         reviewOut.push(reviewView(row, conv, (row.conversation_id && lastIn.get(row.conversation_id)?.[0]?.body) || ''));
       }
     }
-    return json({ urgent: await urgentView(c.db, rows), review: reviewOut });
+    return json({ urgent: await urgentView(c.db, rows, c.now), review: reviewOut });
   });
 
   r.post('/api/urgent/:id/answer', 'owner', async (c) => {
@@ -271,8 +280,19 @@ export function register(r: Router): void {
         phone: contact.phone, email: contact.email, handle: contact.handle, opted_out: Boolean(contact.opted_out),
         tone: parseJson(contact.tone_profile, {}),
       },
-      messages: messages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, kind: m.kind, status: m.status, ts: m.ts })),
+      messages: messages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, kind: m.kind, status: m.status, ts: m.ts, media: mediaOf(m, c.now) })),
       pending: pending.map((p) => ({ id: p.id, status: p.status, source: p.source, parts: parseJson<string[]>(p.parts, []) })),
+    });
+  });
+
+  // A photo or video frame a customer sent, for the thumbnails on the Urgent card and in the chat view.
+  // Owner only. The bytes never change, so the browser may keep them, but nothing shared may.
+  r.get('/api/media/:id', 'owner', async (c) => {
+    const row = await one<{ mime: string; data: string }>(c.db, 'SELECT mime, data FROM media WHERE id = ?', c.params.id!);
+    if (!row) throw new HttpError(404, 'not_found');
+    const mime = ['image/jpeg', 'image/png', 'image/webp'].includes(row.mime) ? row.mime : 'application/octet-stream';
+    return new Response(base64Bytes(row.data), {
+      headers: { 'content-type': mime, 'cache-control': 'private, max-age=86400, immutable', 'content-disposition': 'inline', 'content-security-policy': "default-src 'none'; sandbox" },
     });
   });
 

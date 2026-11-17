@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
+import { jpegSize } from './mocks/image.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright'); // pre-installed on the machine, not a dependency of the repo
@@ -344,8 +345,59 @@ async function main() {
   assert.equal((await sentTo(MAX)).length, 1, 'answered once');
   assert.ok((await mock('sent')).every((s) => !/^4477009004\d0@c\.us$/.test(s.jid)), 'chats that end with our own message are left alone');
   const waHealth = (await api('/api/overview')).device?.status?.channels?.whatsapp;
-  assert.ok(waHealth.last_ok_at > 0 && waHealth.version === '0.2.0', `health reported (${JSON.stringify(waHealth)})`);
+  assert.ok(waHealth.last_ok_at > 0 && waHealth.version === '0.3.0', `health reported (${JSON.stringify(waHealth)})`);
   pass('10 minute sweep answers a customer message in a chat without an unread badge, once');
+
+  // ---- photos and videos: captured from the page, answered by the brain, shown to the owner ---------------------------------------
+  {
+    const PIA = '447700900555@c.us';
+    const mediaRows = (threadId) => sql(
+      `SELECT md.id, md.kind, md.mime, md.bytes, md.data, m.kind AS message_kind, m.body FROM media md JOIN messages m ON m.id = md.message_id
+       JOIN conversations cv ON cv.id = md.conversation_id WHERE cv.external_thread_id = ? ORDER BY md.created_at, md.id`, [threadId]);
+    // A photo with no words. Before this the owner got an Urgent card for every one of these.
+    await mock('receive', '+44 7700 900555', '', { kind: 'image', photo: true });
+    const sawPhoto = await until('reply to the photo', async () => (await sentTo(PIA))[0]);
+    assert.equal(sawPhoto.text, 'mock saw 1 photo', 'the photo reached the brain and was answered');
+    const shot = (await until('the photo to be stored', async () => { const r = await mediaRows(PIA); return r.length ? r : null; }))[0];
+    assert.deepEqual([shot.kind, shot.mime, shot.message_kind, shot.body], ['image', 'image/jpeg', 'image', '[sent a photo]']);
+    assert.ok(shot.data.length <= 250_000, `under the size cap (${shot.data.length} characters of base64)`);
+    const size = jpegSize(Buffer.from(shot.data, 'base64'));
+    assert.deepEqual(size, { width: 1024, height: 768 }, 'the 1600 x 1200 photo was scaled to 1024 on its longest side');
+    const piaConv = await conversation(PIA);
+    assert.equal((await api('/api/urgent')).urgent.filter((u) => u.conversation_id === piaConv.id).length, 0, 'no Urgent card for a photo the agent could read');
+    // The owner's thumbnail: the chat view names the picture and the route serves it to the owner only.
+    const thread = await api(`/api/conversations/${piaConv.id}`);
+    assert.deepEqual(thread.messages[0].media, { id: shot.id, kind: 'image' });
+    const thumb = await fetch(`${server.url}/api/media/${shot.id}`, { headers: { cookie } });
+    assert.deepEqual([thumb.status, thumb.headers.get('content-type')], [200, 'image/jpeg']);
+    assert.equal((await fetch(`${server.url}/api/media/${shot.id}`)).status, 401, 'no picture without the owner session');
+    pass(`photo with no text: captured as a ${size.width} x ${size.height} JPEG (${Math.round(shot.bytes / 1024)} KB), answered, thumbnail served to the owner only`);
+
+    // A video: one frame (its preview picture) goes along, and the unclear path lands in Urgent with a description.
+    await mock('receive', '+44 7700 900555', 'unclear-photo what is wrong with it', { kind: 'video', photo: true });
+    const holding = await until('holding line for the video', async () => (await sentTo(PIA))[1]);
+    assert.equal(holding.text, 'let me check that for you');
+    const frames = await mediaRows(PIA);
+    assert.deepEqual(frames.map((f) => [f.kind, f.message_kind]), [['image', 'image'], ['video_frame', 'video']]);
+    const card = (await api('/api/urgent')).urgent.find((u) => u.conversation_id === piaConv.id);
+    assert.match(card.question, /photo is too dark/i, 'the owner is told what the picture shows');
+    assert.deepEqual(card.recent.filter((m) => m.media).map((m) => m.media.kind), ['image', 'video_frame'], 'the Urgent card carries the thumbnails');
+    await api(`/api/urgent/${card.id}/dismiss`, { body: {} });
+    pass('video: one frame captured as a video frame, unclear path escalated with a description and a holding line');
+
+    // A photo that cannot be copied (dead blob address): reported without a picture, silent escalation as before.
+    await mock('receive', '+44 7700 900666', '', { kind: 'image' });
+    const DEAD = '447700900666@c.us';
+    const deadCard = await until('Urgent card for the unreadable photo', async () => { const cv = await conversation(DEAD); return cv ? (await api('/api/urgent')).urgent.find((u) => u.conversation_id === cv.id) : null; });
+    assert.equal(deadCard.category, 'media');
+    await sleep(1500);
+    assert.equal((await sentTo(DEAD)).length, 0, 'nothing is said to the customer');
+    assert.equal((await mediaRows(DEAD)).length, 0);
+    const note = await until('a diagnostic note about the failed capture', async () => (await sql(`SELECT data FROM diagnostics WHERE channel = 'whatsapp' AND kind = 'note' AND data LIKE '%media_capture%' ORDER BY id DESC LIMIT 1`))[0]);
+    assert.match(note.data, /canvas|fetch/);
+    await api(`/api/urgent/${deadCard.id}/dismiss`, { body: {} });
+    pass(`photo that cannot be copied: owner asked silently, failure noted in diagnostics (${JSON.parse(note.data).media_capture[0]})`);
+  }
 
   // ---- final sweep ---------------------------------------------------------------------------------------------------------------
   await sleep(2500);

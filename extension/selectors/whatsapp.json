@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "_meta": {
     "pack": "whatsapp-web",
     "built": "2026-11-14",
@@ -120,6 +120,14 @@
     "statesStop": ["CONFLICT", "TOS_BLOCK", "SMB_TOS_BLOCK", "PROXYBLOCK", "DEPRECATED_VERSION"],
     "msgTypesText": ["chat"],
     "msgTypeKinds": { "image": "image", "album": "image", "video": "video", "ptt": "voice", "audio": "voice", "document": "document", "sticker": "sticker" }
+  },
+  "media": {
+    "image": ["[aria-label=\"Open picture\"] img", "[aria-label=\"Abrir imagen\"] img", "[data-testid*=\"image\"] img", "[data-testid=\"media-album\"] img", "img[src^=\"blob:\"]", "img[src^=\"data:image\"]"],
+    "video": ["video"],
+    "poster": ["[data-testid*=\"video\"] img", "img[src^=\"blob:\"]", "img[src^=\"data:image\"]"],
+    "background": ["[data-testid*=\"video\"] [style*=\"background-image\"]", "[style*=\"background-image\"]"],
+    "skip": ["[data-testid=\"quoted-message\"]", "[aria-label=\"Quoted message\"]", "[aria-label=\"Mensaje citado\"]", "[data-testid=\"sticker-container\"]"],
+    "min_side": 48
   },
   "urls": {
     "home": "https://web.whatsapp.com/",

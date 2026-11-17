@@ -188,6 +188,20 @@ export interface DecideInput {
   now: number;
   /** playground: never logs usage against the live feed. */
   mode: 'live' | 'playground';
+  /**
+   * Photos (and single frames of videos) that came with the unanswered customer messages, oldest
+   * first, at most 3. Only a model that can look at pictures gets them (src/brain/decide.ts).
+   */
+  media?: DecideMedia[];
+}
+
+/** One picture for the brain. `index` is the position in `history` of the message it came with. */
+export interface DecideMedia {
+  index: number;
+  kind: 'image' | 'video_frame';
+  mime: 'image/jpeg' | 'image/png' | 'image/webp';
+  /** base64, no data: prefix. */
+  data: string;
 }
 
 export interface LlmUsage {

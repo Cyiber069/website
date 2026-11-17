@@ -23,6 +23,20 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
     flags: { opt_out: false, asked_if_bot: false, needs_human: false }, kb_refs: [], note: 'mock', usage: null, sales: mockSales(text),
   };
   if (text.includes('mock-error')) throw new Error('mock brain failure');
+  // Photos reached the brain (src/pipeline/inbound.ts loads them, decide.ts passes them on). The fixed
+  // line proves it in tests. A caption with "unclear-photo" takes the escalation path of an unclear photo.
+  const media = input.media ?? [];
+  if (media.length) {
+    const frames = media.filter((p) => p.kind === 'video_frame').length;
+    const saw = `mock saw ${media.length} photo${media.length === 1 ? '' : 's'}${frames ? ` with ${frames} video frame${frames === 1 ? '' : 's'}` : ''}`;
+    if (text.includes('unclear-photo')) {
+      return {
+        ...base, action: 'escalate', confidence: 0.9, parts: ['let me check that for you'], note: `${saw}, unclear`,
+        escalate: { question: 'The photo is too dark to make out (mock). The customer wants to know if it fits.', reason: 'The photo is unclear (mock)', category: 'other' },
+      };
+    }
+    return { ...base, parts: [saw], note: saw };
+  }
   // The owner explained the situation on an Urgent card (src/brain/note.ts). Every later reply in the chat follows it too.
   const guided = input.context_notes.some((n) => n.startsWith('Owner guidance'));
   if (guided) {

@@ -240,12 +240,50 @@ export function transition(fn) {
   if (document.startViewTransition && !reduceMotion()) document.startViewTransition(fn); else fn();
 }
 
-/** Bubbles for a list of { direction, author, body, ts } messages. */
+// ---- Customer photos --------------------------------------------------------------------------------
+const mediaUrl = (id) => `/api/media/${encodeURIComponent(id)}`;
+const mediaAlt = (m) => (m.kind === 'video_frame' ? 'One frame of a video the customer sent' : 'Photo the customer sent');
+
+/** Small thumbnail for a message's `media` ({ id, kind } or null). Tap opens it full size. */
+export function mediaThumb(media) {
+  if (!media || !media.id) return '';
+  return html`<button type="button" class="thumb" data-media="${media.id}" data-media-kind="${media.kind}" aria-label="${mediaAlt(media)}. Open full size">
+    <img class="thumb__img" src="${mediaUrl(media.id)}" alt="" loading="lazy" decoding="async">${media.kind === 'video_frame' ? html`<span class="thumb__tag">Video frame</span>` : ''}</button>`;
+}
+
+function openMedia(id, kind) {
+  const d = el(html`<dialog class="lightbox" aria-label="${mediaAlt({ kind })}">
+    <form method="dialog" class="lightbox__body">
+      <img class="lightbox__img" src="${mediaUrl(id)}" alt="${mediaAlt({ kind })}">
+      ${kind === 'video_frame' ? html`<p class="lightbox__note">One frame of a video. Open the chat to watch it.</p>` : ''}
+      <button class="btn btn--ghost btn--sm lightbox__close">Close</button>
+    </form></dialog>`);
+  document.body.append(d);
+  d.addEventListener('close', () => d.remove());
+  d.addEventListener('click', (e) => { if (e.target === d || e.target.classList.contains('lightbox__img')) d.close(); });
+  d.showModal();
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-media]');
+    if (!b) return;
+    e.preventDefault();
+    openMedia(b.dataset.media, b.dataset.mediaKind);
+  });
+  // A photo older than 14 days is gone from the server: drop the empty frame.
+  document.addEventListener('error', (e) => {
+    const t = e.target;
+    if (t && t.classList && t.classList.contains('thumb__img')) t.closest('.thumb')?.remove();
+  }, true);
+}
+
+/** Bubbles for a list of { direction, author, body, ts, media } messages. */
 export function bubbles(messages) {
   return messages.map((m) => {
     const who = m.author === 'customer' || (m.direction === 'in' && !m.author) ? 'customer' : m.author === 'owner' ? 'owner' : 'agent';
     const by = who === 'customer' ? 'Customer' : who === 'owner' ? 'You' : 'Agent';
-    return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span><div class="bubble">${m.body || kindLabel(m.kind)}</div>${m.ts ? html`<span class="msg__meta">${dayClock(m.ts)}</span>` : ''}</div>`;
+    return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div>${m.ts ? html`<span class="msg__meta">${dayClock(m.ts)}</span>` : ''}</div>`;
   });
 }
 export function kindLabel(kind) {

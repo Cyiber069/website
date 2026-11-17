@@ -10,10 +10,10 @@
 //   user message    everything that differs per call: channel, time, limits, notes, how this
 //                   customer writes, the excerpts found for this conversation, the conversation.
 // Never put a time, an id or anything about one customer into the system blocks.
-import type { Channel, Decision, DecideInput, HistoryMessage, PolishInput, SalesRead, SalesStage, Settings, ToneProfile } from '../types';
+import type { Channel, Decision, DecideInput, DecideMedia, HistoryMessage, PolishInput, SalesRead, SalesStage, Settings, ToneProfile } from '../types';
 import { SALES_STAGES } from '../types';
 import { londonTime } from '../lib/time';
-import type { SystemBlock } from './llm';
+import type { PromptImage, SystemBlock } from './llm';
 import { staticPrompt, writingRules } from './static-prompt';
 import { lengthLimits } from './style';
 import type { MirrorPlan } from './tone';
@@ -28,6 +28,8 @@ export interface PromptKnowledge {
 export interface BuiltPrompt {
   system: SystemBlock[];
   user: string;
+  /** Photos for the user turn (decide only). Empty when there are none or the model cannot look at them. */
+  images: PromptImage[];
 }
 
 /** What the model may put in escalate.category. Code adds a few of its own: media, bot_question, low_confidence. */
@@ -170,12 +172,29 @@ function ago(ms: number): string {
  * The conversation for the model: one JSON object per line, oldest first. JSON keeps customer text
  * from closing a tag or faking a turn.
  */
-export function conversationLines(history: HistoryMessage[]): string {
-  return history.map((m) => {
+export function conversationLines(history: HistoryMessage[], media: DecideMedia[] = []): string {
+  const names = new Map(media.map((p, i) => [p.index, photoName(p, i)]));
+  return history.map((m, i) => {
     const from = m.direction === 'in' ? 'customer' : m.author === 'owner' ? 'owner' : 'shop';
     const text = wordsOf(m).slice(0, 1500);
-    return JSON.stringify(m.kind === 'text' ? { from, text } : { from, kind: m.kind, text });
+    const line: Record<string, string> = m.kind === 'text' ? { from, text } : { from, kind: m.kind, text };
+    // Which of the attached pictures came with this message.
+    if (names.has(i)) line.attached = names.get(i)!;
+    return JSON.stringify(line);
   }).join('\n');
+}
+
+const photoName = (p: DecideMedia, i: number): string => (p.kind === 'video_frame' ? `photo ${i + 1}, one frame of a video` : `photo ${i + 1}`);
+
+/** The pictures for the user turn, each with the line that introduces it. Oldest first, numbered from 1. */
+export function promptImages(media: DecideMedia[] = []): PromptImage[] {
+  return media.map((p, i) => ({
+    label: p.kind === 'video_frame'
+      ? `Photo ${i + 1} from the customer. This is one frame of a video they sent. You have not seen the rest of the clip.`
+      : `Photo ${i + 1} from the customer.`,
+    media_type: p.mime,
+    data: p.data,
+  }));
 }
 
 const WEEKDAYS: Record<string, string> = { Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday' };
@@ -241,9 +260,9 @@ export function buildDecidePrompt(p: DecidePromptInput): BuiltPrompt {
   } else if (!stable) {
     user.push('<knowledge>\nThe knowledge base is empty. Only greetings and small talk can be answered. Escalate everything else.\n</knowledge>');
   }
-  user.push(`<conversation>\n${conversationLines(input.history)}\n</conversation>`);
+  user.push(`<conversation>\n${conversationLines(input.history, input.media)}\n</conversation>`);
   user.push("Write the JSON for the next reply to the customer's latest messages.");
-  return { system, user: user.join('\n') };
+  return { system, user: user.join('\n'), images: promptImages(input.media) };
 }
 
 /**
@@ -367,7 +386,7 @@ export function buildPolishPrompt(p: { settings: Settings; input: PolishInput; t
     `<owner_answer>\n${input.owner_answer.trim()}\n</owner_answer>`,
     'Write the JSON with the message for the customer and the reusable fact if there is one.',
   ].join('\n');
-  return { system: [{ text: polishInstructions(p.settings), cache: true }], user };
+  return { system: [{ text: polishInstructions(p.settings), cache: true }], user, images: [] };
 }
 
 // ---- small shared checks --------------------------------------------------------------------------

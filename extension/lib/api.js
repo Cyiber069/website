@@ -76,7 +76,27 @@ export const diagnostics = (channel, kind, data) => json('/api/agent/diagnostics
  * Report a thread and wait for the decision. The server streams one JSON object per line and
  * sends {"type":"ping"} while the brain is thinking, which also keeps this service worker alive.
  */
+const MEDIA_MAX_BASE64 = 250_000;
+const MEDIA_MAX_ITEMS = 3;
+
+/**
+ * Photos ride along inside the report. Keep only well formed ones under the size cap, the newest 3,
+ * so a bad capture can never make the server refuse the whole report.
+ */
+export function trimMedia(messages) {
+  let kept = 0;
+  const out = (Array.isArray(messages) ? messages : []).map((m) => ({ ...m }));
+  for (let i = out.length - 1; i >= 0; i--) {
+    const media = out[i].media;
+    if (media === undefined) continue;
+    const ok = media && out[i].direction === 'in' && typeof media.data === 'string' && media.data.length > 0 && media.data.length <= MEDIA_MAX_BASE64 && kept < MEDIA_MAX_ITEMS;
+    if (ok) kept++; else delete out[i].media;
+  }
+  return out;
+}
+
 export async function inbound(payload, { timeoutMs = 150_000 } = {}) {
+  payload = { ...payload, messages: trimMedia(payload.messages) };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {

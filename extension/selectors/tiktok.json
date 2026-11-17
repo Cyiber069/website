@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "verified_against": "TikTok webapp-desktop build read on 2026-11-14 (chunks 49937 IM React SDK, 64027 legacy, 85075, editor). Not yet checked on the owner's logged in account: run the popup check.",
   "urls": {
     "inbox": "https://www.tiktok.com/messages?lang=en",
@@ -59,6 +59,14 @@
     "video": ["[data-e2e=\"dm-new-video-card\"]"],
     "sticker": ["[class*=\"StickerImage\"]", "[class*=\"DivStickerContainer\"]"],
     "emoji": ["[data-official-emoji=\"true\"]", "[data-e2e=\"dm-official-emoji-img\"]"]
+  },
+  "media": {
+    "image": ["[data-e2e=\"dm-new-image-card\"] img", "[class*=\"ImageCard\"] img", "[class*=\"DivImageContainer\"] img"],
+    "video": ["[data-e2e=\"dm-new-video-card\"] video", "[data-e2e=\"dm-new-shared-video\"] video", "video"],
+    "poster": ["[data-e2e=\"dm-new-video-card\"] img", "[data-e2e=\"dm-new-shared-video\"] img", "[class*=\"VideoCard\"] img"],
+    "background": ["[data-e2e=\"dm-new-shared-video\"]", "[data-e2e=\"dm-new-video-card\"]", "[data-e2e=\"dm-new-image-card\"]", "[style*=\"background-image\"]"],
+    "skip": ["a[href^=\"/@\"]", "[data-official-emoji=\"true\"]", "[class*=\"Avatar\"]"],
+    "min_side": 48
   },
   "composer": {
     "editor": [

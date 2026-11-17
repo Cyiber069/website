@@ -184,7 +184,8 @@ export function register(r: Router): void {
   // The extension read a thread with new customer messages. Streams keep-alive lines while the brain works.
   r.post('/api/agent/inbound', 'device', async (c) => {
     const device = requireDevice(c);
-    const payload = parseInbound(await c.body(400_000));
+    // Room for up to 3 photos of 260 KB of base64 each next to the messages.
+    const payload = parseInbound(await c.body(1_200_000));
     return ndjsonStream(c.exec, async (send) => {
       const outcome = await handleInbound(c.env, device, payload, (o) => send({ type: 'accepted', ...o }));
       send({ type: 'decision', ...outcome });

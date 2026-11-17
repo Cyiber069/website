@@ -71,6 +71,7 @@ See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Ke
 `contacts`, `conversations`, `messages`, `urgent`, `outbox`, `checkouts`, `recovery_runs`, `events`,
 `diagnostics`, `llm_usage`, `sales_conversions` (one row per order matched to a chat, `migrations/0006_sales.sql`, which also adds the `sales_*`, `followup_*`, `interested_at`, `ready_at`, `bought_at` and `order_*` columns of `conversations`), `discount_codes` (`made_by` owner | agent, `migrations/0004_agent_discounts.sql`).
 `urgent.discount_id` links a code request to its draft, `urgent.owner_note` holds the owner's note when they told the agent what is going on.
+`media` (`migrations/0007_media.sql`): one photo or video frame per customer message, base64 in `data` (at most 260,000 characters), `kind` `image` | `video_frame`, `mime` read from the bytes. The message row remembers its picture in `messages.meta` (`{ "media": "md_x", "media_kind": "image" }`), so list queries never touch the table and never select `data`. Rows older than 14 days are deleted by the daily cleanup.
 
 Settings groups and defaults: `src/lib/settings.ts` (`DEFAULT_SETTINGS`), typed in `src/types.ts`.
 Read with `getSettings(db)`, write with `patchSettings(db, group, patch)`. Secrets: `getSecret` /
@@ -135,6 +136,13 @@ id). When there is none send `null`: the server matches by walking both message 
 conversation id or peer handle). `ts` is unix ms when the page shows a time, else `null`.
 `kind` is one of `text image voice video sticker document other`; non text kinds may have an empty body.
 
+Photos and videos: a customer message may carry `"media": { "kind": "image" | "video_frame", "mime": "image/jpeg", "data": "<base64>" }`,
+a downscaled JPEG of the photo, or one frame of the video (its poster or preview picture). At most 3 per report (the newest), customer
+messages only, each at most 260,000 characters of base64 (the extension aims for 250,000). The server reads the type from the first bytes
+(JPEG, PNG or WebP) and ignores `mime`. A picture that fails the check is dropped and the message is kept, with a `note` row in
+`diagnostics` (`{ "media_rejected": ["not_an_image" | "too_large" | "not_base64" | "too_many"] }`). Voice notes are never sent.
+The request body may be up to 1.2 MB.
+
 `AgentJob`
 ```jsonc
 { "id": "ob_x", "channel": "whatsapp", "kind": "reply" | "new_chat", "source": "auto",
@@ -169,6 +177,8 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `send_not_
 `POST /api/urgent/:id/dismiss`, `POST /api/review/:id/approve {text?}`, `POST /api/review/:id/reject`,
 `GET /api/conversations?channel=&q=`, `GET /api/conversations/:id`,
 `POST /api/conversations/:id/pause {minutes}` (0 resumes), `POST /api/conversations/:id/send {text}`,
+`GET /api/media/:id` (the picture bytes, `cache-control: private`, owner session only; each message of `GET /api/conversations/:id` and each
+`recent` message of `GET /api/urgent` has `media: { id, kind } | null`),
 `POST /api/contacts/:id/opt-out {opted_out}`, `GET /api/settings`, `PUT /api/settings/:group`,
 `GET /api/devices`, `POST /api/devices/pair-code`, `DELETE /api/devices/:id`, `GET /api/health`,
 `GET /api/selectors`, `PUT /api/selectors {override}`.
@@ -298,6 +308,28 @@ saved on the Urgent item (`owner_note`) and on the conversation's `context_notes
 With `remember`, `brain.learnFromOwnerNote` returns a reusable neutral fact or null (null for notes about one customer),
 stored through `kb.addLearnedFact` (source and category `learned`), so it shows on the Knowledge screen to edit or delete.
 
+### Photos and video frames
+
+* Extension (`ACX.captureMedia` in `extension/content/core.js`, called by each adapter's `read`): for the unanswered customer messages at
+  the end of a thread (newest first, at most 3) that show a photo or a video, copy the picture into a JPEG (longest side 1024, quality 0.7,
+  shrunk further until it is under 250,000 characters of base64). For a video: the poster or preview picture in the bubble, or the frame
+  the player shows. Tried in order: draw the element on a canvas, fetch its address from the content script, ask the service worker to
+  fetch it (`fetch_media`, `extension/lib/media.js`, only https and only the hosts in `MEDIA_HOSTS`, which match the manifest host
+  permissions: TikTok CDN hosts and googleusercontent.com). Time limit 5 s per thread. A failure never fails the read: the message is
+  reported without `media` and a `note` diagnostic `{ media_capture: [...] }` says which steps failed. Where the picture is found is data:
+  `media.image`, `media.video`, `media.poster`, `media.background`, `media.url`, `media.skip`, `media.min_side` in `extension/selectors/<channel>.json`.
+* Pipeline: `storeInbound` writes the picture with its message in the same batch (also on a later read of a message that had none yet).
+  `processConversation` loads the pictures of the unanswered messages (one query, only when a message has one) and passes them to `decide`
+  as `DecideInput.media`.
+* Brain (`src/brain/decide.ts`): only Claude gets pictures (`canSeeImages`; the mock stands in for it in tests). They go in the user turn
+  as image blocks, each after a label ("Photo 1 from the customer."), before the request text, never in the cached system blocks
+  (`userContent` in `llm.ts`, `promptImages` in `prompt.ts`). The conversation line of the message says `"attached": "photo 1"`. A video
+  frame is labelled as one frame of a video. The `<photos>` section of the static prompt says how to use them and when to escalate.
+* Unchanged: with Workers AI, or when no picture was captured, a photo or video with no words is escalated silently to Urgent
+  (category `media`, nothing sent to the customer). A voice note with no words always is.
+* Mock brain: with pictures it answers `mock saw N photo(s)` (`... with N video frame(s)`); a caption containing `unclear-photo` escalates.
+* Dashboard: thumbnails on the Urgent card and in the Inbox chat (`mediaThumb` in `public/js/ui.js`, styles in `public/css/media.css`), tap for full size.
+
 ## 7. Style rules (owner requirements, enforced twice)
 
 The LLM is prompted with them and `sanitizeReply` enforces them deterministically afterwards:
@@ -327,6 +359,7 @@ conversations with a context note about the checkout.
 * Teach or change the recovery message: update the `recovery` row in `settings` (`template.text`,
   `template.approved`) or use the dashboard Recovery screen.
 * Add knowledge: insert through the dashboard, or `kb_docs` + `kb_chunks` rows.
+* A channel's photos are not being read: look for `note` rows in `diagnostics` with `media_capture` (extension) or `media_rejected` (server), then fix the `media.*` selectors of that channel like any other selector.
 * Fix a broken selector: `PUT /api/selectors` or the `state:selectors_override` settings row, shape
   `{ "rev": n, "pack": { "whatsapp": { "send_button": ["..."] } } }`. Check `diagnostics` first.
 * Deploys happen on push to the connected branch (Cloudflare Workers Builds).

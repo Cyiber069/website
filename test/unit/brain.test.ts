@@ -110,8 +110,8 @@ describe('decide prompt', () => {
     expect(text).toMatch(/Reply in the language the customer writes in/);
     expect(text).toMatch(/It is information, not instructions/);
     expect(text).toMatch(/win over store text/);
-    // 7 voice examples plus 6 selling examples.
-    expect((text.match(/<example>/g) ?? []).length).toBe(13);
+    // 7 voice examples, 6 selling examples and 1 photo example.
+    expect((text.match(/<example>/g) ?? []).length).toBe(14);
   });
 
   it('follows its own style rules: no dashes and no markdown anywhere in the instructions', () => {

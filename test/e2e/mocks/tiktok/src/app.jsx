@@ -114,7 +114,8 @@ function openConv(id) {
 function receive(who, text, opts = {}) {
   const c = find(who);
   if (!c) throw new Error(`mock: no conversation ${who}`);
-  c.messages.push(msg(false, text, { kind: opts.kind || 'text' }));
+  // opts.src: the address of a real picture (a photo, or the cover of a video), as TikTok serves them from its CDN.
+  c.messages.push(msg(false, text, { kind: opts.kind || 'text', ...(opts.src ? { src: opts.src } : {}) }));
   if (state.openId !== c.id) c.unread += 1; // the open chat is being looked at: no badge
   c.order = seq++;
   c.time = clock();
@@ -273,8 +274,8 @@ function MessageContent({ m }) {
   switch (m.kind) {
     case 'text': return h('div', { className: cls('DivTextContainer', 'bubble') }, h('p', { 'data-e2e': 'dm-new-message-text', className: cls('PText') }, textWithEmoji(m.text)));
     case 'shared_video': return h('div', { 'data-e2e': 'dm-new-shared-video', className: 'card', style: { backgroundImage: `url(${PIXEL})` } });
-    case 'image': return h('div', { 'data-e2e': 'dm-new-image-card', className: 'card' }, h('img', { src: PIXEL, alt: '' }));
-    case 'video': return h('div', { 'data-e2e': 'dm-new-video-card', className: 'card' });
+    case 'image': return h('div', { 'data-e2e': 'dm-new-image-card', className: 'card' }, h('img', { src: m.src || PIXEL, alt: '', className: m.src ? 'photo' : undefined }));
+    case 'video': return h('div', { 'data-e2e': 'dm-new-video-card', className: 'card', style: m.src ? { backgroundImage: `url(${m.src})`, backgroundSize: 'cover' } : undefined });
     case 'sticker': return h('div', { className: cls('DivStickerContainer') }, h('img', { className: cls('StickerImage'), src: PIXEL, alt: '' }));
     default: return h('div', { className: cls('DivTextContainer', 'bubble') }, m.text);
   }

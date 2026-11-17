@@ -9,7 +9,9 @@
 //                         `sig` changes whenever the thread gets a new message (used to wait for the
 //                         customer to stop typing bursts before answering).
 //   read({ key })      -> { thread: { external_id, title, is_group, subject, contact: { name, phone, email, handle } },
-//                           messages: [{ external_id, direction: 'in'|'out', body, kind, ts }] }   oldest first, max 40
+//                           messages: [{ external_id, direction: 'in'|'out', body, kind, ts, media? }] }   oldest first, max 40
+//                         `media` is { kind: 'image' | 'video_frame', mime: 'image/jpeg', data: <base64> } when
+//                         ACX.captureMedia could copy the photo (or one frame of the video) out of the bubble.
 //   send({ job })      -> { sent_external_ids: [] }         types job.parts in order into job.target and sends them
 //   prepare({ job })   -> { navigate: url } | { ready: true }   optional, for new_chat jobs that need a page load first
 //   selftest()         -> { checks: [{ name, ok, detail }] }    optional
@@ -374,6 +376,190 @@
     return how;
   }
 
+  // ---- photos and video frames ------------------------------------------------------------------------------
+  // The newest customer messages of a thread may hold a photo or a video. captureMedia copies each one
+  // into a small JPEG so the server can show it to the brain and to the owner. For a video it takes one
+  // frame: the poster or preview picture in the bubble, or the frame the player shows right now.
+  // It never throws and never takes longer than the budget: a photo that cannot be copied is reported
+  // without data, exactly as before, and a note goes to diagnostics.
+  const MEDIA = { max_items: 3, budget_ms: 5000, max_base64: 250_000, default_min_side: 48, max_fetch_bytes: 15_000_000 };
+  // Longest side and JPEG quality, tried in order until the result fits max_base64.
+  const MEDIA_STEPS = [[1024, 0.7], [896, 0.6], [768, 0.5], [640, 0.45], [512, 0.4], [384, 0.35]];
+
+  /** Draw a picture source (img, video, ImageBitmap) into a JPEG no bigger than the cap. Throws SecurityError when the source taints the canvas. */
+  function encodeJpeg(source, w, h) {
+    if (!w || !h) return null;
+    for (const [side, quality] of MEDIA_STEPS) {
+      const scale = Math.min(1, side / Math.max(w, h));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#fff'; // JPEG has no transparency
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+      const url = canvas.toDataURL('image/jpeg', quality);
+      const data = url.slice(url.indexOf(',') + 1);
+      if (url.startsWith('data:image/jpeg') && data.length > 100 && data.length <= MEDIA.max_base64) return data;
+    }
+    return null;
+  }
+
+  /** Every element under `root` (and `root` itself) that matches any selector of a pack key, in pack order. */
+  function mediaMatches(key, root) {
+    const out = [];
+    for (const e of chain(key)) {
+      try {
+        if (root.matches && root.matches(e.s)) out.push({ el: root, attr: e.attr });
+        for (const el of root.querySelectorAll(e.s)) out.push({ el, attr: e.attr });
+      } catch { /* bad selector */ }
+    }
+    return out;
+  }
+
+  const mediaSkipped = (el) => chain('media.skip').some((e) => { try { return !!el.closest(e.s); } catch { return false; } });
+
+  function bigEnough(el) {
+    const min = Number(lookup('media.min_side')) || MEDIA.default_min_side;
+    const r = el.getBoundingClientRect();
+    const w = Math.max(r.width, el.naturalWidth || el.videoWidth || 0);
+    const h = Math.max(r.height, el.naturalHeight || el.videoHeight || 0);
+    return w >= min && h >= min;
+  }
+
+  const area = (el) => { const r = el.getBoundingClientRect(); return Math.max(r.width * r.height, (el.naturalWidth || 0) * (el.naturalHeight || 0)); };
+
+  /** Gmail style "image/jpeg:name.jpg:https://..." attribute, a CSS url("...") or a plain address -> absolute URL or ''. */
+  function mediaUrl(raw) {
+    let v = String(raw || '').trim();
+    const dl = /^[\w.+-]+\/[\w.+-]+:[^:]*:(https?:.+)$/.exec(v);
+    if (dl) v = dl[1];
+    const css = /url\((['"]?)(.*?)\1\)/.exec(v);
+    if (css) v = css[2];
+    if (!v || v === 'none') return '';
+    try { return new URL(v, location.href).href; } catch { return ''; }
+  }
+
+  /** What to copy for one bubble: { el } to draw, and or { url } to fetch. null when the bubble shows no picture. */
+  function pickMedia(root, kind) {
+    const usable = (m) => m.el.isConnected && !mediaSkipped(m.el);
+    if (kind === 'video') {
+      const video = mediaMatches('media.video', root).filter(usable).map((m) => m.el).find((el) => el.tagName === 'VIDEO');
+      if (video) {
+        const poster = mediaUrl(video.getAttribute('poster'));
+        if (video.readyState >= 2 && video.videoWidth) return { el: video, url: poster };
+        if (poster) return { url: poster };
+      }
+    }
+    // An address in an attribute (Gmail attachment cards: the full picture, not the small card).
+    const byAttr = () => {
+      for (const m of mediaMatches('media.url', root).filter(usable)) {
+        const url = mediaUrl(m.attr ? m.el.getAttribute(m.attr) : '');
+        if (url) return { url };
+      }
+      return null;
+    };
+    if (lookup('media.prefer_url')) { const hit = byAttr(); if (hit) return hit; }
+    const keys = kind === 'video' ? ['media.poster', 'media.image'] : ['media.image'];
+    for (const key of keys) {
+      const imgs = mediaMatches(key, root).filter((m) => usable(m) && m.el.tagName === 'IMG' && bigEnough(m.el)).map((m) => m.el);
+      if (imgs.length) {
+        const el = imgs.sort((a, b) => area(b) - area(a))[0];
+        return { el, url: mediaUrl(el.currentSrc || el.getAttribute('src')) };
+      }
+    }
+    const hit = byAttr();
+    if (hit) return hit;
+    // A background picture (video covers).
+    for (const m of mediaMatches('media.background', root).filter(usable)) {
+      let bg = '';
+      try { bg = getComputedStyle(m.el).backgroundImage; } catch { /* ignore */ }
+      const url = mediaUrl(bg);
+      if (url && bigEnough(m.el)) return { url };
+    }
+    return null;
+  }
+
+  /** True when the bubble shows a photo or video this script could try to copy. */
+  const hasMedia = (root, kind = 'image') => { try { return !!pickMedia(root, kind); } catch { return false; } };
+
+  const errName = (err) => String((err && (err.name || err.message)) || err || 'error').slice(0, 40);
+
+  /** One bubble -> { data, via } or { fail }. Order: draw the element, fetch its address here, ask the worker to fetch it. */
+  async function captureOne(root, kind, deadline) {
+    const left = () => deadline - Date.now();
+    const target = pickMedia(root, kind);
+    if (!target) return { fail: 'no_element' };
+    const tried = [];
+    const el = target.el;
+    if (el) {
+      if (el.tagName === 'IMG' && !el.complete) await waitFor(() => el.complete, { timeout: Math.min(1500, Math.max(0, left())), interval: 150 });
+      try {
+        const data = el.tagName === 'VIDEO' ? encodeJpeg(el, el.videoWidth, el.videoHeight) : encodeJpeg(el, el.naturalWidth, el.naturalHeight);
+        if (data) return { data, via: 'canvas' };
+        tried.push('canvas:empty');
+      } catch (err) { tried.push(`canvas:${errName(err)}`); } // SecurityError: a cross origin picture taints the canvas
+    }
+    const url = target.url;
+    if (!url || left() < 200) return { fail: [...tried, url ? 'timeout' : 'no_url'].join(' ') };
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(Math.max(200, left())) });
+      if (!res.ok) throw new Error(`http_${res.status}`);
+      const blob = await res.blob();
+      if (blob.size > MEDIA.max_fetch_bytes) throw new Error('too_big');
+      const bmp = await createImageBitmap(blob);
+      try {
+        const data = encodeJpeg(bmp, bmp.width, bmp.height);
+        if (data) return { data, via: 'fetch' };
+        tried.push('fetch:empty');
+      } finally { try { bmp.close(); } catch { /* ignore */ } }
+    } catch (err) { tried.push(`fetch:${errName(err)}`); } // usually CORS on a CDN address
+    if (/^https:/i.test(url) && left() > 300) {
+      const res = await toWorker({ type: 'fetch_media', url, timeout_ms: Math.max(300, left() - 100) });
+      if (res && res.ok && typeof res.data === 'string' && res.data.length <= MEDIA.max_base64) return { data: res.data, via: 'worker' };
+      tried.push(`worker:${String((res && res.error) || 'no_answer').slice(0, 40)}`);
+    }
+    return { fail: tried.join(' ') };
+  }
+
+  /**
+   * `messages` is the thread, oldest first. A message that shows a photo or video carries
+   * `_media: { el: <its bubble>, kind: 'image' | 'video' }`. The newest unanswered customer messages
+   * (after our last message), at most 3, newest first, get `media` set when the copy worked.
+   * Voice notes are never captured. Resolves with the number captured. Never rejects.
+   */
+  async function captureMedia(messages) {
+    const started = Date.now();
+    const failures = [];
+    let captured = 0;
+    try {
+      const picks = [];
+      for (let i = messages.length - 1; i >= 0 && picks.length < MEDIA.max_items; i--) {
+        const m = messages[i];
+        if (!m || m.direction !== 'in') break;
+        if (m._media && m._media.el) picks.push(m);
+      }
+      if (!picks.length) return 0;
+      const deadline = started + MEDIA.budget_ms;
+      let open = true;
+      const work = (async () => {
+        for (const m of picks) {
+          if (Date.now() >= deadline - 200) { failures.push('timeout'); break; }
+          let res;
+          try { res = await captureOne(m._media.el, m._media.kind === 'video' ? 'video' : 'image', deadline); } catch (err) { res = { fail: `error:${errName(err)}` }; }
+          if (!open) return; // the read moved on without this one
+          if (res.data) { m.media = { kind: m._media.kind === 'video' ? 'video_frame' : 'image', mime: 'image/jpeg', data: res.data }; captured++; } else failures.push(res.fail || 'unknown');
+        }
+      })();
+      const late = Symbol('late');
+      if ((await Promise.race([work, sleep(MEDIA.budget_ms + 150).then(() => late)])) === late) failures.push('timeout');
+      open = false;
+    } catch (err) { failures.push(`error:${errName(err)}`); }
+    if (failures.length) diag('note', { media_capture: failures.slice(0, 3), captured, ms: Date.now() - started, path: location.pathname.slice(0, 60) });
+    return captured;
+  }
+
   // ---- diagnostics ---------------------------------------------------------------------------------------
   let diagCount = 0;
   let diagWindow = Date.now();
@@ -540,6 +726,8 @@
     insertText, humanType, clearComposer,
     // diagnostics + activity
     diag, snapshot, skeleton, watch, nudge, toWorker,
+    // photos
+    captureMedia, hasMedia,
     get alive() { return alive; },
   };
 })();

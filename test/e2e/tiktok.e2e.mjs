@@ -11,6 +11,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
+import { jpegSize, makePng } from './mocks/image.mjs';
+
+// Lets context.route() also answer requests made by the extension's service worker (the CDN picture fetch).
+process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = '1';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright'); // pre-installed, found through NODE_PATH
@@ -19,6 +23,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..');
 const MOCK_HTML = readFileSync(join(here, 'mocks', 'tiktok', 'index.html'), 'utf8');
 const TIKTOK_URL = 'https://www.tiktok.com/messages?lang=en';
+const CDN = 'https://p16-sign.tiktokcdn-eu.com';
+const CDN_PHOTO = makePng(1400, 1000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
 let step = 0;
@@ -89,6 +95,20 @@ async function main() {
   await context.route('https://www.tiktok.com/**', (route) => {
     const path = new URL(route.request().url()).pathname;
     route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: path.startsWith('/messages') ? MOCK_HTML : '<!doctype html><title>TikTok (mock)</title>' });
+  });
+  // TikTok serves photos and video covers from its CDN, without CORS headers: the page may show them
+  // but cannot read their pixels, and only the extension's service worker may fetch them.
+  const cdnHits = { img: 0, pageFetch: 0, worker: 0 };
+  await context.route(`${CDN}/**`, (route) => {
+    const req = route.request();
+    if (req.serviceWorker()) cdnHits.worker++;
+    else if (req.resourceType() === 'fetch') {
+      // A real CDN answers a script on tiktok.com without CORS headers, so the fetch fails. Playwright
+      // would add those headers to a fulfilled answer, so the block is acted out here.
+      cdnHits.pageFetch++;
+      return route.abort('accessdenied');
+    } else cdnHits.img++;
+    return route.fulfill({ status: 200, contentType: 'image/png', body: CDN_PHOTO });
   });
   for (const host of ['https://web.whatsapp.com/**', 'https://mail.google.com/**']) {
     await context.route(host, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>mock</title>' }));
@@ -389,6 +409,33 @@ async function main() {
   await page2.close();
   await until('duplicate note gone', async () => { const s = await tiktokStatus(); return s?.state === 'ready' && !/tabs are open/.test(s.detail || '') ? s : null; });
   pass(`duplicate tab: "${dupStatus.detail}"; reads and sends stay in the first tab`);
+
+  // ---- photos and video covers: fetched by the service worker, answered by the brain ---------------------------
+  const mediaRows = () => sql(
+    `SELECT md.id, md.kind, md.mime, md.bytes, md.data, m.kind AS message_kind FROM media md JOIN messages m ON m.id = md.message_id
+     JOIN conversations cv ON cv.id = md.conversation_id WHERE cv.external_thread_id = ? ORDER BY md.created_at, md.id`, [miaId]);
+  before = (await sent()).length;
+  await mock((src) => window.mock.receive('mia_b', '', { kind: 'image', src }), `${CDN}/tos-mock/photo.png`);
+  await until('reply to the photo', async () => (await sent()).length === before + 1);
+  assert.equal((await sent()).at(-1).text, 'mock saw 1 photo', 'the photo reached the brain and was answered');
+  assert.equal((await sent()).at(-1).convId, miaId);
+  const shot = (await mediaRows())[0];
+  assert.deepEqual([shot.kind, shot.mime, shot.message_kind], ['image', 'image/jpeg', 'image']);
+  assert.ok(shot.data.length <= 250_000, `under the size cap (${shot.data.length} characters of base64)`);
+  assert.deepEqual(jpegSize(Buffer.from(shot.data, 'base64')), { width: 1024, height: 731 }, 'the 1400 x 1000 photo was scaled to 1024 on its longest side');
+  assert.ok(cdnHits.img >= 1 && cdnHits.pageFetch >= 1 && cdnHits.worker >= 1, `canvas tainted, page fetch blocked, then fetched by the service worker (${JSON.stringify(cdnHits)})`);
+  pass(`photo with no text: canvas tainted, fetched by the service worker, stored as a ${Math.round(shot.bytes / 1024)} KB JPEG and answered`);
+
+  await mock((src) => window.mock.receive('mia_b', '', { kind: 'video', src }), `${CDN}/tos-mock/cover.png`);
+  await until('reply to the video', async () => (await sent()).length === before + 2);
+  assert.equal((await sent()).at(-1).text, 'mock saw 1 photo with 1 video frame');
+  assert.deepEqual((await mediaRows()).map((r) => [r.kind, r.message_kind]), [['image', 'image'], ['video_frame', 'video']]);
+  const thumb = await fetch(`${base}/api/media/${shot.id}`, { headers: { cookie } });
+  assert.deepEqual([thumb.status, thumb.headers.get('content-type')], [200, 'image/jpeg']);
+  // An address outside the allowed CDN hosts is never fetched by the worker.
+  const refused = await popup.evaluate(() => chrome.runtime.sendMessage({ acx: true, type: 'fetch_media', channel: 'tiktok', url: 'https://evil.example/photo.png' }));
+  assert.deepEqual(refused, { ok: false, error: 'host_not_allowed' });
+  pass('video: its cover is captured as one frame of a video and answered; thumbnail served to the owner');
 
   // ---- captcha and rate limit stop the channel ------------------------------------------------------------
   await mock(() => window.mock.setCaptcha(true));

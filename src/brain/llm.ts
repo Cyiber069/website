@@ -37,12 +37,40 @@ export interface SystemBlock {
   cache?: boolean;
 }
 
+/** A picture for the user turn, with the line of text that introduces it. */
+export interface PromptImage {
+  label: string;
+  media_type: 'image/jpeg' | 'image/png' | 'image/webp';
+  /** base64, no data: prefix. */
+  data: string;
+}
+
+/** Only Claude gets pictures. Workers AI answers from the text alone. */
+export const canSeeImages = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || choice.provider === 'mock';
+
+/**
+ * The user turn for Claude: plain text when there are no pictures, otherwise each picture after its
+ * label and the request text last. Pictures live in the user turn only, never in the cached system blocks.
+ */
+export function userContent(user: string, images: PromptImage[] = []): string | Anthropic.Beta.BetaContentBlockParam[] {
+  if (!images.length) return user;
+  const blocks: Anthropic.Beta.BetaContentBlockParam[] = [];
+  for (const img of images) {
+    blocks.push({ type: 'text', text: img.label });
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: img.media_type, data: img.data } });
+  }
+  blocks.push({ type: 'text', text: user });
+  return blocks;
+}
+
 export interface CallJsonInput {
   /** What the call is for, stored in llm_usage: decide, polish, recovery_draft, recovery_personalize, test, playground. */
   purpose: string;
   /** Stable text first (instructions, knowledge), then anything that changes per call. */
   system: SystemBlock[];
   user: string;
+  /** Photos from the customer, shown to Claude before the user text. Ignored by Workers AI. */
+  images?: PromptImage[];
   /** JSON schema of the answer. Objects need additionalProperties false and every property listed in required. */
   schema: Record<string, unknown>;
   maxTokens?: number;
@@ -187,7 +215,7 @@ async function callAnthropic(choice: ProviderChoice, settings: Settings, input: 
       system: input.system.filter((b) => b.text.trim()).map((b) => ({
         type: 'text' as const, text: b.text, ...(b.cache ? { cache_control: { type: 'ephemeral' as const } } : {}),
       })),
-      messages: [{ role: 'user', content: input.user }],
+      messages: [{ role: 'user', content: userContent(input.user, input.images) }],
       output_config: { ...(effort ? { effort } : {}), format: { type: 'json_schema', schema: input.schema } },
       // If the model declines for safety reasons the API retries on a fallback model inside the same call.
       ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),

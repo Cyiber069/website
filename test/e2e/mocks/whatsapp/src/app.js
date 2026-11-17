@@ -232,7 +232,12 @@ function messageEl(chat, msg, prev) {
     long && h('span', { role: 'button', 'data-testid': 'caption-read-more-button', onclick: () => { msg.expanded = true; renderMessages(); } }, 'Read more')) : null;
 
   let media = null;
-  if (msg.kind === 'image') media = h('div', { role: 'button', 'aria-label': 'Open picture', class: 'media' }, h('img', { alt: '', src: 'blob:https://web.whatsapp.com/5f0c1c7e-mock' }));
+  // msg.photo: a real picture behind a blob: address, the way WhatsApp Web shows a downloaded photo.
+  // Without it the address is dead, like a photo that has not been downloaded.
+  const src = msg.photo ? realPhoto() : 'blob:https://web.whatsapp.com/5f0c1c7e-mock';
+  if (msg.kind === 'image') media = h('div', { role: 'button', 'aria-label': 'Open picture', class: 'media' }, h('img', { alt: '', src }));
+  // A video shows a preview picture with a play button until it is opened.
+  if (msg.kind === 'video') media = h('div', { role: 'button', 'data-testid': 'video-thumb', class: 'media' }, h('img', { alt: '', src }), icon('video-play', 'ic-play'));
   if (msg.kind === 'voice') {
     media = h('div', { class: 'media' }, h('button', { 'aria-label': 'Play voice message' }, icon('audio-play', 'ic-play-arrow')),
       h('span', { 'data-testid': 'ptt-status' }, icon('ptt-status', 'ic-keyboard-voice-filled')), h('div', { role: 'slider', 'aria-valuetext': '0:00/0:07' }));
@@ -250,6 +255,24 @@ function messageEl(chat, msg, prev) {
         h('div', { 'data-testid': 'msg-meta', class: 'meta' },
           h('span', { 'data-testid': 'msg-time' }, clock(msg.t)),
           msg.fromMe && statusIcon(msg.ack)))));
+}
+
+let photoUrl = '';
+/** A 1600 x 1200 picture drawn once and kept behind a blob: address of this page. */
+function realPhoto() {
+  if (photoUrl) return photoUrl;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1600; canvas.height = 1200;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 1600, 1200);
+  grad.addColorStop(0, '#2b5876'); grad.addColorStop(1, '#f7971e');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, 1600, 1200);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(520, 800, 240, 0, Math.PI * 2); ctx.arc(1140, 800, 240, 0, Math.PI * 2); ctx.fill();
+  const bin = atob(canvas.toDataURL('image/png').split(',')[1]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  photoUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+  return photoUrl;
 }
 
 function renderMessages() {
@@ -453,7 +476,7 @@ const api = {
       chat = { jid, title: opts.title || formatPhone(d), phone: opts.phone || undefined, avatar: 'default', unread: 0, draft: '', messages: [] };
       state.chats.push(chat);
     }
-    const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
+    const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', photo: opts.photo === true, t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
     chat.messages.push(msg);
     if (chat.jid !== state.openJid || state.dialog) chat.unread += 1; // an open chat is read straight away
     save();

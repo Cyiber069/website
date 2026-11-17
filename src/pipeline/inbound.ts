@@ -1,12 +1,13 @@
 import { decide } from '../brain';
 import type {
-  AgentJob, Channel, ContactRow, ConversationRow, Decision, DeviceRow, Env, HistoryMessage, MessageKind, MessageRow, Settings, UrgentRow,
+  AgentJob, Channel, ContactRow, ConversationRow, Decision, DecideMedia, DeviceRow, Env, HistoryMessage, MessageKind, MessageRow, Settings, UrgentRow,
 } from '../types';
 import { CHANNELS } from '../types';
 import { sha256Hex } from '../lib/crypto';
 import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { bad } from '../lib/http';
+import { MEDIA_PER_REPORT, checkMedia, type MediaItem, type MediaRef } from '../lib/media';
 import { getSettings } from '../lib/settings';
 import { HOUR, MIN } from '../lib/time';
 import { handleCodeTurn } from '../discounts/agent';
@@ -28,6 +29,8 @@ export interface InboundMessage {
   body: string;
   kind: MessageKind;
   ts: number | null;
+  /** A photo or one frame of a video the extension captured from this message. Checked in parseInbound. */
+  media?: MediaItem | null;
 }
 
 export interface InboundPayload {
@@ -43,6 +46,8 @@ export interface InboundPayload {
   };
   /** The last messages visible in the thread, oldest first. */
   messages: InboundMessage[];
+  /** Pictures that were sent along but dropped, with why: too_large, not_an_image, not_base64, too_many. */
+  media_rejected?: string[];
 }
 
 export interface Outcome {
@@ -74,9 +79,24 @@ export function parseInbound(raw: Record<string, unknown>): InboundPayload {
     const body = s(m.body, MAX_BODY);
     if (!body && kind === 'text') continue;
     const ts = typeof m.ts === 'number' && Number.isFinite(m.ts) && m.ts > 1_000_000_000_000 ? Math.round(m.ts) : null;
-    messages.push({ external_id: sn(m.external_id, 300), direction, body, kind, ts });
+    messages.push({ external_id: sn(m.external_id, 300), direction, body, kind, ts, media: m.media as MediaItem | undefined });
+  }
+  // Pictures: customer messages only, the newest few, and only real images under the size cap.
+  // A bad one is dropped and the message is kept, so a failed capture never loses the message.
+  const media_rejected: string[] = [];
+  let kept = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    const raw: unknown = m.media;
+    m.media = null;
+    if (raw === undefined || raw === null) continue;
+    if (m.direction !== 'in') continue;
+    if (kept >= MEDIA_PER_REPORT) { media_rejected.push('too_many'); continue; }
+    const res = checkMedia(raw);
+    if (res.ok) { m.media = res.item; kept++; } else media_rejected.push(res.reason);
   }
   return {
+    media_rejected,
     channel,
     thread: {
       external_id,
@@ -110,6 +130,39 @@ const placeholderFor = (kind: MessageKind): string => {
 };
 
 // ---- storing -----------------------------------------------------------------------------------
+
+/** Queue the insert of one picture and return what its message row remembers about it. */
+function mediaWrites(db: D1Database, writes: D1PreparedStatement[], media: MediaItem, messageId: string, convId: string, now: number): MediaRef {
+  const id = uid('md');
+  writes.push(stmt(
+    db, 'INSERT INTO media (id, message_id, conversation_id, kind, mime, data, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    id, messageId, convId, media.kind, media.mime, media.data, media.bytes, now,
+  ));
+  return { media: id, media_kind: media.kind };
+}
+
+/**
+ * The pictures that came with the unanswered customer messages, for the brain: the newest 3, oldest
+ * first. One query, and only when a message says it has a picture.
+ */
+async function loadMediaForBrain(db: D1Database, rows: MessageRow[], unanswered: MessageRow[]): Promise<DecideMedia[]> {
+  const wanted = unanswered
+    .filter((m) => m.status !== 'history')
+    .map((m) => ({ index: rows.indexOf(m), id: parseJson<MediaRef>(m.meta, {}).media }))
+    .filter((x): x is { index: number; id: string } => typeof x.id === 'string' && x.index >= 0)
+    .slice(-MEDIA_PER_REPORT);
+  if (!wanted.length) return [];
+  const found = await all<{ id: string; kind: DecideMedia['kind']; mime: DecideMedia['mime']; data: string }>(
+    db, 'SELECT id, kind, mime, data FROM media WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(wanted.map((w) => w.id)),
+  );
+  const byId = new Map(found.map((f) => [f.id, f]));
+  const out: DecideMedia[] = [];
+  for (const w of wanted) {
+    const f = byId.get(w.id);
+    if (f) out.push({ index: w.index, kind: f.kind === 'video_frame' ? 'video_frame' : 'image', mime: f.mime, data: f.data });
+  }
+  return out;
+}
 
 interface Stored {
   conv: ConversationRow;
@@ -207,12 +260,23 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
   // Written in one batch below: a first look at a long chat is up to 40 rows, and the free plan allows 50 queries per request.
   const writes: D1PreparedStatement[] = [];
 
+  // The picture had not loaded when a message was first read: keep it now, for the owner's thumbnail.
+  const lateMedia = (m: InboundMessage, st: MessageRow): void => {
+    if (!m.media || m.direction !== 'in' || st.direction !== 'in') return;
+    const meta = parseJson<Record<string, unknown>>(st.meta, {});
+    if (meta.media) return;
+    const next = JSON.stringify({ ...meta, ...mediaWrites(db, writes, m.media, st.id, conv.id, now) });
+    writes.push(stmt(db, 'UPDATE messages SET meta = ? WHERE id = ?', next, st.id));
+    st.meta = next;
+  };
+
   for (let i = 0; i < p.messages.length; i++) {
     const m = p.messages[i]!;
     const body = m.body || placeholderFor(m.kind);
     const key = normBody(body);
 
     if (m.external_id && byExt.has(m.external_id)) {
+      lateMedia(m, storedSeq[byExt.get(m.external_id)!]!);
       pointer = Math.max(pointer, byExt.get(m.external_id)! + 1);
       continue;
     }
@@ -233,6 +297,7 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
         ));
         st.external_id = m.external_id;
       }
+      lateMedia(m, st);
       pointer = matched + 1;
       continue;
     }
@@ -252,11 +317,13 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
       else { newInbound++; lastInboundAt = ts; }
     }
     if (created && m.direction === 'out') status = 'history';
+    const messageId = uid('m');
+    const ref: MediaRef = m.media && m.direction === 'in' ? mediaWrites(db, writes, m.media, messageId, conv.id, now) : {};
     writes.push(stmt(
       db,
-      `INSERT INTO messages (id, conversation_id, direction, author, external_id, body, kind, status, ts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO messages (id, conversation_id, direction, author, external_id, body, kind, status, meta, ts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT DO NOTHING`,
-      uid('m'), conv.id, m.direction, author, m.external_id, body, m.kind, status, ts, now,
+      messageId, conv.id, m.direction, author, m.external_id, body, m.kind, status, JSON.stringify(ref), ts, now,
     ));
   }
   if (writes.length) await db.batch(writes);
@@ -365,9 +432,6 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   const openUrgent = await one<UrgentRow>(db, `SELECT * FROM urgent WHERE conversation_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`, convId);
   const notes = parseJson<string[]>(conv.context_notes, []);
-  if (rows.some((m) => m.direction === 'in' && m.status !== 'history' && m.kind !== 'text' && m.kind !== 'sticker')) {
-    notes.push('The customer sent a photo, video, voice note or file you cannot see or hear. Never say you cannot open, see, play or view it. If your answer depends on what is in it, escalate, and keep any holding line about checking with the team without mentioning the photo or video.');
-  }
   notes.push('Read the whole conversation above before you write. Reply to what the customer means given everything said earlier in this chat, do not repeat something already answered, and do not answer an older message again.');
   notes.push('If the latest message needs no reply, choose action ignore. Examples: counting days or streaks (day 12, day 13) to win a free kit, chain or spam messages, a lone ok, thanks or emoji when the chat is already finished.');
   if (conv.channel === 'gmail') {
@@ -401,9 +465,11 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
   let decision: Decision;
   try {
+    // Photos and video frames of the unanswered messages. Losing them must not lose the reply.
+    const media = await loadMediaForBrain(db, rows, unanswered).catch((err) => { console.error('media not loaded', err); return [] as DecideMedia[]; });
     decision = await decide(env, {
       channel: conv.channel, contact_name: contact.display_name || null, subject: conv.subject,
-      history, context_notes: notes, now, mode: 'live',
+      history, context_notes: notes, now, mode: 'live', media,
     });
   } catch (err) {
     await run(db, 'UPDATE conversations SET processing_until = NULL WHERE id = ?', convId); // keep needs_reply_since so the sweeper retries
@@ -512,6 +578,11 @@ export async function handleInbound(env: Env, device: DeviceRow, payload: Inboun
   if (payload.thread.is_group) return none(null, 'group_chat');
   const settings = await getSettings(env.DB);
   const stored = await storeInbound(env, payload, settings);
+  if (payload.media_rejected?.length) {
+    // Shows up next to the extension's own notes when a channel's photos are not being read.
+    await run(env.DB, 'INSERT INTO diagnostics (ts, device_id, channel, kind, data) VALUES (?, ?, ?, ?, ?)',
+      Date.now(), device.id, payload.channel, 'note', JSON.stringify({ media_rejected: payload.media_rejected })).catch(() => 0);
+  }
   onStored?.({ conversation_id: stored.conv.id, new_inbound: stored.newInbound });
   if (stored.takeover) return none(stored.conv.id, 'human_takeover', stored.newInbound);
   if (!stored.newInbound && !stored.conv.needs_reply_since) {

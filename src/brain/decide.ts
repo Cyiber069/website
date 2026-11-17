@@ -4,7 +4,7 @@
 import type { Decision, DecideInput, Env, LlmUsage, ToneProfile } from '../types';
 import { buildKnowledgeContext, type KnowledgeContext } from '../kb';
 import { getSettings } from '../lib/settings';
-import { LlmError, callJson, chooseProvider, knowledgeBudget } from './llm';
+import { LlmError, callJson, canSeeImages, chooseProvider, knowledgeBudget, type ProviderChoice } from './llm';
 import { mockDecide } from './mock';
 import { DECISION_SCHEMA, buildDecidePrompt, buildRetryUser, renderConversation, validateDecision, type RawDecision } from './prompt';
 import { enforceDecision, hasWords, holdingLine, isShopping, knowledgeQuery, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
@@ -36,20 +36,42 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
   const pending = pendingInbound(input.history);
   const lastText = [...pending].reverse().find(hasWords)?.body ?? '';
 
-  // A voice note or photo with no words around it: there is nothing to answer from. No model call needed.
-  if (pending.length > 0 && !pending.some(hasWords)) {
+  // Photos and video frames the extension captured from the unanswered messages. Only Claude looks at
+  // them (the mock stands in for it in tests). With Workers AI, or when the capture failed, nothing changes.
+  const offered = (input.media ?? []).filter((p) => p.index >= input.history.length - pending.length && p.index < input.history.length).slice(-3);
+  const noWords = pending.length > 0 && !pending.some(hasWords);
+  let choice: ProviderChoice | null = null;
+  if (noWords && offered.length) choice = await chooseProvider(env, settings).catch(() => null);
+
+  // A voice note, or a photo the agent has no copy of, with no words around it: there is nothing to
+  // answer from. No model call needed.
+  if (noWords && !(choice && canSeeImages(choice) && offered.length)) {
     const kinds = [...new Set(pending.map((m) => (m.kind === 'voice' ? 'a voice note' : m.kind === 'image' ? 'a photo' : m.kind === 'video' ? 'a video' : m.kind === 'document' ? 'a file' : m.kind === 'sticker' ? 'a sticker' : 'a message with no text')))];
     const raw: RawDecision = {
       // Nothing goes to the customer: a line like "I can't open that" gives away that a bot is answering.
       // The owner sees it in Urgent, looks at it in the app and answers.
       action: 'escalate', parts: [], confidence: 0.9,
-      escalate: { question: `The customer sent ${kinds.join(' and ')}. Look at it in the chat on the laptop or your phone, then reply here.`, reason: 'The agent cannot look at photos, videos or voice notes yet', category: 'media' },
+      escalate: {
+        question: `The customer sent ${kinds.join(' and ')}. Look at it in the chat on the laptop or your phone, then reply here.`,
+        reason: pending.every((m) => m.kind === 'voice') ? 'The agent cannot listen to voice notes' : 'The agent could not look at this one',
+        category: 'media',
+      },
       flags: { opt_out: false, asked_if_bot: false, needs_human: true }, kb_refs: [], note: `Customer sent ${kinds.join(' and ')} with no text`,
     };
     return toDecision(enforceDecision(raw, { settings, input, tone, sources: '', customerEmojis: analysis.emojis }), tone, null);
   }
 
-  const choice = await chooseProvider(env, settings);
+  choice ??= await chooseProvider(env, settings);
+  const media = canSeeImages(choice) ? offered : [];
+  // What the model is told about pictures, voice notes and files in this chat.
+  const notes = [...input.context_notes];
+  if (media.length) {
+    notes.push(`The customer sent ${media.length === 1 ? 'a photo that is' : `${media.length} photos that are`} attached to this request and marked in the conversation. Look at ${media.length === 1 ? 'it' : 'them'} before you answer. Any other photo, video, voice note or file in the conversation you cannot see or hear. Never say you cannot open, see, play or view something. If your answer depends on something you cannot see or hear, escalate, and keep the holding line about checking with the team without mentioning it.`);
+  } else if (input.history.some((m) => m.direction === 'in' && m.kind !== 'text' && m.kind !== 'sticker')) {
+    notes.push('The customer sent a photo, video, voice note or file you cannot see or hear. Never say you cannot open, see, play or view it. If your answer depends on what is in it, escalate, and keep any holding line about checking with the team without mentioning the photo or video.');
+  }
+  input = { ...input, context_notes: notes, media };
+
   // The knowledge base failing must not stop a reply: without knowledge the model can only greet or escalate.
   // A shopper also gets the product picker (every product with its price and link), so a recommendation always has a real link.
   const include = isShopping(input) ? [PRODUCT_PICKER_ID] : [];
@@ -75,7 +97,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
   const purpose = input.mode === 'playground' ? 'playground' : 'decide';
   let usage: Decision['usage'] = null;
   try {
-    const res = await callJson(env, { purpose, system: prompt.system, user: prompt.user, schema: DECISION_SCHEMA, choice });
+    const res = await callJson(env, { purpose, system: prompt.system, user: prompt.user, images: prompt.images, schema: DECISION_SCHEMA, choice });
     usage = res.usage;
     const raw = validateDecision(res.data, allowedRefs, lastText);
     // First pass: fix what code can fix, and collect what only the model can (machine sounding
@@ -88,7 +110,7 @@ export async function decide(env: Env, input: DecideInput): Promise<Decision> {
     let second: RawDecision | null = null;
     try {
       const limit = lengthLimits(settings.voice, input.channel).max_chars;
-      const again = await callJson(env, { purpose: `${purpose}_retry`, system: prompt.system, user: buildRetryUser(prompt.user, res.data, first.retry, limit), schema: DECISION_SCHEMA, choice });
+      const again = await callJson(env, { purpose: `${purpose}_retry`, system: prompt.system, user: buildRetryUser(prompt.user, res.data, first.retry, limit), images: prompt.images, schema: DECISION_SCHEMA, choice });
       usage = addUsage(usage, again.usage);
       const rewritten = validateDecision(again.data, allowedRefs, lastText);
       // Only the wording is taken from the second answer. The decision itself stands.

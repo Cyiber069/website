@@ -1,6 +1,6 @@
 // Inbox: every conversation, with the thread, a manual reply box and per thread controls.
 import { get, post } from '../api.js';
-import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, toast, toastError, syncList, emptyState, unavailable, timeTag, dayClock, kindLabel, confirmDialog, refreshTimes, ago } from '../ui.js';
+import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, toast, toastError, syncList, emptyState, unavailable, timeTag, dayClock, kindLabel, mediaThumb, confirmDialog, refreshTimes, ago } from '../ui.js';
 
 function row(c, activeId) {
   return html`<li><a class="conv ${c.id === activeId ? 'is-active' : ''}" href="#/inbox/${c.id}" ${c.id === activeId ? raw('aria-current="true"') : ''}>
@@ -15,7 +15,7 @@ function message(m) {
   const who = m.author === 'customer' ? 'customer' : m.author === 'owner' ? 'owner' : 'agent';
   const by = who === 'customer' ? 'Customer' : who === 'owner' ? 'You' : 'Agent';
   const failed = m.status === 'failed';
-  return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span><div class="bubble">${m.body || kindLabel(m.kind)}</div><span class="msg__meta">${failed ? html`<span class="bad">Not delivered · </span>` : ''}${dayClock(m.ts)}</span></div>`;
+  return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div><span class="msg__meta">${failed ? html`<span class="bad">Not delivered · </span>` : ''}${dayClock(m.ts)}</span></div>`;
 }
 function pendingBubble(p) {
   const label = p.status === 'review' ? 'Waiting for your OK' : p.local ? 'Sending to your laptop' : 'Waiting to send';
@@ -146,7 +146,7 @@ export default {
       ];
       if (!items.length) { setHTML(msgs, html`<p class="voice muted thread__empty">No messages in this chat yet.</p>`); delete msgs.dataset.synced; } else {
         if (msgs.querySelector('.thread__empty')) { msgs.innerHTML = ''; delete msgs.dataset.synced; }
-        syncList(msgs, items, { key: (i) => i.k, render: (i) => (i.m ? message(i.m) : pendingBubble(i.p)), sig: (i) => JSON.stringify(i.m ? [i.m.body, i.m.status] : [i.p.status, i.p.parts]) });
+        syncList(msgs, items, { key: (i) => i.k, render: (i) => (i.m ? message(i.m) : pendingBubble(i.p)), sig: (i) => JSON.stringify(i.m ? [i.m.body, i.m.status, i.m.media?.id] : [i.p.status, i.p.parts]) });
       }
       if (threadEl.dataset.fresh === '1' || (msgs.childElementCount !== before && nearBottom)) {
         delete threadEl.dataset.fresh;

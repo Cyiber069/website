@@ -1,0 +1,26 @@
+/* Customer photos: thumbnails on Urgent cards and in the chat view, and the full size view.
+   Colours come from the tokens in acx.css only. */
+.thumbs { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.thumb {
+  position: relative; display: block; flex: none; width: 72px; height: 72px; padding: 0; overflow: hidden;
+  border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-2); cursor: zoom-in;
+}
+.thumb:hover { border-color: var(--border-control); }
+.thumb:focus-visible { outline: 2px solid var(--chrome); outline-offset: 2px; }
+.thumb__img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.thumb__tag {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 4px; text-align: center;
+  font-size: 10px; line-height: 1.3; color: var(--text-1); background: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+.msg .thumb { margin-bottom: 4px; }
+.msg--customer .thumb { align-self: flex-start; }
+.thread--mini .thumb { width: 56px; height: 56px; }
+
+.lightbox {
+  max-width: min(96vw, 1100px); max-height: 96dvh; padding: 0; border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg); background: var(--surface-1); color: var(--text-1);
+}
+.lightbox::backdrop { background: color-mix(in srgb, var(--bg) 86%, transparent); }
+.lightbox__body { display: grid; gap: var(--sp-3); justify-items: center; padding: var(--sp-3); margin: 0; }
+.lightbox__img { display: block; max-width: 100%; max-height: calc(96dvh - 96px); object-fit: contain; border-radius: var(--r-md); cursor: zoom-out; }
+.lightbox__note { margin: 0; color: var(--text-2); font-size: var(--fs-14); }

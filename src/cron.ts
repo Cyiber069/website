@@ -1,6 +1,7 @@
 // Runs every minute (see wrangler.jsonc). Each task is independent: one failing never blocks the rest.
 import type { Env } from './types';
 import { run } from './lib/db';
+import { MEDIA_KEEP_DAYS } from './lib/media';
 import { getSettings, getState, setState } from './lib/settings';
 import { DAY } from './lib/time';
 import { watchHealth } from './pipeline/monitor';
@@ -22,6 +23,8 @@ async function cleanup(env: Env): Promise<void> {
   await setState(db, 'cleanup_at', now);
   await run(db, 'DELETE FROM events WHERE ts < ?', now - 45 * DAY);
   await run(db, 'DELETE FROM diagnostics WHERE ts < ?', now - 14 * DAY);
+  // Customer photos are only needed while the chat is live.
+  await run(db, 'DELETE FROM media WHERE created_at < ?', now - MEDIA_KEEP_DAYS * DAY);
   await run(db, 'DELETE FROM llm_usage WHERE ts < ?', now - 90 * DAY);
   await run(db, 'DELETE FROM sessions WHERE expires_at < ?', now);
   await run(db, 'DELETE FROM pairing_codes WHERE expires_at < ?', now);

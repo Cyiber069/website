@@ -549,6 +549,8 @@
         kind,
         ts: model && model.t ? model.t * 1000 : pre.ts,
         author: pre.author,
+        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia). Voice notes are left alone.
+        _media: kind === 'image' || kind === 'video' ? { el: m.row, kind } : null,
       });
     }
     return out;
@@ -692,7 +694,9 @@
 
     checkLabel(cur);
     if (messages.length) lastSeen[cur.title] = messages[messages.length - 1].external_id;
-    return { thread, messages: messages.map(({ external_id, direction, body, kind, ts }) => ({ external_id, direction, body, kind, ts })) };
+    // Photos and video previews of the newest customer messages ride along. Never throws, at most about 5 s.
+    await ACX.captureMedia(messages);
+    return { thread, messages: messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts })) };
   }
 
   // ---- typing and sending -----------------------------------------------------------------------------------------------

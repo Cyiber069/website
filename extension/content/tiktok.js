@@ -749,9 +749,13 @@
       const external_id = convId || chat.handle;
       if (!external_id) throw new Fail('thread_not_found', 'TikTok shows no id for this conversation', false);
       const name = chat.nick || chat.handle;
+      // Photos and video covers of the newest customer messages ride along. Never throws, at most about 5 s.
+      const shown = usable.slice(-MAX_MESSAGES);
+      for (const m of shown) m._media = m.kind === 'image' || m.kind === 'video' ? { el: m.el, kind: m.kind } : null;
+      await ACX.captureMedia(shown);
       return {
         thread: { external_id, title: name, is_group, subject: null, contact: { name, phone: null, email: null, handle: chat.handle || null } },
-        messages: usable.slice(-MAX_MESSAGES).map((m) => ({ external_id: m.serverId || null, direction: m.direction, body: m.body, kind: m.kind, ts: null })),
+        messages: shown.map((m) => ({ external_id: m.serverId || null, direction: m.direction, body: m.body, kind: m.kind, ts: null, ...(m.media ? { media: m.media } : {}) })),
       };
     } finally {
       await tidy();

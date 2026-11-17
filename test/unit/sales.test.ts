@@ -60,7 +60,7 @@ describe('sales playbook in the prompt', () => {
 
   it('has selling examples whose links are examples, and a sales field in every example answer', () => {
     const answers = [...text.matchAll(/<output>\n(\{.*\})\n<\/output>/g)].map((m) => JSON.parse(m[1]!));
-    expect(answers).toHaveLength(13);
+    expect(answers).toHaveLength(14);
     for (const a of answers) {
       expect(Object.keys(a)).toEqual(Object.keys((DECISION_SCHEMA as any).properties));
       expect(validateSales(a.sales)).not.toBeNull();

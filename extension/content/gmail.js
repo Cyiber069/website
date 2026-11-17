@@ -631,10 +631,19 @@
       for (const m of all) {
         for (const part of m.out ? splitOwnMessage(m) : [m]) {
           const kind = !part.body && part.attachments ? 'document' : 'text';
-          if (!part.body && kind === 'text') continue;
-          messages.push({ external_id: part.id, direction: part.out ? 'out' : 'in', body: part.body, kind, ts: part.ts });
+          // A customer email that shows a picture (an attachment card or an inline photo): copy it for the brain.
+          const _media = !part.out && ACX.hasMedia(m.el, 'image') ? { el: m.el, kind: 'image' } : null;
+          if (!part.body && kind === 'text' && !_media) continue;
+          messages.push({ external_id: part.id, direction: part.out ? 'out' : 'in', body: part.body, kind, ts: part.ts, _media });
         }
       }
+      await ACX.captureMedia(messages); // never throws, at most about 5 s
+      for (const msg of messages) {
+        // A photo with no words is a photo, not a file. Without a copy and without words there is nothing to report.
+        if (msg.media && !msg.body) msg.kind = 'image';
+        delete msg._media;
+      }
+      for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].body && messages[i].kind === 'text') messages.splice(i, 1);
       return {
         thread: {
           external_id: threadId,

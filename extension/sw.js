@@ -10,6 +10,7 @@
 //  * a sweep every 10 minutes reports recent chats that end with a customer message, badge or not
 //  * state that must survive the worker stopping lives in chrome.storage.session, not in memory
 import * as api from './lib/api.js';
+import { fetchMedia } from './lib/media.js';
 import * as store from './lib/store.js';
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -724,7 +725,7 @@ async function cycle(myGen) {
   await store.set({ status: { ...latest, channels: await withHealth(probed.channels) } });
 
   const ready = NAMES.filter((n) => channels[n].state === 'ready').length;
-  await setBadge(ready ? 'ON' : '!', ready ? '#30a46c' : '#f5a524');
+  await setBadge(ready ? 'ON' : '!', ready ? '#2563eb' : '#f5a524');
 }
 
 /**
@@ -890,6 +891,12 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       respond({ ok: true });
       return false;
     }
+    // A tab could not copy a customer's photo itself (cross origin CDN picture). Only our three tabs
+    // may ask, and only for the hosts listed in lib/media.js.
+    case 'fetch_media':
+      if (!sender.tab?.id || !NAMES.includes(msg.channel)) { respond({ ok: false, error: 'not_a_channel_tab' }); return false; }
+      fetchMedia(msg.channel, String(msg.url || ''), Number(msg.timeout_ms) || 4000).then(respond, () => respond({ ok: false, error: 'failed' }));
+      return true;
     case 'trusted_type':
       if (!sender.tab?.id) { respond({ ok: false }); return false; }
       trustedType(sender.tab.id, String(msg.text || '')).then(respond, (err) => respond({ ok: false, error: String(err?.message || err) }));

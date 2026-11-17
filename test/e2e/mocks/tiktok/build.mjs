@@ -53,6 +53,7 @@ body { margin: 0; font: 14px/1.4 system-ui, sans-serif; }
 .bubble { background: #f1f1f2; border-radius: 8px; padding: 6px 10px; max-width: 420px; white-space: pre-wrap; }
 .bubble p { margin: 0; }
 .card { width: 120px; height: 160px; background: #bbb; border-radius: 8px; }
+.card img.photo { width: 120px; height: 160px; object-fit: cover; border-radius: 8px; }
 .composer { display: flex; align-items: center; gap: 8px; padding: 10px; border-top: 1px solid #ddd; }
 .input-area { flex: 1; display: flex; align-items: center; gap: 6px; background: #f1f1f2; border-radius: 8px; padding: 8px 10px; }
 .editor { flex: 1; min-width: 0; position: relative; }
