@@ -291,9 +291,12 @@
     }
     const previewEl = Q('chatList.rowPreview', row);
     const icons = iconNames(row);
+    const pinned = isPinnedRow(row, icons);
+    if (pinned) pinnedTitles.add(normTitle(title)); else pinnedTitles.delete(normTitle(title));
     return {
       row,
       title,
+      pinned,
       unread,
       preview: squash(textOf(previewEl)).slice(0, 200),
       time: squash(textOf(Q('chatList.rowTime', row))),
@@ -306,8 +309,29 @@
 
   const parsedRows = () => chatRows().map(parseRow).filter(Boolean);
 
+  // ---- pinned chats: the owner's own. The agent never reads or answers them by itself. ------------------------------
+  // Titles last seen pinned in the list (normalised). WhatsApp keeps pinned chats at the top, so the list
+  // shows them whenever it is scrolled to the top, which every scan does first.
+  const pinnedTitles = new Set();
+
+  /**
+   * True when the row shows the pin: chatList.rowPinned (data-icon pinned2 or pinned, data-testid pinned),
+   * an svg title with "pinned" or "pin" in it, or an aria-label like "Pinned chat" (text.pinnedAria).
+   */
+  function isPinnedRow(row, icons = iconNames(row)) {
+    if (Q('chatList.rowPinned', row)) return true;
+    if (/(^|[\s,-])pinned2?(\s|,|$)/i.test(icons)) return true;
+    for (const t of row.querySelectorAll('svg title')) if (/\bpin(ned)?\b/i.test(t.textContent || '')) return true;
+    const aria = lookup('text.pinnedAria') ? rx('text.pinnedAria') : /pinned chat|chat fijado|chat disematkan/i;
+    for (const el of [row, ...row.querySelectorAll('[aria-label]')]) if (aria.test(el.getAttribute('aria-label') || '')) return true;
+    return false;
+  }
+
+  /** True for a chat the list shows as pinned (by title). */
+  const isPinnedTitle = (title) => pinnedTitles.has(normTitle(title));
+
   function countUnread() {
-    try { return parsedRows().filter((r) => r.unread > 0 && !r.lastMine && !(known[r.title] && known[r.title].is_group)).length; } catch { return 0; }
+    try { return parsedRows().filter((r) => r.unread > 0 && !r.lastMine && !r.pinned && !(known[r.title] && known[r.title].is_group)).length; } catch { return 0; }
   }
 
   // The agent moved the chat list itself (scrolled a row into view): put it back on the next look.
@@ -393,7 +417,7 @@
     const threads = [];
     for (const r of rows) {
       if (threads.length >= 8) break;
-      if (r.lastMine || (!r.preview && !r.time) || isTypingPreview(r.preview)) continue;
+      if (r.pinned || r.lastMine || (!r.preview && !r.time) || isTypingPreview(r.preview)) continue;
       // Only today's chats (the list shows a clock time for those): older ones are the owner's to deal with.
       if (!/^\d{1,2}[:.]\d{2}/.test(String(r.time || ''))) continue;
       if (!isPersonRow(r, titleCount, byTitle)) continue;
@@ -426,6 +450,7 @@
         : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
       const sig = rowThreadSig(r);
       rowSeen.set(r.title, { time: r.time, preview, stamp: ACX.stableTime(prev && prev.stamp, r.time) });
+      if (r.pinned) continue; // the owner's own chat: never read by the agent
       if (r.lastMine || !(r.unread || changed)) continue; // nothing new from the customer
       if (!isPersonRow(r, titleCount, byTitle)) continue;
       threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig, ts_max: ACX.labelTimeMax(r.time, now) });
@@ -433,7 +458,7 @@
 
     // The chat that is open right now never gets an unread badge: watch its last message instead.
     const cur = currentChat();
-    if (cur && cur.title && !threads.some((t) => t.key === cur.title) && !(known[cur.title] && known[cur.title].is_group) && labelInfo(cur.label).kind !== 'group') {
+    if (cur && cur.title && !isPinnedTitle(cur.title) && !threads.some((t) => t.key === cur.title) && !(known[cur.title] && known[cur.title].is_group) && labelInfo(cur.label).kind !== 'group') {
       const last = lastMessageLight();
       if (last) {
         if (!(cur.title in lastSeen)) lastSeen[cur.title] = last.id; // first look: only what arrives from now on counts
@@ -792,7 +817,13 @@
     const title = String(key || '').trim();
     if (!title) throw new Fail('thread_not_found', 'No chat given', false);
     await closeDialogs();
+    // A pinned chat is the owner's: not opened, not read, never reported (the worker counts it as done).
+    try {
+      const row = findRow({ titles: [title], digits: '' });
+      if ((row && row.pinned) || isPinnedTitle(title)) return { skipped: true, why: 'pinned' };
+    } catch { /* two rows with that title: openThread says so */ }
     const cur = await openThread({ titles: [title], digits: '' });
+    if (isPinnedTitle(cur.title)) return { skipped: true, why: 'pinned' };
     await sleep(rand(300, 700)); // a person looks before doing anything
 
     const messages = await collectMessages();
@@ -844,14 +875,15 @@
     if (!first) throw new Fail('composer_missing', 'Could not find the message box', true);
     const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, pace.cps)) * 1000));
     const there = squash(textOf(first));
-    if (there && there !== want) throw new Fail('composer_busy', 'Someone is typing in this chat', true);
+    // Text that is not ours in this chat's box: the owner is writing to this customer (or left a draft).
+    if (there && there !== want) throw new Fail('draft_in_chat', 'There is an unsent message in this chat', true);
 
     if (!there) { // (when the box already holds exactly this text it is ours from an attempt that was cut short)
       first.focus();
       if (!pace.instant) await ACX.humanPause(total * rand(0.25, 0.4), pace.scale); // thinking pause before the text appears
       const el = Q('composer.input');
       if (!el) throw new Fail('composer_missing', 'The message box went away', true);
-      if (squash(textOf(el))) throw new Fail('composer_busy', 'Someone started typing in this chat', true);
+      if (squash(textOf(el))) throw new Fail('draft_in_chat', 'Someone started typing in this chat', true);
       try {
         await ACX.insertText(el, text);
       } catch (err) {
@@ -1003,6 +1035,11 @@
     }
     await sleep(pace.instant ? rand(150, 300) : Math.max(300, rand(500, 1200) * pace.scale)); // let the chat settle on screen
 
+    // A pinned chat is the owner's: the agent's own replies never go there. What the owner chose (an
+    // Urgent answer, a message from Inbox, a code they approved) still does.
+    if (isPinnedTitle(cur.title) && ['auto', 'holding'].includes(job.source)) {
+      throw new Fail('pinned_chat', 'This chat is pinned, so the agent leaves it to you', false);
+    }
     // Refuse to type anywhere but the chat the job names.
     checkLabel(cur);
     const msgs = await collectMessages();
@@ -1029,11 +1066,17 @@
       await clearOurs(parts[0]);
       throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
     }
+    // The owner answered this customer by hand after the read: the agent's reply would go out on top.
+    if (from === 0 && newerThan && ACX.ownerReplied(msgs, newerThan, parts, (m) => sentIds.has(m.external_id))) {
+      await clearOurs(parts[0]);
+      throw new Fail('owner_replied', 'You already replied to this customer yourself', false);
+    }
     for (let i = from; i < parts.length; i++) {
       // About 0.4 s between parts (WhatsApp keeps their order); the old human gap with a speed.
       if (i > from) await sleep(pace.instant ? 400 : Math.max(400, rand(700, 1600) * pace.scale));
       await typePart(parts[i], pace, cur.title);
       sent.push(await sendTyped(parts[i], { last: i === parts.length - 1 }));
+      ACX.noteSent(parts[i]);
       jobProgress.set(job.id, [...sent]);
     }
     if (sent.length) lastSeen[cur.title] = sent[sent.length - 1];

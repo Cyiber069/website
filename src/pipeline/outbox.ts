@@ -2,7 +2,10 @@ import type { AgentJob, Channel, DeviceRow, Env, JobTarget, OutboxRow, Settings 
 import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError } from '../lib/http';
+import { getSettings } from '../lib/settings';
 import { MIN } from '../lib/time';
+import { isLegacyExtension } from '../lib/version';
+import { alertOwner } from './alerts';
 
 export const MAX_ATTEMPTS = 3;
 const LEASE_MS = 3 * MIN;
@@ -10,11 +13,24 @@ const LEASE_MS = 3 * MIN;
 export const JOBS_PER_SYNC = 3;
 /** The owner was typing in that tab: offered again this soon, and not counted as a try. */
 export const BUSY_RETRY_MS = 20_000;
+/** Still busy after this long: offered again once a minute instead (fewer rows written). */
+export const BUSY_SLOW_AFTER_MS = 2 * MIN;
+/** Still busy after this long: the owner is told once (push, and a line on Live). */
+export const BUSY_ALERT_MS = 5 * MIN;
+/** Still busy after this long: the job fails with a plain reason, instead of waiting silently for a day. */
+export const BUSY_GIVE_UP_MS = 15 * MIN;
 /** Failures that are over in seconds (a slow page, a reloading tab): an agent reply is tried again quickly. */
 const QUICK_RETRY_CODES = new Set(['timeout', 'no_content_script', 'tab_missing', 'send_not_confirmed', 'thread_not_found', 'composer_missing']);
-const BUSY_CODES = new Set(['owner_busy', 'composer_busy']);
+/**
+ * The owner is in the way, not the job: owner_busy (typing somewhere in the tab), composer_busy (the
+ * message box changed while typing; older builds also use it for a draft) and draft_in_chat (newer
+ * builds: text that is not ours sits in this chat's message box).
+ */
+const BUSY_CODES = new Set(['owner_busy', 'composer_busy', 'draft_in_chat']);
 /** The agent's own replies: they may carry an extra wait the owner set. */
 const AGENT_SOURCES = new Set(['auto', 'holding', 'discount']);
+/** Replies the agent wrote by itself: dropped when the owner takes the chat over. */
+const TAKEOVER_SOURCES = new Set(['auto', 'holding']);
 
 export interface EnqueueInput {
   channel: Channel;
@@ -74,16 +90,19 @@ export function enqueueStatements(db: D1Database, input: EnqueueInput): { id: st
  * whole (typing_cps 0). The agent's own replies keep the extra wait the owner may set (none by
  * default, and never more than the current setting, so a job queued under the old slow pacing is not
  * slow). The checkout reminders and the owner alert keep their own pacing.
+ * `legacy`: an extension before 0.4.0 (src/lib/version.ts). It reads typing_cps 0 as its slowest
+ * typing (3 a second on TikTok), so it gets the typing speed it always had (settings.pacing.typing_cps).
  */
-export function jobPacing(row: Pick<OutboxRow, 'source' | 'pacing'>, settings: Settings): { delay_ms: number; typing_cps: number } {
+export function jobPacing(row: Pick<OutboxRow, 'source' | 'pacing'>, settings: Settings, legacy = false): { delay_ms: number; typing_cps: number } {
   const stored = parseJson<{ delay_ms?: number; typing_cps?: number }>(row.pacing, {});
   if (row.source === 'recovery' || row.source === 'alert') return { delay_ms: stored.delay_ms ?? 0, typing_cps: stored.typing_cps ?? settings.pacing.typing_cps };
-  if (!AGENT_SOURCES.has(row.source)) return { delay_ms: 0, typing_cps: 0 };
+  const typing_cps = legacy ? settings.pacing.typing_cps : 0;
+  if (!AGENT_SOURCES.has(row.source)) return { delay_ms: 0, typing_cps };
   const max = Math.max(0, settings.pacing.max_reply_delay_s * 1000);
-  return { delay_ms: Math.min(Math.max(0, stored.delay_ms ?? 0), max), typing_cps: 0 };
+  return { delay_ms: Math.min(Math.max(0, stored.delay_ms ?? 0), max), typing_cps };
 }
 
-export function toJob(row: OutboxRow, settings: Settings): AgentJob {
+export function toJob(row: OutboxRow, settings: Settings, legacy = false, now = Date.now()): AgentJob {
   return {
     id: row.id,
     channel: row.channel,
@@ -91,23 +110,54 @@ export function toJob(row: OutboxRow, settings: Settings): AgentJob {
     source: row.source,
     target: parseJson<JobTarget>(row.target, emptyTarget()),
     parts: parseJson<string[]>(row.parts, []),
-    pacing: jobPacing(row, settings),
+    pacing: jobPacing(row, settings, legacy),
     lease_until: row.lease_until ?? 0,
+    lease_ms: row.lease_until ? Math.max(0, row.lease_until - now) : 0,
     attempts: row.attempts,
+    not_before: row.not_before,
+    created_at: row.created_at,
   };
 }
 
-/** Lease one specific job to a device straight away (used when the extension is waiting on the reply). */
+/** Lease one specific job to a device straight away (used when the extension is waiting on the reply). One query. */
 export async function leaseById(db: D1Database, device: DeviceRow, id: string, settings: Settings, extraMs = 0): Promise<AgentJob | null> {
   const now = Date.now();
-  const changed = await run(
+  const rows = await all<OutboxRow>(
     db,
-    `UPDATE outbox SET status = 'leased', lease_until = ?, lease_device = ?, attempts = attempts + 1 WHERE id = ? AND status = 'pending'`,
+    `UPDATE outbox SET status = 'leased', lease_until = ?, lease_device = ?, attempts = attempts + 1 WHERE id = ? AND status = 'pending' RETURNING *`,
     now + LEASE_MS + extraMs, device.id, id,
   );
-  if (!changed) return null;
-  const row = await one<OutboxRow>(db, 'SELECT * FROM outbox WHERE id = ?', id);
-  return row ? toJob(row, settings) : null;
+  return rows[0] ? toJob(rows[0], settings, isLegacyExtension(device.version), now) : null;
+}
+
+/**
+ * Hand this device's own leased jobs of one chat back to it (two queries at most). For a reply that was
+ * leased inline while the answer that carried it was cut on the way: the extension posts the chat
+ * again, gets "reply queued" and would otherwise wait out the whole lease. Newer extensions only: they
+ * dedupe jobs by id and never type a job twice.
+ */
+export async function reofferOwn(db: D1Database, device: DeviceRow, conversationId: string, settings: Settings): Promise<AgentJob[]> {
+  const now = Date.now();
+  const rows = await all<OutboxRow>(
+    db,
+    `UPDATE outbox SET lease_until = MAX(lease_until, ?) WHERE id IN (
+       SELECT id FROM outbox WHERE conversation_id = ? AND status = 'leased' AND lease_device = ? AND lease_until > ? ORDER BY created_at LIMIT 3)
+     RETURNING *`,
+    now + LEASE_MS, conversationId, device.id, now,
+  );
+  return rows.sort((a, b) => a.created_at - b.created_at).map((r) => toJob(r, settings, isLegacyExtension(device.version), now));
+}
+
+/**
+ * The jobs a laptop says it holds that it must not send any more: the server cancelled them (a pause,
+ * an opt out, a takeover) or gave up on them. One query by primary key, only when the laptop sends ids.
+ */
+export async function droppedJobs(db: D1Database, held: string[]): Promise<string[]> {
+  if (!held.length) return [];
+  const rows = await all<{ id: string }>(
+    db, `SELECT id FROM outbox WHERE id IN (SELECT value FROM json_each(?)) AND status IN ('cancelled', 'expired', 'failed')`, JSON.stringify(held.slice(0, 40)),
+  );
+  return rows.map((r) => r.id);
 }
 
 /**
@@ -140,18 +190,36 @@ export async function leaseDue(db: D1Database, device: DeviceRow, settings: Sett
       db, `SELECT id FROM outbox WHERE channel = ? AND status = 'leased' AND lease_until > ? AND COALESCE(lease_device, '') != ? LIMIT 1`, channel, now, device.id,
     );
     if (other) continue;
+    // Never the agent's own words for a chat the owner paused or took over, and nothing but the owner's
+    // own words for someone who opted out (checked per candidate row, by primary key: no extra query).
     const due = await all<OutboxRow>(
       db,
       `SELECT * FROM outbox WHERE channel = ? AND status = 'pending' AND not_before <= ? AND (expires_at IS NULL OR expires_at > ?)
+         AND NOT (source IN ('auto', 'holding') AND EXISTS (SELECT 1 FROM conversations cv WHERE cv.id = outbox.conversation_id AND cv.paused_until > ?))
+         AND NOT (source != 'manual' AND EXISTS (SELECT 1 FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id WHERE cv.id = outbox.conversation_id AND ct.opted_out = 1))
        ORDER BY CASE source WHEN 'urgent' THEN 0 WHEN 'manual' THEN 0 WHEN 'auto' THEN 1 WHEN 'review' THEN 1 WHEN 'holding' THEN 1 WHEN 'discount' THEN 1 ELSE 2 END, not_before, created_at LIMIT ?`,
-      channel, now, now, JOBS_PER_SYNC,
+      channel, now, now, now, JOBS_PER_SYNC,
     );
-    for (const next of due) {
+    for (const next of chatOrder(due)) {
       const job = await leaseById(db, device, next.id, settings);
       if (job) jobs.push(job);
     }
   }
   return jobs;
+}
+
+/**
+ * The jobs of one chat go out oldest first (a holding line before the owner's answer), and each chat
+ * keeps the place of its most urgent job. Older extensions type a sync's jobs in this order.
+ */
+export function chatOrder<T extends Pick<OutboxRow, 'conversation_id' | 'created_at' | 'id'>>(rows: T[]): T[] {
+  const groups = new Map<string, T[]>();
+  for (const r of rows) {
+    const k = r.conversation_id ?? `job:${r.id}`;
+    const g = groups.get(k);
+    if (g) g.push(r); else groups.set(k, [r]);
+  }
+  return [...groups.values()].flatMap((g) => [...g].sort((a, b) => a.created_at - b.created_at));
 }
 
 export interface JobResult {
@@ -208,18 +276,78 @@ async function conversationForNewChat(db: D1Database, row: OutboxRow, target: Jo
   return conv?.id ?? null;
 }
 
+/** Who a job was for, in plain words for the owner. */
+const whoOf = (t: JobTarget) => t.title ?? t.phone ?? t.email ?? t.handle ?? 'a customer';
+
+/** A failure code in plain words for the owner's activity feed. */
+function failWords(code: string): string {
+  switch (code) {
+    case 'newer_message': return 'the laptop kept refusing it because the customer wrote again';
+    case 'owner_busy': case 'composer_busy': case 'draft_in_chat': return 'a draft or a half written message in the agent’s tab was in the way';
+    default: return code.replace(/_/g, ' ');
+  }
+}
+
+/**
+ * The owner took the chat: they replied by hand (owner_replied), or text that is not ours sits in that
+ * chat's message box (draft_in_chat, and composer_busy from builds before 0.4.0 that cannot tell a draft
+ * apart). The agent's own unsent words for the chat are dropped, it stays out of the chat for
+ * pacing.human_takeover_minutes, and nothing is answered later from the stored messages (the owner may
+ * have answered already). A draft also tells the owner, in case it was left behind.
+ */
+async function ownerTookChat(env: Env, row: OutboxRow, target: JobTarget, why: 'replied' | 'draft', error: string): Promise<{ ok: true; status: string }> {
+  const db = env.DB;
+  const now = Date.now();
+  const settings = await getSettings(db);
+  const minutes = settings.pacing.human_takeover_minutes;
+  const until = now + minutes * MIN;
+  const reason = why === 'replied' ? 'You replied yourself' : 'You were typing in that chat';
+  const code = why === 'replied' ? 'owner_replied' : 'draft_in_chat';
+  const statements = [
+    stmt(db, `UPDATE outbox SET status = 'cancelled', lease_until = NULL, busy_since = NULL, last_error = ? WHERE id = ?`, `takeover: ${code}: ${clip(error, 160)}`, row.id),
+  ];
+  if (row.conversation_id) {
+    statements.push(
+      stmt(db, `UPDATE outbox SET status = 'cancelled', last_error = ? WHERE conversation_id = ? AND status IN ('pending', 'leased', 'review') AND source IN ('auto', 'holding') AND id != ?`,
+        `takeover: ${reason.toLowerCase()}`, row.conversation_id, row.id),
+      // A longer pause the owner set from the dashboard is kept.
+      stmt(db, `UPDATE conversations SET paused_until = CASE WHEN paused_until > ? THEN paused_until ELSE ? END,
+          pause_reason = CASE WHEN paused_until > ? THEN pause_reason ELSE ? END, needs_reply_since = NULL WHERE id = ?`,
+        until, until, until, reason, row.conversation_id),
+    );
+  }
+  await db.batch(statements);
+  const who = whoOf(target);
+  await logEvent(db, {
+    level: why === 'draft' ? 'warn' : 'info', type: 'takeover', channel: row.channel, conversation_id: row.conversation_id,
+    message: why === 'replied'
+      ? `You replied to ${who} yourself. The agent did not send its reply and is staying out of that chat for ${minutes} min.`
+      : `There is an unsent message in your chat with ${who}. The agent did not send its reply and is staying out of that chat for ${minutes} min.`,
+    data: { outbox_id: row.id, source: row.source, code },
+  });
+  if (why === 'draft') {
+    await alertOwner(env, settings, {
+      kind: 'waiting', title: 'A draft is in a customer chat',
+      body: `${who}: there is an unsent message in that chat. Send it or delete it. The agent is staying out for ${minutes} min.`, path: '/#/live',
+    });
+  }
+  return { ok: true, status: 'cancelled' };
+}
+
 export async function completeJob(env: Env, device: DeviceRow, id: string, result: JobResult): Promise<{ ok: true; status: string }> {
   const db = env.DB;
   const row = await one<OutboxRow>(db, 'SELECT * FROM outbox WHERE id = ?', id);
   if (!row) throw new HttpError(404, 'job_not_found');
   if (row.status === 'sent') return { ok: true, status: 'sent' }; // idempotent re-report
-  if (row.status !== 'leased' && row.status !== 'pending') return { ok: true, status: row.status };
+  // A message that really went out is recorded whatever happened to the row meanwhile (cancelled by a
+  // pause or an opt out while the laptop held it, or given up): the next read must know it is ours.
+  if (row.status !== 'leased' && row.status !== 'pending' && result.status !== 'sent') return { ok: true, status: row.status };
   const now = Date.now();
   const target = parseJson<JobTarget>(row.target, emptyTarget());
   const parts = parseJson<string[]>(row.parts, []);
 
   if (result.status === 'sent') {
-    await run(db, `UPDATE outbox SET status = 'sent', sent_at = ?, lease_until = NULL, last_error = NULL WHERE id = ?`, now, id);
+    await run(db, `UPDATE outbox SET status = 'sent', sent_at = ?, lease_until = NULL, last_error = NULL, busy_since = NULL, busy_warned = 0 WHERE id = ?`, now, id);
     let convId = row.conversation_id;
     if (!convId && row.source !== 'alert') {
       convId = await conversationForNewChat(db, row, target);
@@ -256,7 +384,7 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
     if (row.source !== 'alert') {
       await logEvent(db, {
         level: 'good', type: 'sent', channel: row.channel, conversation_id: convId,
-        message: `Sent to ${target.title ?? target.phone ?? target.email ?? target.handle ?? 'customer'}: ${clip(parts.join(' '), 160)}`,
+        message: `Sent to ${whoOf(target)}: ${clip(parts.join(' '), 160)}`,
         data: { outbox_id: id, source: row.source, device: device.name },
       });
     }
@@ -269,33 +397,100 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
   // The customer wrote again after the extension read the chat. An agent reply written before that may
   // no longer fit, so it is dropped quietly (no alert, no try used) and the customer is marked as
   // waiting: the extension reads the chat again and one fresh decision answers everything. A code
-  // message, or what the owner wrote, still fits whatever came after it, so it is offered again.
+  // message, or what the owner wrote, still fits whatever came after it, so it is offered again, once
+  // without using a try. Refused again (a laptop that keeps refusing it): it counts as a try, so it
+  // fails after 3 and the owner sees why instead of it going round for a day.
   if (code === 'newer_message') {
-    if (row.source === 'auto' || row.source === 'holding') {
+    if (TAKEOVER_SOURCES.has(row.source)) {
       await db.batch([
         stmt(db, `UPDATE outbox SET status = 'cancelled', lease_until = NULL, last_error = ? WHERE id = ?`, why, id),
         stmt(db, 'UPDATE conversations SET needs_reply_since = COALESCE(needs_reply_since, ?) WHERE id = ?', now, row.conversation_id ?? ''),
       ]);
       return { ok: true, status: 'cancelled' };
     }
+    if (!(row.last_error ?? '').startsWith('newer_message')) {
+      await run(db, `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ? WHERE id = ?`, now, why, id);
+      return { ok: true, status: 'pending' };
+    }
+    // Fall through: a normal failure that uses a try.
+  }
+
+  // The owner already answered this customer by hand (newer extensions see their message after the read).
+  if (code === 'owner_replied') return ownerTookChat(env, row, target, 'replied', result.error ?? '');
+  // Text that is not ours in this chat's message box: the owner is writing to this customer. The
+  // agent's own reply stands down at once. Builds before 0.4.0 say composer_busy for a draft in the
+  // chat on WhatsApp and TikTok; on Gmail they also say it for an email written anywhere in the tab,
+  // which is not this customer's, so there it waits like owner_busy.
+  const legacyDraft = code === 'composer_busy' && row.channel !== 'gmail' && isLegacyExtension(device.version);
+  if (TAKEOVER_SOURCES.has(row.source) && (code === 'draft_in_chat' || legacyDraft)) {
+    return ownerTookChat(env, row, target, 'draft', result.error ?? '');
+  }
+
+  // WhatsApp: the chat is pinned, so it is the owner's own and the agent never answers it by itself.
+  // Dropped quietly with a line on Live; the sweeper does not try it again from the stored messages.
+  if (code === 'pinned_chat') {
+    await db.batch([
+      stmt(db, `UPDATE outbox SET status = 'cancelled', lease_until = NULL, last_error = ? WHERE id = ?`, why, id),
+      stmt(db, 'UPDATE conversations SET needs_reply_since = NULL WHERE id = ?', row.conversation_id ?? ''),
+    ]);
+    await logEvent(db, {
+      level: 'info', type: 'skipped', channel: row.channel, conversation_id: row.conversation_id,
+      message: `Did not answer ${whoOf(target)}: that chat is pinned, so it is yours.`, data: { outbox_id: id, source: row.source },
+    });
+    return { ok: true, status: 'cancelled' };
+  }
+
+  // The laptop's own copy of the lease ran out before it could send (a long queue): nothing was typed.
+  // Offered again at once, no try used.
+  if (code === 'lease_expired_local') {
     await run(db, `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ? WHERE id = ?`, now, why, id);
     return { ok: true, status: 'pending' };
   }
 
-  // The owner is typing in that tab: not the job's fault. Offered again soon without using a try,
-  // until it expires as usual.
-  if (BUSY_CODES.has(code) && result.retryable !== false) {
-    await run(db, `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ? WHERE id = ?`, now + BUSY_RETRY_MS, why, id);
+  // The owner is typing in that tab or a draft is in the way: not the job's fault. Offered again soon
+  // without using a try, then less often; the owner is told after a few minutes, and after 15 minutes
+  // it fails with a plain reason instead of waiting silently until it expires.
+  const busy = BUSY_CODES.has(code) && result.retryable !== false;
+  const busySince = row.busy_since ?? now;
+  if (busy && now - busySince < BUSY_GIVE_UP_MS) {
+    const elapsed = now - busySince;
+    const delay = elapsed < BUSY_SLOW_AFTER_MS ? BUSY_RETRY_MS : MIN;
+    const warn = elapsed >= BUSY_ALERT_MS && !row.busy_warned;
+    await run(
+      db,
+      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ?, busy_since = ?, busy_warned = ? WHERE id = ?`,
+      now + delay, why, busySince, warn || row.busy_warned ? 1 : 0, id,
+    );
+    const who = whoOf(target);
+    if (row.busy_since == null) {
+      await logEvent(db, {
+        level: 'info', type: 'send_waiting', channel: row.channel, conversation_id: row.conversation_id,
+        message: `Waiting to send to ${who}: ${clip(result.error || 'someone is typing in the agent’s tab', 160)}.`,
+        data: { outbox_id: id, source: row.source, code },
+      });
+    }
+    if (warn) {
+      const settings = await getSettings(db);
+      await logEvent(db, {
+        level: 'warn', type: 'send_waiting', channel: row.channel, conversation_id: row.conversation_id,
+        message: `A reply to ${who} has waited ${Math.round(elapsed / MIN)} min. There is a draft or a half written message in the agent’s tab. Send it or delete it.`,
+        data: { outbox_id: id, source: row.source, code },
+      });
+      await alertOwner(env, settings, {
+        kind: 'waiting', title: 'A reply is waiting to send',
+        body: `${who}: a draft in the agent’s tab is in the way. Send it or delete it.`, path: '/#/live',
+      });
+    }
     return { ok: true, status: 'pending' };
   }
 
-  const retry = result.retryable !== false && row.attempts < MAX_ATTEMPTS;
+  const retry = !busy && result.retryable !== false && row.attempts < MAX_ATTEMPTS;
   if (retry) {
     // A quick failure of the agent's own reply is tried again in seconds: the customer is waiting.
     const step = AGENT_SOURCES.has(row.source) && QUICK_RETRY_CODES.has(code) ? 15_000 : MIN;
     await run(
       db,
-      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, last_error = ? WHERE id = ?`,
+      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, last_error = ?, busy_since = NULL WHERE id = ?`,
       now + row.attempts * step, why, id,
     );
     return { ok: true, status: 'pending' };
@@ -307,12 +502,22 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
   if (row.source !== 'alert') {
     await logEvent(db, {
       level: code === 'not_on_whatsapp' ? 'warn' : 'error', type: 'send_failed', channel: row.channel, conversation_id: row.conversation_id,
-      message: `Could not send to ${target.title ?? target.phone ?? target.email ?? 'customer'} (${code.replace(/_/g, ' ')})`,
+      message: busy
+        ? `Could not send to ${whoOf(target)}. A draft in the agent’s tab was in the way for ${Math.round((now - busySince) / MIN)} min. Send or delete it, then answer from Inbox.`
+        : `Could not send to ${target.title ?? target.phone ?? target.email ?? 'customer'} (${failWords(code)})`,
       data: { outbox_id: id, source: row.source, error: result.error ?? '' },
     });
+    if (busy && !row.busy_warned) {
+      await alertOwner(env, await getSettings(db), {
+        kind: 'waiting', title: 'A reply could not be sent', body: `${whoOf(target)}: a draft in the agent’s tab was in the way. Answer from Inbox.`, path: '/#/live',
+      });
+    }
   }
   return { ok: true, status: 'failed' };
 }
+
+/** The deadline passed with nothing sent: one line per job on Live (in one batch), so nothing disappears unseen. */
+const EXPIRY_EVENTS = 10;
 
 /** Housekeeping run by cron: return expired leases to the queue and drop jobs past their deadline. */
 export async function sweepOutbox(db: D1Database): Promise<void> {
@@ -325,16 +530,44 @@ export async function sweepOutbox(db: D1Database): Promise<void> {
      WHERE status = 'leased' AND lease_until < ?`,
     now,
   );
-  const expired = await all<{ id: string; source: string; ref_id: string | null }>(
-    db, `SELECT id, source, ref_id FROM outbox WHERE status IN ('pending', 'review') AND expires_at IS NOT NULL AND expires_at < ?`, now,
+  // The agent's own words for a chat the owner paused or took over meanwhile (a decision that was
+  // still working, or a lease that came back) never go out later. Pending rows only, by primary key.
+  await run(
+    db,
+    `UPDATE outbox SET status = 'cancelled', last_error = 'paused: the chat was paused before it went out'
+     WHERE status = 'pending' AND source IN ('auto', 'holding')
+       AND EXISTS (SELECT 1 FROM conversations cv WHERE cv.id = outbox.conversation_id AND cv.paused_until > ?)`,
+    now,
   );
+  const expired = await all<{ id: string; status: string; source: string; ref_id: string | null; channel: Channel; conversation_id: string | null; target: string; last_error: string | null }>(
+    db, `SELECT id, status, source, ref_id, channel, conversation_id, target, last_error FROM outbox WHERE status IN ('pending', 'review') AND expires_at IS NOT NULL AND expires_at < ? LIMIT 100`, now,
+  );
+  if (!expired.length) return;
+  const writes: D1PreparedStatement[] = [
+    stmt(db, `UPDATE outbox SET status = 'expired' WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(expired.map((e) => e.id))),
+  ];
   for (const e of expired) {
-    await run(db, `UPDATE outbox SET status = 'expired' WHERE id = ?`, e.id);
     if (e.source === 'recovery' && e.ref_id) {
       // Back to new so tomorrow's run can pick it up again if it is still fresh enough.
-      await run(db, `UPDATE checkouts SET status = 'new', outbox_id = NULL, updated_at = ? WHERE id = ? AND status = 'queued'`, now, e.ref_id);
+      writes.push(stmt(db, `UPDATE checkouts SET status = 'new', outbox_id = NULL, updated_at = ? WHERE id = ? AND status = 'queued'`, now, e.ref_id));
     }
   }
+  const told = expired.filter((e) => e.source !== 'alert' && e.source !== 'recovery');
+  const event = (level: string, channel: Channel | null, conv: string | null, message: string, data: Record<string, unknown>) =>
+    stmt(db, 'INSERT INTO events (ts, level, type, channel, conversation_id, message, data) VALUES (?, ?, ?, ?, ?, ?, ?)', now, level, 'send_expired', channel, conv, clip(message, 400), JSON.stringify(data));
+  for (const e of told.slice(0, EXPIRY_EVENTS)) {
+    const who = whoOf(parseJson<JobTarget>(e.target, emptyTarget()));
+    const reason = (e.last_error ?? '').split(':')[0] ?? '';
+    writes.push(event(e.status === 'review' ? 'warn' : 'error', e.channel, e.conversation_id,
+      e.status === 'review'
+        ? `The draft for ${who} waited too long for your OK and was dropped.`
+        : `Not sent to ${who} in time${reason ? ` (${failWords(reason)})` : ' (the laptop did not send it)'}.`,
+      { outbox_id: e.id, source: e.source }));
+  }
+  if (told.length > EXPIRY_EVENTS) writes.push(event('error', null, null, `${told.length - EXPIRY_EVENTS} more replies were not sent in time.`, {}));
+  const reminders = expired.filter((e) => e.source === 'recovery').length;
+  if (reminders) writes.push(event('warn', 'whatsapp', null, `${reminders} checkout ${reminders === 1 ? 'reminder was' : 'reminders were'} not sent in time. ${reminders === 1 ? 'It' : 'They'} can go in the next daily run.`, {}));
+  await db.batch(writes);
 }
 
 export async function cancelJob(db: D1Database, id: string): Promise<boolean> {
@@ -343,25 +576,28 @@ export async function cancelJob(db: D1Database, id: string): Promise<boolean> {
 
 /**
  * Throw away what the agent queued by itself in one chat (replies, holding lines, review drafts) that
- * has not gone out yet. Used when the owner takes the chat over: those words no longer fit it.
+ * has not gone out yet, also when the laptop holds it already (leased): newer extensions drop it on
+ * the next sync, and a send that still happens is recorded as ours. Used when the owner takes the
+ * chat over or pauses it: those words no longer fit it.
  */
 export async function cancelAgentJobs(db: D1Database, conversationId: string, reason: string, exceptId: string | null = null): Promise<number> {
   return run(
     db,
-    `UPDATE outbox SET status = 'cancelled', last_error = ? WHERE conversation_id = ? AND status IN ('pending', 'review') AND source IN ('auto', 'holding') AND id != ?`,
+    `UPDATE outbox SET status = 'cancelled', last_error = ? WHERE conversation_id = ? AND status IN ('pending', 'leased', 'review') AND source IN ('auto', 'holding') AND id != ?`,
     reason, conversationId, exceptId ?? '',
   );
 }
 
 /**
  * The contact asked not to be messaged: nothing the agent queued for them goes out any more, in any
- * of their chats, recovery reminders to their number included. Messages the owner typed are kept.
+ * of their chats, recovery reminders to their number included, also when the laptop holds it already.
+ * Messages the owner typed are kept.
  */
 export async function cancelForOptOut(db: D1Database, contactId: string, phone: string | null): Promise<number> {
   return run(
     db,
     `UPDATE outbox SET status = 'cancelled', last_error = 'opted_out: they asked not to be messaged'
-     WHERE status IN ('pending', 'review') AND source != 'manual' AND (
+     WHERE status IN ('pending', 'leased', 'review') AND source != 'manual' AND (
        conversation_id IN (SELECT id FROM conversations WHERE contact_id = ?)
        OR (source = 'recovery' AND ? IS NOT NULL AND ref_id IN (SELECT id FROM checkouts WHERE phone_e164 = ?)))`,
     contactId, phone, phone,

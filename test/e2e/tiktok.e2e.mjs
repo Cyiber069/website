@@ -294,7 +294,7 @@ async function main() {
   await page.keyboard.type('half typed');
   assert.equal(await mock(() => window.mock.composerText()), 'half typed');
   const busy = await op('send', { job: fake() });
-  assert.deepEqual([busy.ok, busy.error_code, busy.retryable], [false, 'composer_busy', true], JSON.stringify(busy));
+  assert.deepEqual([busy.ok, busy.error_code, busy.retryable], [false, 'draft_in_chat', true], JSON.stringify(busy));
   assert.equal(await mock(() => window.mock.composerText()), 'half typed', 'the draft is left alone');
   await page.click('.public-DraftEditor-content');
   await page.keyboard.press('Control+A');
@@ -308,7 +308,7 @@ async function main() {
   const wrongPeer = await op('send', { job: fake({ target: { thread_external_id: 'someone.else', title: 'Jake', handle: 'someone.else' } }) });
   assert.deepEqual([wrongPeer.ok, wrongPeer.error_code], [false, 'thread_not_found'], JSON.stringify(wrongPeer));
   assert.equal((await sent()).length, 7);
-  pass('refused: draft in the message box (composer_busy), new_chat (unknown), unknown conversation, wrong person');
+  pass('refused: draft in the message box (draft_in_chat), new_chat (unknown), unknown conversation, wrong person');
 
   // ---- send button that ignores the click: Enter is the fallback ---------------------------------------
   await mock(() => window.mock.setQuirk('ignoreSendClick', true));
@@ -387,6 +387,35 @@ async function main() {
   assert.equal((await sent()).at(-1).text, 'Mock reply to: are you still there');
   await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 8);
   pass(`watchdog: hung tab reloaded (${healed.recoveries} fix today, "${healed.last_error}"), channel answers again`);
+
+  // ---- watchdog with a reply waiting in the lane: the hung tab is still healed, and the reply goes out after -------------
+  {
+    const [mia] = await sql(`SELECT id FROM conversations WHERE external_thread_id = ?`, [miaId]);
+    const text = 'queued while the tab hung';
+    // A job with its own wait (the checkout reminders keep one), so it sits in the lane queue for 20 s.
+    await sql(`INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, pacing, created_at)
+      VALUES ('ob_e2e_hung', 'tiktok', 'reply', ?, ?, ?, 'pending', 'recovery', 0, '{"delay_ms":20000,"typing_cps":0}', ?)`,
+      [mia.id, JSON.stringify({ thread_external_id: miaId, title: 'Mia', phone: null, email: null, handle: 'mia_b', subject: null }), JSON.stringify([text]), Date.now()]);
+    await until('the job queued in the TikTok lane', async () => {
+      const lanes = await popup.evaluate(() => new Promise((r) => chrome.runtime.sendMessage({ acx: true, type: 'lanes' }, (res) => r(res?.lanes || []))));
+      return lanes.find((l) => l.id === 'tiktok:inbox')?.queue_ids?.includes('ob_e2e_hung');
+    }, 30_000);
+    const fixesBefore = (await tiktokStatus()).recoveries || 0;
+    const sentBefore = (await sent()).length;
+    await timing({ stall_ms: 5000, recovery_gap_ms: 5000, replace_after_ms: 120_000 });
+    const cdp2 = await context.newCDPSession(page);
+    await cdp2.send('Debugger.enable');
+    await cdp2.send('Debugger.pause');
+    const healed2 = await until('watchdog reloads the hung tab with a reply queued', async () => { const s = await tiktokStatus(); return s && s.recoveries > fixesBefore ? s : null; }, 90_000);
+    await page.waitForFunction(() => window.mock && window.mock.ready, null, { timeout: 30_000 });
+    await timing(null);
+    await until('the queued reply sent after the recovery', async () => (await sent()).slice(sentBefore).some((m) => m.text === text), 90_000);
+    await sleep(2000);
+    assert.equal((await sent()).filter((m) => m.text === text).length, 1, 'sent exactly once');
+    assert.equal((await sql(`SELECT status FROM outbox WHERE id = 'ob_e2e_hung'`))[0].status, 'sent');
+    await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 9);
+    pass(`watchdog with a reply queued: the hung tab was reloaded (${healed2.recoveries} fixes today) and the reply went out once after`);
+  }
 
   // ---- a second TikTok tab: only the first one is ever read or typed into --------------------------------------
   const page2 = await context.newPage();

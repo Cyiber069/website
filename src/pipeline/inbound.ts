@@ -15,7 +15,8 @@ import { promisesLiveCode } from '../discounts/rules';
 import { alertOwner } from './alerts';
 import { noReplyNeeded } from './noreply';
 export { noReplyNeeded };
-import { cancelAgentJobs, cancelForOptOut, emptyTarget, enqueue, leaseById } from './outbox';
+import { cancelAgentJobs, cancelForOptOut, emptyTarget, enqueue, leaseById, reofferOwn } from './outbox';
+import { isLegacyExtension } from '../lib/version';
 import { recordSalesRead } from '../sales/leads'; // SALES: lead stage tracking
 import { applyMeta, describeForBrain, parseMeta, type BrainMedia, type MediaExtra } from '../vision';
 import { wordsOf } from '../brain/prompt';
@@ -50,6 +51,12 @@ export interface InboundPayload {
   messages: InboundMessage[];
   /** Pictures that were sent along but dropped, with why: too_large, not_an_image, not_base64, too_many. */
   media_rejected?: string[];
+  /**
+   * Newer extensions: agent replies of this chat the laptop refused (newer_message) whose result may not
+   * have reached the server yet. They are dropped before the chat is decided again, so the fresh
+   * decision never treats them as on their way.
+   */
+  refused_job_ids?: string[];
 }
 
 export interface Outcome {
@@ -106,8 +113,12 @@ export function parseInbound(raw: Record<string, unknown>): InboundPayload {
     // A video's cover may bring the uploaded video's ref, more frames and a shared post's details.
     if (res.ok) { m.media = { ...res.item, ...mediaExtras(raw, res.item.kind) }; kept++; } else media_rejected.push(res.reason);
   }
+  const refused = Array.isArray(raw.refused_job_ids)
+    ? raw.refused_job_ids.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 40).slice(0, 5)
+    : [];
   return {
     media_rejected,
+    refused_job_ids: refused,
     channel,
     thread: {
       external_id,
@@ -496,6 +507,8 @@ export interface ProcessOptions {
   startedAt?: number;
   /** More frames and shared post details from the report in memory (by message id), for the vision model. */
   extras?: Map<string, MediaExtra>;
+  /** The chat and contact as storeInbound just read them: two queries fewer (the free plan allows 50 per request). */
+  loaded?: { conv: ConversationRow; contact: ContactRow };
 }
 
 /**
@@ -508,9 +521,11 @@ export async function processConversation(env: Env, convId: string, device: Devi
   const now = Date.now();
   const deadlineAt = (opts.startedAt ?? now) + (device ? LIVE_BUDGET_MS : SWEEP_BUDGET_MS);
   const live = () => opts.live?.() ?? true;
-  const conv = await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', convId);
+  const conv = opts.loaded?.conv.id === convId ? opts.loaded.conv : await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', convId);
   if (!conv) return none(null, 'conversation_missing');
-  const contact = (await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id))!;
+  const contact = opts.loaded?.conv.id === convId && opts.loaded.contact.id === conv.contact_id
+    ? opts.loaded.contact
+    : (await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id))!;
   const clearAll = () => run(db, 'UPDATE conversations SET needs_reply_since = NULL, processing_until = NULL, retry_at = NULL WHERE id = ?', convId);
 
   if (!settings.agent.enabled) return none(convId, 'agent_off', newInbound);
@@ -628,7 +643,7 @@ export async function processConversation(env: Env, convId: string, device: Devi
         await logEvent(db, { level: 'error', type: 'discount_error', channel: conv!.channel, conversation_id: convId, message: `Could not handle a discount code request from ${contact.display_name || 'a customer'}: ${clip(String((err as Error)?.message ?? err), 200)}` });
       }
       if (turn.kind === 'done') {
-        await clearIfAnswered(db, convId, lastMsgNow.ts);
+        await clearIfAnswered(db, convId, lastMsgNow.ts).catch((err) => console.error('clear after the code turn failed', err));
         return { conversation_id: convId, action: turn.action, reason: turn.reason, jobs: turn.jobs, new_inbound: newInbound, final: true, retry_after_ms: null, jobs_pending: (turn.queued ?? 0) > 0 };
       }
       if (turn.kind === 'note') notes.push(turn.note);
@@ -741,16 +756,22 @@ export async function processConversation(env: Env, convId: string, device: Devi
         if (!told) await holdingLine(openUrgent.id);
       } else {
         const urgentId = uid('u');
-        await run(
+        // Only when no question of this chat is open: two runs that overlap (a slow model past the lock)
+        // never open two items, send two holding lines or alert the owner twice.
+        const opened = await run(
           db,
           `INSERT INTO urgent (id, conversation_id, channel, question, customer_message, reason, category, status, polished_answer, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
-          urgentId, convId, conv!.channel, clip(esc.question, 500), clip(customerWords, 1500), clip(esc.reason, 300), clip(esc.category, 40), draft, now,
+           SELECT ?, ?, ?, ?, ?, ?, ?, 'open', ?, ? WHERE NOT EXISTS (SELECT 1 FROM urgent WHERE conversation_id = ? AND status = 'open')`,
+          urgentId, convId, conv!.channel, clip(esc.question, 500), clip(customerWords, 1500), clip(esc.reason, 300), clip(esc.category, 40), draft, now, convId,
         );
-        await run(db, `UPDATE conversations SET status = 'waiting_owner' WHERE id = ?`, convId);
-        await logEvent(db, { level: 'warn', type: 'escalated', channel: conv!.channel, conversation_id: convId, message: `Needs you: ${who} asked "${clip(esc.question, 160)}"`, data: { urgent_id: urgentId } });
-        await holdingLine(urgentId);
-        await alertOwner(env, settings, { kind: 'urgent', title: 'A customer question needs you', body: `${who}: ${clip(esc.question, 120)}`, path: '/#/urgent' });
+        if (opened) {
+          await run(db, `UPDATE conversations SET status = 'waiting_owner' WHERE id = ?`, convId);
+          await logEvent(db, { level: 'warn', type: 'escalated', channel: conv!.channel, conversation_id: convId, message: `Needs you: ${who} asked "${clip(esc.question, 160)}"`, data: { urgent_id: urgentId } });
+          await holdingLine(urgentId);
+          await alertOwner(env, settings, { kind: 'urgent', title: 'A customer question needs you', body: `${who}: ${clip(esc.question, 120)}`, path: '/#/urgent' });
+        } else {
+          reason = 'already_with_owner';
+        }
       }
     } else {
       reason = decision.note || 'no_reply_needed';
@@ -759,7 +780,9 @@ export async function processConversation(env: Env, convId: string, device: Devi
     // SALES: store the lead stage, product and any product link we sent (src/sales/leads.ts). Never blocks a reply.
     await recordSalesRead(db, conv!, decision.sales, salesSent, now).catch((err) => console.error('sales read not stored', err));
 
-    await clearIfAnswered(db, convId, lastMsgNow.ts);
+    // Jobs may be leased to the laptop already: a failing clear (a database limit) must not lose them.
+    // The lock then runs out by itself.
+    await clearIfAnswered(db, convId, lastMsgNow.ts).catch((err) => console.error('clear after the reply failed', err));
     return { conversation_id: convId, action, reason, jobs, new_inbound: newInbound, final: true, retry_after_ms: null, jobs_pending: queuedUnleased > 0 };
   }
 }
@@ -778,9 +801,20 @@ export async function handleInbound(
     await run(env.DB, 'INSERT INTO diagnostics (ts, device_id, channel, kind, data) VALUES (?, ?, ?, ?, ?)',
       Date.now(), device.id, payload.channel, 'note', JSON.stringify({ media_rejected: payload.media_rejected })).catch(() => 0);
   }
+  if (payload.refused_job_ids?.length) {
+    // The laptop refused these replies because the customer wrote again; their results may still be on
+    // the way. Dropped now (one query), exactly as the result would, so the brain does not see them as queued.
+    await run(
+      env.DB,
+      `UPDATE outbox SET status = 'cancelled', lease_until = NULL, last_error = 'newer_message: refused by the laptop'
+       WHERE id IN (SELECT value FROM json_each(?)) AND conversation_id = ? AND status IN ('leased', 'pending') AND source IN ('auto', 'holding')`,
+      JSON.stringify(payload.refused_job_ids), stored.conv.id,
+    );
+  }
   onStored?.({ conversation_id: stored.conv.id, new_inbound: stored.newInbound });
   if (stored.takeover) return none(stored.conv.id, 'human_takeover', stored.newInbound);
-  const go = () => processConversation(env, stored.conv.id, device, stored.newInbound, { ...opts, startedAt, extras: stored.extras });
+  const loaded = { conv: stored.conv, contact: stored.contact };
+  const go = () => processConversation(env, stored.conv.id, device, stored.newInbound, { ...opts, startedAt, extras: stored.extras, loaded });
   let outcome: Outcome;
   if (!stored.newInbound && !stored.conv.needs_reply_since) {
     // A message request the owner just accepted: the earlier reply could not be sent while it was a
@@ -796,13 +830,20 @@ export async function handleInbound(
         // Never answered at all: a request seen earlier while it could not be replied to.
         || (await one<{ id: string }>(env.DB, `SELECT id FROM messages WHERE conversation_id = ? AND direction = 'out' LIMIT 1`, stored.conv.id)) === null;
     }
-    outcome = wasRequest ? await processConversation(env, stored.conv.id, device, 0, { ...opts, startedAt, extras: stored.extras }) : none(stored.conv.id, 'nothing_new');
+    outcome = wasRequest ? await processConversation(env, stored.conv.id, device, 0, { ...opts, startedAt, extras: stored.extras, loaded }) : none(stored.conv.id, 'nothing_new');
   } else {
     outcome = await go();
   }
+  // A reply to everything is already leased to this laptop, but the laptop posts the chat again, so it
+  // never got it (the answer that carried it was cut on the way). Handed back now instead of after the
+  // 3 minute lease. Newer extensions only: they dedupe by job id and never type a job twice.
+  const live = opts.live ?? (() => true);
+  if (!outcome.jobs.length && (outcome.reason === 'reply_queued' || outcome.reason === 'nothing_new') && outcome.conversation_id && live() && !isLegacyExtension(device.version)) {
+    outcome.jobs = await reofferOwn(env.DB, device, outcome.conversation_id, settings);
+  }
   // Nothing handed over, but a reply for this chat is waiting in the queue (an earlier request finished
   // after the extension hung up, or a retry is due): tell the extension to sync now.
-  if (!outcome.jobs.length && !outcome.jobs_pending && outcome.conversation_id && (outcome.reason === 'nothing_new' || outcome.reason === 'already_processing' || outcome.reason === 'duplicate')) {
+  if (!outcome.jobs.length && !outcome.jobs_pending && outcome.conversation_id && (outcome.reason === 'nothing_new' || outcome.reason === 'already_processing' || outcome.reason === 'duplicate' || outcome.reason === 'reply_queued')) {
     outcome.jobs_pending = (await one<{ id: string }>(env.DB, `SELECT id FROM outbox WHERE conversation_id = ? AND status = 'pending' AND not_before <= ? LIMIT 1`, outcome.conversation_id, Date.now())) !== null;
   }
   return outcome;

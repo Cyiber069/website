@@ -57,6 +57,14 @@ export interface PromptImage {
  */
 export const canSeeImages = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || (choice.provider === 'mock' && choice.model !== MOCK_TEXT_MODEL);
 export const MOCK_TEXT_MODEL = 'mock-text';
+/**
+ * Test mode with the provider set to anthropic: the mock does the database work Claude does (the key
+ * is read, every call is written to llm_usage) and has a cheaper model for small checks, so the tests
+ * that hold a request under the free plan's 50 queries count what production does.
+ */
+export const MOCK_CLAUDE_MODEL = 'mock-claude';
+export const MOCK_CLAUDE_CHEAP_MODEL = 'mock-claude-cheap';
+const claudeLikeMock = (choice: ProviderChoice) => choice.provider === 'mock' && choice.model.startsWith(MOCK_CLAUDE_MODEL);
 
 /**
  * The user turn for Claude: plain text when there are no pictures, otherwise each picture after its
@@ -111,7 +119,13 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
  */
 export async function chooseProvider(env: Env, settings: Settings): Promise<ProviderChoice> {
   // Tests: the mock, which can see pictures like Claude, or reads text only like Workers AI when that provider is chosen.
-  if (env.ACX_TEST_MODE === '1') return { provider: 'mock', model: settings.brain.provider === 'workers_ai' ? MOCK_TEXT_MODEL : 'mock', apiKey: null };
+  if (env.ACX_TEST_MODE === '1') {
+    if (settings.brain.provider === 'anthropic') {
+      await getSecret(env.DB, 'anthropic_api_key'); // what the real choice reads
+      return { provider: 'mock', model: MOCK_CLAUDE_MODEL, apiKey: null };
+    }
+    return { provider: 'mock', model: settings.brain.provider === 'workers_ai' ? MOCK_TEXT_MODEL : 'mock', apiKey: null };
+  }
   const brain = settings.brain;
   const key = ((await getSecret(env.DB, 'anthropic_api_key')) ?? env.ANTHROPIC_API_KEY ?? '').trim();
   const workers: ProviderChoice | null = env.AI ? { provider: 'workers_ai', model: brain.workers_ai_model, apiKey: null } : null;
@@ -133,6 +147,7 @@ export async function chooseProvider(env: Env, settings: Settings): Promise<Prov
 /** The cheapest model of the same provider, for small jobs such as the sales follow up. */
 export const CHEAP_CLAUDE_MODEL = 'claude-haiku-5-5';
 export function cheapChoice(choice: ProviderChoice): ProviderChoice {
+  if (choice.provider === 'mock' && choice.model === MOCK_CLAUDE_MODEL) return { ...choice, model: MOCK_CLAUDE_CHEAP_MODEL };
   if (choice.provider !== 'anthropic' || /haiku/i.test(choice.model)) return choice;
   return { ...choice, model: CHEAP_CLAUDE_MODEL };
 }
@@ -290,9 +305,29 @@ export function readWorkersAiResponse(out: unknown): { content: unknown; input_t
   };
 }
 
-async function callWorkersAi(env: Env, choice: ProviderChoice, input: CallJsonInput): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
+/** Workers AI: the plain mode retry and the repair attempt only start with at least this much time left. */
+const WORKERS_AI_MIN_LEFT_MS = 5_000;
+const workersTimeout = () => new LlmError('timeout', 'Workers AI took too long to answer.', true);
+
+/** Exported for tests. Bound by `input.timeoutMs` like Claude: the run's lock never runs out while it waits. */
+export async function callWorkersAi(env: Env, choice: ProviderChoice, input: CallJsonInput): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
   const ai = env.AI;
   if (!ai) throw new LlmError('no_provider', 'This Worker has no AI binding');
+  const started = Date.now();
+  const limit = input.timeoutMs && input.timeoutMs > 0 ? input.timeoutMs : null;
+  const left = () => (limit === null ? Infinity : limit - (Date.now() - started));
+  /** One run, raced against the time left. The run itself goes on, but its answer is no longer waited for. */
+  const within = async <T>(p: Promise<T>): Promise<T> => {
+    if (limit === null) return p;
+    const ms = left();
+    if (ms <= 0) throw workersTimeout();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(workersTimeout()), ms); })]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   const legacy = isLegacyWorkersModel(choice.model);
   // JSON mode is not enforced on every model, so the schema is also spelled out in the prompt.
   const system = [
@@ -312,7 +347,7 @@ async function callWorkersAi(env: Env, choice: ProviderChoice, input: CallJsonIn
           ...(jsonMode ? { response_format: { type: 'json_schema', json_schema: { name: 'answer', strict: true, schema: input.schema } } } : {}),
         };
     // The binding is typed per model; the model id here is a setting, so it is called untyped.
-    const out = await (ai as unknown as { run(model: string, body: unknown): Promise<unknown> }).run(choice.model, body);
+    const out = await within((ai as unknown as { run(model: string, body: unknown): Promise<unknown> }).run(choice.model, body));
     const read = readWorkersAiResponse(out);
     usage.input_tokens += read.input_tokens;
     usage.output_tokens += read.output_tokens;
@@ -324,20 +359,23 @@ async function callWorkersAi(env: Env, choice: ProviderChoice, input: CallJsonIn
   try {
     content = await once(messages, true);
   } catch (err) {
+    if (err instanceof LlmError) throw err;
     const text = String((err as Error)?.message ?? err);
     // "JSON Mode couldn't be met" and models without response_format: ask again in plain mode.
     if (!/json mode|response_format|json_schema|guided/i.test(text)) throw workersError(text);
+    if (left() < WORKERS_AI_MIN_LEFT_MS) throw workersTimeout();
     jsonMode = false;
-    try { content = await once(messages, false); } catch (err2) { throw workersError(String((err2 as Error)?.message ?? err2)); }
+    try { content = await once(messages, false); } catch (err2) { throw err2 instanceof LlmError ? err2 : workersError(String((err2 as Error)?.message ?? err2)); }
   }
   let data = parseLooseJson(content);
   if (data === undefined) {
+    if (left() < WORKERS_AI_MIN_LEFT_MS) throw Object.assign(workersTimeout(), { usage });
     // One repair attempt: show the model what it wrote and ask for the object alone.
     const bad = typeof content === 'string' ? content.slice(0, 4000) : JSON.stringify(content ?? '').slice(0, 4000);
     try {
       content = await once([...messages, { role: 'assistant', content: bad || '(empty)' }, { role: 'user', content: 'That was not a valid JSON object. Send only the JSON object that matches the schema, starting with { and ending with }.' }], jsonMode);
     } catch (err) {
-      throw Object.assign(workersError(String((err as Error)?.message ?? err)), { usage });
+      throw Object.assign(err instanceof LlmError ? err : workersError(String((err as Error)?.message ?? err)), { usage });
     }
     data = parseLooseJson(content);
   }
@@ -367,6 +405,12 @@ async function recordUsage(env: Env, purpose: string, usage: LlmUsage, ok: boole
   }
 }
 
+/** The claude-like mock writes its call to llm_usage like a real call (tests of the query limit). */
+export async function recordMockUsage(env: Env, choice: ProviderChoice, purpose: string): Promise<void> {
+  if (!claudeLikeMock(choice)) return;
+  await recordUsage(env, purpose, { provider: 'mock', model: choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ms: 0 }, true);
+}
+
 /**
  * Ask the configured model for one JSON object. Throws LlmError on any failure (including a refusal,
  * code "refusal"). Every real call is written to llm_usage, failed ones with ok = 0.
@@ -376,7 +420,9 @@ export async function callJson<T = unknown>(env: Env, input: CallJsonInput): Pro
   const choice = input.choice ?? (await chooseProvider(env, settings));
   if (choice.provider === 'mock') {
     if (!input.mock) throw new LlmError('no_provider', `No mock answer is defined for "${input.purpose}"`);
-    return { data: input.mock() as T, usage: null, provider: 'mock', model: 'mock' };
+    const data = input.mock() as T;
+    await recordMockUsage(env, choice, input.purpose);
+    return { data, usage: null, provider: 'mock', model: 'mock' };
   }
   const started = Date.now();
   try {

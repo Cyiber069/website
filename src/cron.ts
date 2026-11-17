@@ -1,6 +1,6 @@
 // Runs every minute (see wrangler.jsonc). Each task is independent: one failing never blocks the rest.
 import type { Env } from './types';
-import { run } from './lib/db';
+import { stmt } from './lib/db';
 import { MEDIA_KEEP_DAYS } from './lib/media';
 import { VISION_FILES_KEEP_MS } from './vision';
 import { getSettings, getState, setState } from './lib/settings';
@@ -21,17 +21,20 @@ async function cleanup(env: Env): Promise<void> {
   const now = Date.now();
   const last = await getState<number>(db, 'cleanup_at', 0);
   if (now - last < DAY) return;
-  await setState(db, 'cleanup_at', now);
-  await run(db, 'DELETE FROM events WHERE ts < ?', now - 45 * DAY);
-  await run(db, 'DELETE FROM diagnostics WHERE ts < ?', now - 14 * DAY);
-  // Customer photos are only needed while the chat is live.
-  await run(db, 'DELETE FROM media WHERE created_at < ?', now - MEDIA_KEEP_DAYS * DAY);
-  // Where Google held a video (it deletes its copy after 48 hours). The day's count is the video cap.
-  await run(db, 'DELETE FROM vision_files WHERE created_at < ?', now - VISION_FILES_KEEP_MS);
-  await run(db, 'DELETE FROM llm_usage WHERE ts < ?', now - 90 * DAY);
-  await run(db, 'DELETE FROM sessions WHERE expires_at < ?', now);
-  await run(db, 'DELETE FROM pairing_codes WHERE expires_at < ?', now);
-  await run(db, `DELETE FROM outbox WHERE status IN ('sent', 'failed', 'cancelled', 'expired') AND created_at < ?`, now - 60 * DAY);
+  // One batch, with the day marked last: if it fails nothing is marked and the next minute tries again.
+  await db.batch([
+    stmt(db, 'DELETE FROM events WHERE ts < ?', now - 45 * DAY),
+    stmt(db, 'DELETE FROM diagnostics WHERE ts < ?', now - 14 * DAY),
+    // Customer photos are only needed while the chat is live.
+    stmt(db, 'DELETE FROM media WHERE created_at < ?', now - MEDIA_KEEP_DAYS * DAY),
+    // Where Google held a video (it deletes its copy after 48 hours). The day's count is the video cap.
+    stmt(db, 'DELETE FROM vision_files WHERE created_at < ?', now - VISION_FILES_KEEP_MS),
+    stmt(db, 'DELETE FROM llm_usage WHERE ts < ?', now - 90 * DAY),
+    stmt(db, 'DELETE FROM sessions WHERE expires_at < ?', now),
+    stmt(db, 'DELETE FROM pairing_codes WHERE expires_at < ?', now),
+    stmt(db, `DELETE FROM outbox WHERE status IN ('sent', 'failed', 'cancelled', 'expired') AND created_at < ?`, now - 60 * DAY),
+    stmt(db, `INSERT INTO settings (key, value, updated_at) VALUES ('state:cleanup_at', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, JSON.stringify(now), now),
+  ]);
 }
 
 /** Refresh product and policy knowledge from the public store once a day. */
@@ -52,9 +55,10 @@ export async function runCron(env: Env): Promise<void> {
   let busy = false;
   await safely('recovery', async () => { busy = await recoveryTick(env); });
   if (!busy) await safely('store-sync', async () => { busy = await dailyStoreSync(env); });
-  if (!busy) await safely('conversations', () => sweepConversations(env, 1));
-  // One follow up for warm leads. Skipped in the minute a recovery run or store sync starts.
+  if (!busy) await safely('conversations', async () => { busy = (await sweepConversations(env, 1)) > 0; });
+  // One follow up for warm leads, and the daily cleanup. Skipped in a minute the sweeper answered a
+  // chat (that alone can be about 40 queries) or a recovery run or store sync started.
   if (!busy) await safely('sales', () => salesTick(env));
   await safely('health', () => watchHealth(env));
-  await safely('cleanup', () => cleanup(env));
+  if (!busy) await safely('cleanup', () => cleanup(env));
 }

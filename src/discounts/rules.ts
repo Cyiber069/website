@@ -20,6 +20,25 @@ export const REQUEST_LOOKBACK = 6;
 export const REQUEST_MAX_AGE_MS = 2 * 3_600_000;
 /** Split requests are short ("hey can it be", "acxjohn", "make it JAKE20"). A long message needs a code word of its own. */
 const CONTEXT_MAX_CHARS = 160;
+/**
+ * An answer to our own question about their code ("what do you want your code to be?") may come much
+ * later (creators answer the next day) and say more around the code, so it gets a longer window.
+ */
+export const OUR_ASK_MAX_AGE_MS = 48 * 3_600_000;
+const OUR_ASK_MAX_CHARS = 400;
+
+/**
+ * Our last turn just before the unanswered messages (the trailing run of our lines), when it asks
+ * the customer something about a code ("what do you want your code to be?"). The code message itself
+ * ("Your discount code X is now live!!") is not a question, so a thank you after it is not a request.
+ */
+export function ourCodeAsk(before: ChatLine[]): ChatLine | null {
+  for (let i = before.length - 1; i >= 0 && before[i]!.direction === 'out'; i--) {
+    const body = before[i]!.body;
+    if (mentionsCode(body) && body.includes('?')) return before[i]!;
+  }
+  return null;
+}
 
 /**
  * Is the customer's unanswered text worth one extractor call, and why.
@@ -31,7 +50,10 @@ const CONTEXT_MAX_CHARS = 160;
  */
 export function codeTrigger(unanswered: string, before: ChatLine[], now: number): { kind: 'words' | 'context'; since: number | null } | null {
   if (mentionsCode(unanswered)) return { kind: 'words', since: null };
-  if (!unanswered.trim() || unanswered.length > CONTEXT_MAX_CHARS) return null;
+  if (!unanswered.trim()) return null;
+  const ask = ourCodeAsk(before);
+  if (ask && now - ask.ts <= OUR_ASK_MAX_AGE_MS && unanswered.length <= OUR_ASK_MAX_CHARS) return { kind: 'context', since: ask.ts };
+  if (unanswered.length > CONTEXT_MAX_CHARS) return null;
   const recent = before.slice(-REQUEST_LOOKBACK).filter((m) => now - m.ts <= REQUEST_MAX_AGE_MS);
   const start = recent.find((m) => mentionsCode(m.body));
   return start ? { kind: 'context', since: start.ts } : null;
@@ -68,6 +90,13 @@ export function codeTrouble(text: string): string | null {
 /** Note for the normal reply when the customer wants a code but did not say which. The mock brain keys on its start. */
 export const ASK_FOR_CODE_NOTE =
   'The customer wants their own discount code for the creator offer but did not say what it should be. Ask them in one short line, in their tone, what they want their code to be (letters and numbers only). Do not say any code is made or live.';
+
+/**
+ * Note for the normal reply when the customer may be answering our question about their code but it
+ * is too long ago or too long to read as a code request. The owner then always gets an item.
+ */
+export const CODE_ANSWER_NOTE =
+  'The customer may be answering our earlier question about their own discount code. Never say a code will be made, sorted or is live. If they name a code they want, escalate it to the owner with category discount_price.';
 
 /** Sent as written (it does not pass through the style rules), so it is written properly here. */
 export const HOLDING_CODE_LINE = 'Nice one, let me get that sorted for you';

@@ -985,8 +985,12 @@
       if (prog.done === 0 && newerThan && ACX.newerInbound(shown, newerThan)) {
         throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
       }
+      // The owner answered this person by hand after the read (from the phone, or in this tab).
+      if (prog.done === 0 && newerThan && ACX.ownerReplied(shown, newerThan, parts, (m) => sentTexts.includes(squash(m.body)))) {
+        throw new Fail('owner_replied', 'You already replied to this person yourself', false);
+      }
 
-      if (squash(textOf(editor))) throw new Fail('composer_busy', 'There is a half written message in the TikTok message box', true);
+      if (squash(textOf(editor))) throw new Fail('draft_in_chat', 'There is a half written message in the TikTok message box', true);
 
       // typing_cps 0: paste each part at once. A typing speed (older servers): the human pauses, kept
       // short when other customers are waiting. TikTok always gets at least 1.2 s between two parts.
@@ -1000,6 +1004,7 @@
         if (sentNow) await sleep(instant ? rand(1200, 1600) : Math.max(1200, rand(2000, 4000) * scale)); // TikTok wants a gap between two messages
         assertNotBlocked();
         const id = await sendPart(parts[i], rawCps, scale);
+        ACX.noteSent(parts[i]);
         sentNow++;
         prog.done = i + 1;
         prog.ids.push(id);

@@ -23,6 +23,12 @@ export const MAX_DELAY_MS = 25_000;
 export const MAX_READS_BETWEEN_SENDS = 2;
 /** A queued job this close to the end of its lease goes before any read. */
 export const LEASE_URGENT_MS = 60_000;
+/**
+ * A new chat job (it may reload the tab: up to 20 s to prepare, 75 s for the page, then the send) waits
+ * behind customer replies, but only until this close to its lease end, or this long after it arrived.
+ */
+export const NEW_CHAT_URGENT_MS = 120_000;
+export const NEW_CHAT_MAX_HOLD_MS = 45_000;
 /** Inbound calls in flight per lane, and for the whole laptop (each one is a brain call on the server). */
 export const INBOUND_CAP = 4;
 export const INBOUND_CAP_ALL = 6;
@@ -164,7 +170,7 @@ export function nextJob(items, { now, lastSendAt = 0, lastSendThread = null, cro
     const thread = it.thread || `job:${it.job.id}`;
     if (seenThreads.has(thread)) continue; // an earlier job of this chat goes first
     seenThreads.add(thread);
-    if (it.job.kind === 'new_chat' && holdNewChat) continue;
+    if (it.job.kind === 'new_chat' && holdNewChat && !newChatDue(it, now)) continue;
     let when = it.sendAt || 0;
     if (crossChatGapMs && lastSendAt && thread !== lastSendThread) when = Math.max(when, lastSendAt + crossChatGapMs);
     if (when <= now) return { item: it, at: now };
@@ -173,16 +179,34 @@ export function nextJob(items, { now, lastSendAt = 0, lastSendThread = null, cro
   return { item: null, at };
 }
 
-/** True when a queued job must go before reads: its lease ends soon. */
+/**
+ * When a queued job's lease ends, on this laptop's clock: `leaseAt`, worked out when it arrived from
+ * the time left the server gave (so a laptop clock that is off does not matter). Items queued by an
+ * older build have only the server's lease_until. 0 when unknown.
+ */
+export function leaseEnd(it) {
+  const local = num(it && it.leaseAt);
+  if (local) return local;
+  return num(it && it.job && it.job.lease_until) ?? 0;
+}
+
+/** A held new chat job that must go now: its lease ends soon, or it has waited long enough. */
+export function newChatDue(it, now) {
+  const end = leaseEnd(it);
+  return Boolean((end && end - now < NEW_CHAT_URGENT_MS) || (num(it && it.arrived) !== null && now - it.arrived > NEW_CHAT_MAX_HOLD_MS));
+}
+
+/** True when a queued job must go before reads: its lease ends soon (a new chat job needs longer). */
 export function leaseUrgent(it, now) {
-  const lease = num(it && it.job && it.job.lease_until);
-  return Boolean(lease && lease - now < LEASE_URGENT_MS);
+  const end = leaseEnd(it);
+  if (it && it.job && it.job.kind === 'new_chat') return newChatDue(it, now);
+  return Boolean(end && end - now < LEASE_URGENT_MS);
 }
 
 /** A job whose lease is over may have been handed back, cancelled or re-leased: it is not ours to send. */
 export function leaseOver(it, now) {
-  const lease = num(it && it.job && it.job.lease_until);
-  return Boolean(lease && lease < now);
+  const end = leaseEnd(it);
+  return Boolean(end && end < now);
 }
 
 /** When to send a job: read time (or arrival) plus the pacing delay, capped. Never holds the tab. */

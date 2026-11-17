@@ -309,7 +309,12 @@ export interface AgentJob {
   parts: string[];
   pacing: { delay_ms: number; typing_cps: number };
   lease_until: number;
+  /** Time left on the lease when the job was handed over (ms). Newer extensions use it instead of lease_until, so a laptop clock that is off does not matter. */
+  lease_ms: number;
   attempts: number;
+  /** Queue order on the laptop: not_before, then created_at (server time, ms). */
+  not_before: number;
+  created_at: number;
 }
 
 // ---- Rows ---------------------------------------------------------------------------------------
@@ -348,6 +353,8 @@ export interface OutboxRow {
   last_error: string | null; dedupe_key: string | null; pacing: string; created_at: number; sent_at: number | null;
   /** Agent replies (migration 0008): the customer message answered, and when it arrived as best known. */
   reply_to_id?: string | null; reply_to_ts?: number | null;
+  /** Migration 0010: when a busy owner or a draft first held this job up, and whether the owner was told. */
+  busy_since?: number | null; busy_warned?: number;
 }
 
 export interface UrgentRow {

@@ -73,6 +73,7 @@ See `migrations/0001_init.sql` (commented). Timestamps are unix milliseconds. Ke
 `diagnostics`, `llm_usage`, `sales_conversions` (one row per order matched to a chat, `migrations/0006_sales.sql`, which also adds the `sales_*`, `followup_*`, `interested_at`, `ready_at`, `bought_at` and `order_*` columns of `conversations`), `discount_codes` (`made_by` owner | agent, `migrations/0004_agent_discounts.sql`).
 `urgent.discount_id` links a code request to its draft, `urgent.owner_note` holds the owner's note when they told the agent what is going on.
 `outbox.reply_to_id` / `outbox.reply_to_ts` and `conversations.retry_at` (`migrations/0008_reply_speed.sql`): the customer message an agent reply answers and when it arrived (the page time, a minute label read as half way through the minute, never later than first seen), and when the sweeper may try a chat again after a failed brain call.
+`outbox.busy_since` / `outbox.busy_warned` (`migrations/0010_send_waits.sql`): when the owner typing or a draft first held a job up, and whether the owner was told (see job results below).
 `media` (`migrations/0007_media.sql`): one photo or video frame per customer message, base64 in `data` (at most 260,000 characters), `kind` `image` | `video_frame`, `mime` read from the bytes. The message row remembers its picture in `messages.meta` (`{ "media": "md_x", "media_kind": "image" }`), so list queries never touch the table and never select `data`. Rows older than 14 days are deleted by the daily cleanup.
 `migrations/0009_vision.sql` adds to `media`: `description` (what Google AI Studio saw, plain text, at most 900 characters), `vision` (small JSON: `model`, `via` `image` | `frames` | `video` | `cover`, `unclear`, `problem` `none` | `damage` | `fault` | `safety`, `ms`, `tries`, `error`, `shared`, `seconds`) and `video_ref`; the message meta gets `media_desc` (the description, 600 characters) once it is written. Table `vision_files`: one row per video the laptop uploaded (`file_name`, `file_uri` at Google, `mime`, `bytes`, `seconds`, `channel`, `device_id`, `created_at`), kept 2 days; today's count (London day) is the video cap. Video bytes are never stored in D1.
 
@@ -108,6 +109,7 @@ Errors are `{ "error": "<code>", "message": "<human text>" }` with a 4xx/5xx sta
 // sending (newer extensions): true only while a message is typed and sent. An extension that sends it
 // queues jobs per tab, so it gets jobs while it reads (busy). One that leaves it out (older) gets no
 // jobs for a channel it reports busy.
+// held (newer extensions): the job ids its lanes hold, queued or being typed (at most 40).
 // optional health per channel: last_ok_at (ms of last good scan), last_scan_at, last_error (short text),
 // recoveries (self heal actions today), version. Kept clamped and clipped. The device row is written only
 // when something visible changed or at least every 55 s, so a sync is normally 0 rows written.
@@ -118,10 +120,19 @@ Errors are `{ "error": "<code>", "message": "<human text>" }` with a 4xx/5xx sta
               "selectors_version": "1.0", "dashboard_url": "https://...",
               "vision": { "active": true, "whole_videos": true } },   // Google AI Studio on; whole videos may still go today
   "jobs": [ AgentJob ],            // up to 3 due jobs per ready channel, most urgent first (urgent and
-                                   // manual, then by not_before, created_at). Jobs the same laptop already
-                                   // holds do not stop more; a channel another laptop holds jobs on is skipped
+                                   // manual, then by not_before, created_at); the jobs of one chat go oldest
+                                   // first (chatOrder). Jobs the same laptop already holds do not stop more;
+                                   // a channel another laptop holds jobs on is skipped. Never the agent's own
+                                   // words for a paused chat, nothing but the owner's for an opted out contact
+  "cancelled": [ "ob_x" ],         // of the `held` ids: jobs the server cancelled meanwhile (a pause, an opt
+                                   // out, a takeover) or gave up on. The extension drops them unsent
   "selectors": null | { "version": "1.0", "pack": { } } }   // sent when the version differs
 ```
+
+Extension versions before 0.4.0 (`isLegacyExtension` in `src/lib/version.ts`, from the version a sync reports and the
+device row keeps) have no newer_message re-read: they get `settle_seconds` of at least 12 and jobs with the typing speed
+they were made for (`settings.pacing.typing_cps`, never 0, which they read as 3 a second on TikTok). 0.4.0 and up get the
+stored settle (4) and `typing_cps` 0.
 
 `POST /api/agent/inbound` when a thread has customer messages the extension has not reported.
 Send the last messages visible in the thread (up to 40, oldest first), both directions.
@@ -132,6 +143,8 @@ Send the last messages visible in the thread (up to 40, oldest first), both dire
   "messages": [ { "external_id": "false_447700900123@c.us_3EB0A1", "direction": "in",
                   "body": "yo how long is delivery", "kind": "text", "ts": 1794695171000 } ] }
 ```
+Newer extensions may add `"refused_job_ids": ["ob_x"]` (at most 5): agent replies of this chat they refused with
+`newer_message` whose result may not have reached the server yet. They are cancelled before the chat is decided again.
 The response is newline delimited JSON, streamed so the connection stays alive while the brain works:
 ```
 {"type":"accepted","conversation_id":"cv_x","new_inbound":1}
@@ -150,6 +163,8 @@ side and the jobs arrive on the next sync.
   server) means true. A stream that ends with no decision line counts as `final: false`, 5 s.
 * `jobs_pending: true`: jobs were queued that are not in `jobs` (the extension hung up before they could be
   handed over, or a reply for this chat is due in the queue). Sync now.
+* A reply already leased to this laptop for the chat (the answer that carried it was cut on the way) is handed back in
+  `jobs` when the chat is posted again with nothing new (`reply_queued` or `nothing_new`, `reofferOwn`). 0.4.0 and up only.
 * Jobs are only leased inline while the extension is still connected (`ndjsonStream` `isOpen()`: false once
   a write fails or the reader goes away). If the decision line itself cannot be written, its leases are
   released (`releaseLeases`, no try counted) so the next sync hands them over.
@@ -186,7 +201,8 @@ streamed straight to Google (Files API resumable upload, `FixedLengthStream`, no
               "email": null, "handle": null, "subject": null },
   "parts": ["hey bro", "delivery is 2 to 4 days in the UK"],   // send in order as separate messages
   "pacing": { "delay_ms": 0, "typing_cps": 0 },                 // wait, then type at about this speed
-  "lease_until": 0, "attempts": 1 }
+  "lease_until": 0, "lease_ms": 180000, "attempts": 1,        // lease_ms: time left on the lease when handed over
+  "not_before": 0, "created_at": 0 }                          // queue order on the laptop
 ```
 * Pacing (`jobPacing` in `src/pipeline/outbox.ts`): replies go out as fast as possible. `typing_cps: 0` means
   paste each part whole. `delay_ms` is 0 for `urgent`, `manual`, `review`; for the agent's own replies
@@ -197,20 +213,39 @@ streamed straight to Google (Files API resumable upload, `FixedLengthStream`, no
   (WhatsApp) or `target.email` (Gmail compose) and send.
 * The extension must be idempotent: remember finished job ids, and before typing check the thread's
   last outgoing message is not already `parts[last]`.
+* Leases are measured on the laptop from `lease_ms` (`leaseAt`), never by comparing `lease_until` with the laptop clock.
+  A job whose lease runs out in the laptop queue is handed back (`lease_expired_local`), never dropped without a word.
+* Only the agent's own replies (`auto`, `holding`) carry the read's tail and are checked before sending (`newer_message`,
+  `owner_replied`). A code message, the owner's words and everything else the server offers again go out as they are.
 
 `POST /api/agent/jobs/:id/result`
 ```jsonc
 { "status": "sent" | "failed", "error_code": "not_on_whatsapp", "error": "text", "retryable": false,
   "sent_external_ids": ["true_447700900123@c.us_3EB0B2"] }
 ```
-Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `owner_busy`, `send_not_confirmed`, `not_on_whatsapp`,
-`invalid_number`, `logged_out`, `tab_missing`, `blocked`, `timeout`, `newer_message`, `unknown`.
+Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_chat`, `owner_busy`, `owner_replied`, `send_not_confirmed`,
+`not_on_whatsapp`, `invalid_number`, `logged_out`, `tab_missing`, `blocked`, `timeout`, `newer_message`, `lease_expired_local`, `pinned_chat`, `unknown`.
 * `newer_message`: before sending, the page showed a customer message newer than the read. An `auto` or
   `holding` job is cancelled (no alert, no try used) and the chat is marked as waiting, so the extension's
   re-read gets one fresh decision for everything. Any other job (a code message, the owner's words) is
-  offered again at once, no try used.
-* `owner_busy`, `composer_busy` (retryable): the owner is typing in that tab. Offered again after 20 s, no try
-  used, until the job expires as usual.
+  offered again at once, no try used; refused again, each refusal uses a try, so it fails after 3 with a line on Live.
+* `owner_replied` (newer extensions): an outgoing message that is not the agent's came after the read, so the owner
+  answered by hand. `draft_in_chat` (newer extensions): text that is not ours sits in this chat's message box. Both,
+  and `composer_busy` from a build before 0.4.0 on WhatsApp or TikTok (on Gmail it may mean an email anywhere in the tab,
+  so it waits like `owner_busy`), make an `auto` or `holding` reply stand down at once (`ownerTookChat`):
+  the job and the chat's other unsent agent replies are cancelled, the chat is paused for `human_takeover_minutes`
+  (`You replied yourself` / `You were typing in that chat`, a longer dashboard pause is kept), `needs_reply_since` is
+  cleared so the sweeper never answers on top, a `takeover` event is logged and for a draft the owner gets a push.
+* `owner_busy` (someone is using the tab), `composer_busy` (the box changed while typing), and a draft in the way of the
+  owner's own words (retryable): offered again after 20 s, after 2 min once a minute, no try used. The first time a
+  `send_waiting` line goes on Live; after 5 min the owner is told once (push, kind `waiting`, and a warn line); after 15 min
+  the job fails with a plain `send_failed` line ("A draft in the agent's tab was in the way"). `busy_since` keeps the time.
+* `lease_expired_local`: the laptop queue held the job past its lease, nothing was typed. Offered again at once, no try used.
+* `pinned_chat` (WhatsApp): the agent's own reply was for a pinned chat. Cancelled quietly with an info line on Live.
+* A sent result is recorded whatever happened to the row meanwhile (cancelled by a pause or an opt out while the laptop
+  held it, or given up), so the next read knows the message is the agent's.
+* A job past `expires_at` becomes `expired` with a `send_expired` line on Live (one per job, at most 10 a sweep, in one
+  batch; one line for checkout reminders). Health `failed_jobs` lists `failed` and `expired` jobs.
 * Other retryable failures use a try (3 at most). The next try is `attempts x 15 s` later for the agent's own
   replies after a quick failure (`timeout`, `no_content_script`, `tab_missing`, `send_not_confirmed`,
   `thread_not_found`, `composer_missing`), otherwise `attempts x 60 s`.
@@ -320,12 +355,15 @@ Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook
 
 0. Time limits: a live request has `LIVE_BUDGET_MS` (45 s) from arrival for its model calls, the sweeper `SWEEP_BUDGET_MS`
    (90 s). Each call gets the time left (`callWithin` in `src/brain/llm.ts`): one attempt with no SDK retry, so a slow but valid
-   answer gets all the time there is; a quick failure (overload, rate limit, network) is tried once more when it fits. A run
+   answer gets all the time there is; a quick failure (overload, rate limit, network) is tried once more when it fits.
+   Workers AI is bound the same way (`callWorkersAi` races each run against the time left, and skips its plain mode retry and
+   its repair with less than 5 s left). A run
    that cannot finish returns `final: false` and the extension posts the chat again with a fresh budget.
 1. `storeInbound`: find or create contact + conversation, store unseen messages. An outgoing message
    the agent did not queue means the owner replied by hand: the conversation is paused for
    `pacing.human_takeover_minutes` and the agent's own unsent jobs in it (`auto`, `holding`, pending or review)
-   are cancelled (`cancelAgentJobs`). Pausing a chat from the dashboard does the same.
+   are cancelled (`cancelAgentJobs`, leased ones too: the laptop drops them on its next sync). Pausing a chat from the
+   dashboard does the same.
 2. `processConversation` gates: agent on, channel mode not `off`, contact not opted out, not paused,
    last message is from the customer, hourly reply cap, short lock.
    The brain's view of the chat (`buildTimeline`) holds every reply that is queued or out with the laptop but not sent yet,
@@ -338,7 +376,8 @@ Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook
    never reach this point (`handleInbound` drops them). It runs when the unanswered customer messages contain code, discount,
    sponsor, promo or coupon, or when they are short and finish a request started in the last 6 messages and 2 hours
    (`codeTrigger`: "hey can it be" then "acxjohn" after we asked what code they want, "I want a code" then later "make it
-   JAKE20"). All unanswered messages are read together with the chat before them. A quick check on the cheap model
+   JAKE20"). An answer to our own question about their code (`ourCodeAsk`: our last turn asks about a code) counts for 48
+   hours and up to 400 characters; older or longer, the reply gets `CODE_ANSWER_NOTE` so it never promises a code. All unanswered messages are read together with the chat before them. A quick check on the cheap model
    (`brain.extractDiscountRequest`, purpose `discount_check`, 8 s) returns `{ wants_code, code, confidence }`; a yes with a
    code is read again by the main model (`discount_request`) and the two must agree (`confirmRequest`), or it parks. A code
    is only made when it is in the customer's own unanswered words (`inCustomerWords`, else the reply asks them) and the
@@ -371,7 +410,11 @@ Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook
    An opt out (the brain's flag or `POST /api/contacts/:id/opt-out`) cancels everything not typed by the owner
    still queued for that contact, recovery reminders to their number included (`cancelForOptOut`).
 6. Cron re-runs conversations whose live request died (`sweepConversations`), one a minute, and none in the
-   minute the daily recovery run or store sync starts (the free plan allows 50 D1 queries and fetches per run).
+   minute the daily recovery run or store sync starts (the free plan allows 50 D1 queries and fetches per run). In a
+   minute the sweeper answered a chat, the sales follow up and the daily cleanup wait (the cleanup is one batch that
+   marks the day last).
+7. An escalation opens an Urgent item only when the chat has no open one (one conditional insert), so two overlapping runs
+   never send two holding lines or alert twice. Answering on Urgent cancels a one part holding line that has not gone out.
    A chat whose brain call failed there waits 5 min (`retry_at`) so it never holds up the chats behind it; the health
    check still counts it as waiting.
 
@@ -436,6 +479,23 @@ stored through `kb.addLearnedFact` (source and category `learned`), so it shows 
   "switched off" answer pauses uploads), then sends `video_ref`. Every failure is a `note` diagnostic (`video_capture`, `video_upload`).
 * Mock brain: with pictures it answers `mock saw N photo(s)` (`... with N video frame(s)`); a caption containing `unclear-photo` escalates.
 * Dashboard: thumbnails on the Urgent card and in the Inbox chat (`mediaThumb` in `public/js/ui.js`, styles in `public/css/media.css`), tap for full size.
+
+### WhatsApp pinned chats
+
+A pinned chat is the owner's own (`chatList.rowPinned`, an svg titled pin or pinned, or an aria label matching
+`text.pinnedAria`). The adapter never lists it in a scan or the sweep, never watches it while open and never reads it
+(`read` answers `skipped`). The agent's own replies (`auto`, `holding`) for it are refused (`pinned_chat`); what the owner
+chose (an Urgent answer, a message from Inbox, a code they approved) is still sent.
+
+### D1 queries per request
+
+The free plan allows 50 per request and per cron run. `test/api/limits.test.ts` and `test/api/code-limits.test.ts` hold the
+heavy paths at 45 or less. The code request paths are counted the way production runs them: the brain is the claude-like
+mock (`brain.provider` `anthropic` in test mode: the key is read and every call is written to `llm_usage`, with a cheap model
+for the quick check), Shopify is the real client against a fake (`POST /api/test/shopify-base`, test mode only,
+`test/helpers/fake-shopify.mjs`), a phone is subscribed to push and an owner WhatsApp number is set; the schema check and the
+usage flush (3) are added. Shopify reads its saved details once per request (`shopifyAuth`, one query); alert throttles are
+one query each (`claimSlot`); `leaseById` is one `UPDATE ... RETURNING`.
 
 ## 7. Style rules (owner requirements, enforced twice)
 

@@ -404,7 +404,7 @@ export function register(r: Router): void {
     const [devices, misses, failed, errors, usage, sel, mon, replies] = await Promise.all([
       currentDevice(c.db, c.now),
       all(c.db, `SELECT id, ts, channel, kind, data FROM diagnostics WHERE ts > ? ORDER BY id DESC LIMIT 60`, since),
-      all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status = 'failed' AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
+      all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status IN ('failed', 'expired') AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
       all(c.db, `SELECT id, ts, type, channel, message FROM events WHERE level = 'error' AND ts > ? ORDER BY id DESC LIMIT 30`, since),
       all(c.db, `SELECT provider, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, AVG(ms) AS avg_ms, SUM(ok) AS ok FROM llm_usage WHERE ts > ? GROUP BY provider, model`, since),
       selectorPack(c.db),
@@ -420,7 +420,7 @@ export function register(r: Router): void {
       // Agent replies sent today (London day): average and slowest time from the customer's message to sent.
       reply_time: replies,
       diagnostics: misses.map((m) => ({ ...(m as object), data: parseJson((m as { data: string }).data, {}) })),
-      failed_jobs: failed.map((f) => ({ id: f.id, channel: f.channel, source: f.source, error: f.last_error, created_at: f.created_at, target: parseJson<JobTarget>(f.target, emptyTarget()).title })),
+      failed_jobs: failed.map((f) => ({ id: f.id, channel: f.channel, source: f.source, status: f.status, error: f.status === 'expired' ? `expired: not sent in time${f.last_error ? ` (${f.last_error})` : ''}` : f.last_error, created_at: f.created_at, target: parseJson<JobTarget>(f.target, emptyTarget()).title })),
       errors,
       llm_usage: usage,
       selectors_version: sel.version,

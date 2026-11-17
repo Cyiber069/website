@@ -249,6 +249,32 @@ async function main() {
     await syncNow();
   }
 
+  // ---- 3b. a code message is never refused for a newer message: it goes out once, after the customer wrote again ----------
+  {
+    await sql(`INSERT INTO settings (key, value, updated_at) VALUES ('state:test_fake_shopify', '"created"', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [Date.now()]);
+    await api('/api/settings/discounts', { method: 'PUT', body: { mode: 'auto', daily_cap: 50, one_per_customer: true } });
+    await pacing({ min_reply_delay_s: 6, max_reply_delay_s: 6 }); // holds the code message in the lane queue
+    await syncNow();
+    const jid = '447700901850@c.us';
+    await waMock('receive', '+447700901850', 'can i get my own discount code "LANE20" please');
+    const code = await until('the code message to be with the laptop', async () => {
+      const [row] = await sql(`SELECT o.id, o.status FROM outbox o JOIN conversations c ON c.id = o.conversation_id WHERE c.external_thread_id = ? AND o.source = 'discount'`, [jid]);
+      return row && row.status === 'leased' ? row : null;
+    }, { timeout: 30_000 });
+    await waMock('receive', '+447700901850', 'thanks so much');
+    await until('the code message in the chat', async () => (await waTo(jid)).find((x) => x.text.includes('LANE20')), { timeout: 60_000 });
+    await sleep(9000);
+    const sent = await waTo(jid);
+    assert.equal(sent.filter((x) => x.text.includes('LANE20')).length, 1, `the code message went out exactly once (${JSON.stringify(sent.map((x) => x.text))})`);
+    const [row] = await sql('SELECT status, last_error FROM outbox WHERE id = ?', [code.id]);
+    assert.equal(row.status, 'sent', `the code message row ends sent (${JSON.stringify(row)})`);
+    assert.equal((await sql(`SELECT COUNT(*) AS n FROM outbox o JOIN conversations c ON c.id = o.conversation_id WHERE c.external_thread_id = ? AND o.source = 'discount'`, [jid]))[0].n, 1, 'the fresh decision did not make or queue it again');
+    pass('a code message queued before the customer wrote again is sent once, not refused (newer_message is for the agent\u2019s own replies)');
+    await sql(`DELETE FROM settings WHERE key = 'state:test_fake_shopify'`);
+    await pacing({ min_reply_delay_s: 0, max_reply_delay_s: 0 });
+    await syncNow();
+  }
+
   // ---- 4. a cut stream is read and posted again -----------------------------------------------------------------
   {
     let hits = 0;
@@ -353,6 +379,22 @@ async function main() {
   const errs = await sql(`SELECT channel, kind, substr(data, 1, 300) AS data FROM diagnostics WHERE kind IN ('error', 'selector_miss')`);
   assert.deepEqual(errs, [], 'no adapter errors or selector misses');
   assert.deepEqual(pageErrors, [], 'no errors on the pages');
+
+  // ---- 9. the owner's own Business Suite tab is never taken over: the agent opens its own pinned tab ----------------------
+  {
+    const owner = await context.newPage();
+    await owner.goto('https://www.tiktok.com/business-suite/messages?from=homepage&lang=en&u=1');
+    await tt.close(); // no messages tab left: only the owner's Business Suite tab
+    await sw.evaluate(() => chrome.storage.local.set({ auto_open_tabs: true }));
+    const ownTab = await until('the agent to open its own pinned messages tab', async () => {
+      const tabs = await sw.evaluate(() => chrome.tabs.query({ url: 'https://www.tiktok.com/messages*' }).then((ts) => ts.map((t) => ({ id: t.id, pinned: t.pinned, url: t.url || t.pendingUrl }))));
+      return tabs.find((t) => t.pinned) || null;
+    }, { timeout: 60_000, poke: true });
+    for (let i = 0; i < 4; i++) { await kick(); await sleep(1500); }
+    assert.match(owner.url(), /\/business-suite\//, `the owner's Business Suite tab stays where it is (${owner.url()})`);
+    await sw.evaluate(() => chrome.storage.local.set({ auto_open_tabs: false }));
+    pass(`the owner's own Business Suite tab was left alone; the agent opened its own pinned tab (${new URL(ownTab.url).pathname})`);
+  }
 
   console.log('\nReply times (message shown in the tab to reply sent):');
   for (const [label, ms] of times) console.log(`  ${label.padEnd(58)} ${secs(ms)}`);

@@ -4,7 +4,7 @@
 import type { Decision, DecideInput, DecideMedia, Env, LlmUsage, ToneProfile } from '../types';
 import { buildKnowledgeContext, type KnowledgeContext } from '../kb';
 import { getSettings } from '../lib/settings';
-import { LlmError, callJson, callTimeout, callWithin, canSeeImages, chooseProvider, deadlineError, knowledgeBudget, type CallBudget, type ProviderChoice } from './llm';
+import { LlmError, callJson, callTimeout, callWithin, canSeeImages, chooseProvider, deadlineError, knowledgeBudget, recordMockUsage, type CallBudget, type ProviderChoice } from './llm';
 import { mockDecide } from './mock';
 import { DECISION_SCHEMA, buildDecidePrompt, buildRetryUser, renderConversation, validateDecision, type RawDecision } from './prompt';
 import { confidentHoldingLine, enforceDecision, hasWords, holdingLine, isShopping, knowledgeQuery, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
@@ -170,6 +170,7 @@ export async function decide(env: Env, input: DecideInput, opts: DecideOptions =
   if (choice.provider === 'mock') {
     await mockLatency(input, deadlineAt);
     const m = mockDecide(input, tone, { seesImages: attach });
+    await recordMockUsage(env, choice, input.mode === 'playground' ? 'playground' : 'decide');
     const raw: RawDecision = { action: m.action, parts: m.parts, confidence: m.confidence, escalate: m.escalate, flags: m.flags, kb_refs: [], note: m.note, sales: m.sales ?? null };
     // The mock invents its wording, so the "figures must be in the knowledge" check cannot apply to it.
     const done = enforceDecision(raw, { ...ctx, sources: `${sources}\n${m.parts.join('\n')}` });

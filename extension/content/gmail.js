@@ -459,7 +459,8 @@
 
   function requireFree() {
     const why = ownerBusy();
-    if (why) throw new Fail('composer_busy', why, true);
+    // The owner is using the tab (an email anywhere, settings, a text box): wait, this chat is not theirs yet.
+    if (why) throw new Fail('owner_busy', why, true);
   }
 
   /** Back to the inbox list. Used after every read and send, and after anything that went wrong. */
@@ -879,18 +880,23 @@
         if (left && squash(composeUserText(left.body)) === squash(text)) await discardCompose(left, main);
         throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
       }
+      // The owner answered this email by hand after the read: the agent's reply would go out on top.
+      const shown = before.map((m) => ({ external_id: m.id, direction: m.out ? 'out' : 'in', body: m.body }));
+      if (newerThan && ACX.ownerReplied(shown, newerThan, [text, ...job.parts], (m) => state.sends.some((x) => x.text && squash(m.body).startsWith(x.text.slice(0, 80))))) {
+        throw new Fail('owner_replied', 'You already replied to this email yourself', false);
+      }
 
       // A box that is already open is a draft: the owner's, or ours from a try that stopped half way.
       box = openCompose(main);
       let typed = false;
       if (box) {
         const draft = squash(composeUserText(box.body));
-        if (draft && draft !== squash(text)) throw new Fail('composer_busy', 'There is already a draft reply in this email', true);
+        if (draft && draft !== squash(text)) throw new Fail('draft_in_chat', 'There is already a draft reply in this email', true);
         typed = !!draft;
       } else {
         box = await openReplyBox(main);
         // Gmail restores a saved draft into the box it opens: that draft is not ours to touch.
-        if (composeUserText(box.body)) throw new Fail('composer_busy', 'There is already a draft reply in this email', true);
+        if (composeUserText(box.body)) throw new Fail('draft_in_chat', 'There is already a draft reply in this email', true);
         weOpened = true;
       }
 
@@ -950,6 +956,7 @@
       }
       const ids = fresh ? job.parts.map((_, i) => partId(fresh.id, i)) : [];
       await remember(job, ids, threadId, text);
+      ACX.noteSent(text);
       done = true;
 
       // Gmail holds the email for the Undo period: do not move away before it is really gone.
@@ -1029,7 +1036,7 @@
       }
 
       const draft = squash(composeUserText(body));
-      if (draft && draft !== squash(text)) throw new Fail('composer_busy', 'The new email already has text in it', true);
+      if (draft && draft !== squash(text)) throw new Fail('draft_in_chat', 'The new email already has text in it', true);
       const cps = job.pacing && job.pacing.typing_cps;
       if (!draft) {
         await typingPause(text, cps, 0.35);

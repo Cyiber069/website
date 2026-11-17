@@ -11,7 +11,8 @@ import { HttpError, json, ndjsonStream, oneOf, str, type Ctx, type Router } from
 import { getSettings, getState, setState } from '../lib/settings';
 import { MIN } from '../lib/time';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
-import { completeJob, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
+import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
+import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
 import { VISION_SECRET, londonDayStart, receiveVideo } from '../vision';
 
 const POLL_SECONDS = 20;
@@ -68,13 +69,15 @@ export async function selectorPack(db: D1Database): Promise<{ version: string; p
   return { version: `${BASE_VERSION}.${override?.rev ?? 0}`, pack };
 }
 
-function clientConfig(settings: Settings, selectorsVersion: string, origin: string, vision: { active: boolean; whole_videos: boolean }) {
+function clientConfig(settings: Settings, selectorsVersion: string, origin: string, vision: { active: boolean; whole_videos: boolean }, legacy = false) {
   return {
     // Google AI Studio reads photos and videos: the tabs only open and send videos while it does.
     vision,
     enabled: settings.agent.enabled,
     channels: settings.channels,
-    pacing: { settle_seconds: settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
+    // Builds before 0.4.0 have no newer_message re-read: a short settle would let them answer the
+    // first of two quick messages and lose the second, so they keep the long quiet wait they had.
+    pacing: { settle_seconds: legacy ? Math.max(settings.pacing.settle_seconds, LEGACY_SETTLE_SECONDS) : settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
     poll_seconds: POLL_SECONDS,
     selectors_version: selectorsVersion,
     dashboard_url: origin,
@@ -186,6 +189,9 @@ export function register(r: Router): void {
     }
 
     const settings = await getSettings(c.db);
+    const legacy = isLegacyExtension(version);
+    // The leases handed out below use the version this sync reported.
+    device.version = version;
     // A newer extension (it reports `sending`) queues jobs per tab, so it gets them while it reads.
     // An older one types the jobs of a sync straight away, so a channel it says is busy is left alone.
     const ready = CHANNELS.filter((ch) => {
@@ -193,11 +199,16 @@ export function register(r: Router): void {
       return st?.state === 'ready' && (st.sending !== null || !st.busy);
     });
     const jobs = status.paused_locally ? [] : await leaseDue(c.db, device, settings, ready);
-    const [sel, vision] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now)]);
+    // Newer extensions list the jobs they hold: the ones the server cancelled meanwhile (a pause, an opt
+    // out, a takeover) are named so they are dropped instead of sent.
+    const rawStatus = (body.status && typeof body.status === 'object' ? body.status : {}) as Record<string, unknown>;
+    const held = Array.isArray(rawStatus.held) ? rawStatus.held.filter((x): x is string => typeof x === 'string' && x.length <= 40).slice(0, 40) : [];
+    const [sel, vision, cancelled] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now), droppedJobs(c.db, held)]);
     return json({
       server_time: c.now,
-      config: clientConfig(settings, sel.version, c.url.origin, vision),
+      config: clientConfig(settings, sel.version, c.url.origin, vision, legacy),
       jobs,
+      cancelled,
       selectors: body.selectors_version === sel.version ? null : sel,
     });
   });

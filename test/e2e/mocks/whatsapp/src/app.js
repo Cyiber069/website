@@ -370,7 +370,8 @@ function visibleChats() {
   return state.chats
     .filter((c) => (state.filter === 'unread' ? c.unread > 0 : state.filter === 'groups' ? c.group : true))
     .filter((c) => !term || c.title.toLowerCase().includes(term) || (digits(term).length >= 4 && digits(c.title + c.jid).includes(digits(term))))
-    .sort((a, b) => (lastOf(b)?.t || 0) - (lastOf(a)?.t || 0));
+    // Pinned chats stay at the top, like the real app.
+    .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || (lastOf(b)?.t || 0) - (lastOf(a)?.t || 0));
 }
 
 function rowEl(chat, index) {
@@ -388,6 +389,8 @@ function rowEl(chat, index) {
             last && last.fromMe && h('span', { 'data-testid': 'last-msg-status' }, statusIcon(last.ack)),
             chat.group && last && !last.fromMe && [h('span', {}, last.author), h('span', {}, ': ')],
             chat.draft && !open ? [h('span', { class: 'draft' }, 'Draft: '), chat.draft] : h('span', { dir: 'ltr', title: preview }, rich(preview))),
+          // The pin, as the real list draws it: data-icon pinned2 on old builds, an svg titled "pinned" on new ones.
+          chat.pinned && h('span', { 'aria-label': 'Pinned chat', class: 'pin' }, icon('pinned2', 'pinned')),
           chat.unread > 0 && h('span', { 'aria-label': `${chat.unread} unread message${chat.unread > 1 ? 's' : ''}`, class: 'badge' }, String(chat.unread))))));
 }
 
@@ -528,7 +531,7 @@ const api = {
     if (!chat) {
       const d = digits(who);
       const jid = String(who).includes('@') ? String(who) : `${d}@c.us`;
-      chat = { jid, title: opts.title || formatPhone(d), phone: opts.phone || undefined, avatar: 'default', unread: 0, draft: '', messages: [] };
+      chat = { jid, title: opts.title || formatPhone(d), phone: opts.phone || undefined, avatar: 'default', unread: 0, draft: '', messages: [], pinned: opts.pinned === true };
       state.chats.push(chat);
     }
     const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', photo: opts.photo === true, video: opts.video === true, viewOnce: opts.viewOnce === true, t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
@@ -552,6 +555,23 @@ const api = {
     return true;
   },
   open(who) { const c = chatBy(who); if (c) selectChat(c.jid); return Boolean(c); },
+  /** Pin or unpin a chat, as the owner would from its menu. */
+  pin(who, on = true) { const c = chatBy(who); if (!c) return false; c.pinned = Boolean(on); save(); renderList(); return true; },
+  /**
+   * The owner sends a message in a chat from the phone: it shows in the chat as ours, but this page
+   * did not send it (not in sent()). Clears any draft of that chat. Returns the message id.
+   */
+  ownerSend(who, text) {
+    const chat = chatBy(who);
+    if (!chat) return null;
+    const msg = { id: newId(), fromMe: true, text, kind: 'text', t: Date.now(), ack: 2 };
+    chat.messages.push(msg);
+    chat.draft = '';
+    if (chat.jid === state.openJid) setEditorText('');
+    save();
+    if (state.mode === 'main') { renderList(); renderMessages(); }
+    return msg.id;
+  },
   /** The recorded clip ({ size, type }) once it is ready, else null. */
   videoClip: () => (videoClip ? { size: videoClip.size, type: videoClip.type } : null),
   /** Media viewers opened so far: [{ msgId, how, muted, paused, audible, chat, chat_after }]. */

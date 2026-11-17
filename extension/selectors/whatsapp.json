@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "_meta": {
     "pack": "whatsapp-web",
     "built": "2026-11-17",
@@ -31,7 +31,8 @@
     "unreadBadge": ["[data-testid=\"icon-unread-count\"]", "[data-testid=\"icon-unread\"]", "span[aria-label*=\"unread\" i]", "span[aria-label*=\"no leído\" i]", "span[aria-label*=\"no leídos\" i]", "[aria-label*=\"unread\" i]", "[aria-label*=\"no leído\" i]"],
     "searchInput": ["#side input[type=\"text\"][role=\"textbox\"]", "#side [data-testid=\"chat-list-search-container\"] input", "#side div[contenteditable=\"true\"][data-tab=\"3\"]", "#side input[data-tab=\"3\"]", "#side input[role=\"textbox\"]"],
     "filterTab": ["#side button[role=\"tab\"]"],
-    "filterAll": ["#all-filter", "#side button[role=\"tab\"]:first-of-type"]
+    "filterAll": ["#all-filter", "#side button[role=\"tab\"]:first-of-type"],
+    "rowPinned": ["[data-icon=\"pinned2\"]", "[data-icon=\"pinned\"]", "[data-testid=\"pinned\"]"]
   },
   "conversation": {
     "main": ["#main"],
@@ -83,7 +84,8 @@
     "invalidNumber": "invalid|inv[aá]lid|no es v[aá]lido|no est[aá] en whatsapp|isn.t on whatsapp",
     "useHere": "use here|usar aqu[ií]|open in another window|abierto en otra ventana",
     "restricted": "restricted|can.t start new chats|can.t send messages|spam|restringid",
-    "phoneTitle": "^\\+?[\\d\\s().-]{7,}$"
+    "phoneTitle": "^\\+?[\\d\\s().-]{7,}$",
+    "pinnedAria": "pinned chat|chat fijado|chat disematkan"
   },
   "icons": {
     "pending": "msg-time|ic-schedule",

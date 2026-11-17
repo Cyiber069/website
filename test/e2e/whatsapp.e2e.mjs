@@ -228,17 +228,62 @@ async function main() {
   assert.deepEqual((await sentTo(JAKE)).map((s) => s.text), ['Mock reply to: yo how long is delivery', holding, answer]);
   pass('escalated question appears in /api/urgent and the owner answer is typed into the chat');
 
-  // ---- 5. never types over someone's draft ------------------------------------------------------------------------------------
+  // ---- 5. never types over someone's draft: the owner is writing to that customer, so the agent stands down ---------------
   await mock('setDraft', 'Lena', 'half typed by the owner');
   await mock('receive', 'Lena', 'what colours do you have');
-  const busy = await until('the job to fail with composer_busy', async () => (await sql(`SELECT id, status, last_error FROM outbox WHERE last_error LIKE 'composer_busy%'`))[0]);
-  assert.equal(busy.status, 'pending', 'a busy message box is retried later');
+  const busy = await until('the job to be dropped for the draft', async () => (await sql(`SELECT id, status, last_error FROM outbox WHERE last_error LIKE 'takeover: draft_in_chat%'`))[0]);
+  assert.equal(busy.status, 'cancelled', 'the agent reply stands down instead of waiting on the draft for a day');
   assert.equal((await sentTo(LENA)).length, 2, 'nothing was sent while the draft was there');
   assert.equal((await mock('chats')).find((c) => c.jid === LENA).draft, 'half typed by the owner', 'the draft is untouched');
-  await mock('setDraft', 'Lena', '');
-  await sql('UPDATE outbox SET not_before = 0 WHERE id = ?', [busy.id]);
-  await until('reply to Lena once the draft is gone', async () => (await sentTo(LENA)).find((s) => s.text === 'Mock reply to: what colours do you have'));
-  pass('composer with a draft is left alone (composer_busy), reply goes out once it is free');
+  const paused = (await sql('SELECT paused_until, pause_reason, needs_reply_since FROM conversations WHERE id = ?', [lena.id]))[0];
+  assert.ok(paused.paused_until > Date.now(), 'the chat is paused for the owner');
+  assert.equal(paused.pause_reason, 'You were typing in that chat');
+  assert.ok((await sql(`SELECT id FROM events WHERE type = 'takeover' AND conversation_id = ?`, [lena.id])).length, 'the owner is told on Live');
+  // The owner sends their answer by hand: the agent never adds its own reply on top.
+  await mock('ownerSend', 'Lena', 'we have black and grey');
+  for (let i = 0; i < 6; i++) { await kick(); await sleep(1000); }
+  assert.equal((await sentTo(LENA)).length, 2, 'no agent reply after the owner answered');
+  assert.equal((await sql(`SELECT COUNT(*) AS n FROM outbox WHERE conversation_id = ? AND status IN ('pending', 'leased')`, [lena.id]))[0].n, 0, 'nothing of the agent waits for that chat');
+  pass('a draft in the chat is never typed over: the agent reply stands down, the chat is paused, the owner answers alone');
+
+  // ---- 5b. the owner answers from the phone while the agent reply waits: it is not sent on top ------------------------------
+  await api('/api/settings/pacing', { method: 'PUT', body: { min_reply_delay_s: 6, max_reply_delay_s: 7 } });
+  await mock('receive', 'Jake', 'do you do finance');
+  const waiting = await until('the reply to be with the laptop', async () => (await sql(`SELECT id FROM outbox WHERE conversation_id = ? AND status = 'leased' AND source = 'auto'`, [jake.id]))[0]);
+  await mock('ownerSend', 'Jake', 'yes 0% over 12 months mate');
+  const refused = await until('the reply to be refused', async () => (await sql(`SELECT status, last_error FROM outbox WHERE id = ? AND status != 'leased'`, [waiting.id]))[0], { timeout: 30_000 });
+  assert.equal(refused.status, 'cancelled');
+  assert.match(refused.last_error, /owner_replied/);
+  await sleep(1500);
+  assert.equal((await sentTo(JAKE)).filter((s) => /finance/.test(s.text)).length, 0, 'the agent reply about finance never went out');
+  assert.equal((await sql('SELECT pause_reason FROM conversations WHERE id = ?', [jake.id]))[0].pause_reason, 'You replied yourself');
+  await api('/api/settings/pacing', { method: 'PUT', body: { min_reply_delay_s: 0, max_reply_delay_s: 0 } });
+  await sql('UPDATE conversations SET paused_until = NULL WHERE id = ?', [jake.id]);
+  pass('the owner answered from the phone while the reply waited: owner_replied, nothing sent on top, chat paused');
+
+  // ---- 5c. pinned chats are the owner's: never read or answered, but the owner's own words still go there -------------------
+  const PINNED = '447700900331@c.us';
+  const PLAIN = '447700900332@c.us';
+  await mock('receive', PINNED, 'hello from a pinned chat', { title: 'Pia Pinned', phone: '447700900331', pinned: true });
+  await mock('receive', PLAIN, 'hello from a normal chat', { title: 'Nat Normal', phone: '447700900332' });
+  await until('reply in the normal chat', async () => (await sentTo(PLAIN)).find((s) => s.text === 'Mock reply to: hello from a normal chat'));
+  await mock('receive', PINNED, 'do you have the 750w in stock');
+  for (let i = 0; i < 6; i++) { await kick(); await sleep(1000); }
+  assert.equal((await sentTo(PINNED)).length, 0, 'nothing sent in the pinned chat');
+  assert.equal(await conversation(PINNED), undefined, 'the pinned chat was never read or reported');
+  // A job the owner chose (here a message from Inbox) still goes to the pinned chat; the agent's own words do not.
+  const pinJob = async (id, source, text) => sql(
+    `INSERT INTO outbox (id, channel, kind, conversation_id, target, parts, status, source, not_before, pacing, created_at)
+     VALUES (?, 'whatsapp', 'reply', NULL, ?, ?, 'pending', ?, 0, '{}', ?)`,
+    [id, JSON.stringify({ thread_external_id: PINNED, title: 'Pia Pinned', phone: '+447700900331', email: null, handle: null, subject: null }), JSON.stringify([text]), source, Date.now()]);
+  await pinJob('ob_e2e_pin_auto', 'auto', 'agent words for a pinned chat');
+  const pinAuto = await until('the agent job for the pinned chat to be dropped', async () => (await sql(`SELECT status, last_error FROM outbox WHERE id = 'ob_e2e_pin_auto' AND status != 'pending' AND status != 'leased'`))[0]);
+  assert.equal(pinAuto.status, 'cancelled');
+  assert.match(pinAuto.last_error, /^pinned_chat/);
+  await pinJob('ob_e2e_pin_owner', 'manual', 'the owner chose to send this');
+  await until('the owner message in the pinned chat', async () => (await sentTo(PINNED)).find((s) => s.text === 'the owner chose to send this'));
+  assert.deepEqual((await sentTo(PINNED)).map((s) => s.text), ['the owner chose to send this']);
+  pass('pinned chat: never read or answered by the agent, the owner\u2019s own message still sent; the normal chat answered');
 
   // ---- 6. groups are ignored ------------------------------------------------------------------------------------------------------
   assert.equal((await sentTo(GROUP)).length, 0, 'nothing sent to the group');

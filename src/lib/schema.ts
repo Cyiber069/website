@@ -9,8 +9,9 @@ import m0006 from '../../migrations/0006_sales.sql';
 import m0007 from '../../migrations/0007_media.sql';
 import m0008 from '../../migrations/0008_reply_speed.sql';
 import m0009 from '../../migrations/0009_vision.sql';
+import m0010 from '../../migrations/0010_send_waits.sql';
 
-const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003], ['0004_agent_discounts', m0004], ['0005_read_indexes', m0005], ['0006_sales', m0006], ['0007_media', m0007], ['0008_reply_speed', m0008], ['0009_vision', m0009]];
+const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003], ['0004_agent_discounts', m0004], ['0005_read_indexes', m0005], ['0006_sales', m0006], ['0007_media', m0007], ['0008_reply_speed', m0008], ['0009_vision', m0009], ['0010_send_waits', m0010]];
 
 let ready: Promise<void> | null = null;
 

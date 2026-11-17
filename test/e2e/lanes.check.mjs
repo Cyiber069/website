@@ -98,6 +98,29 @@ export async function runChecks() {
   assert.equal(core.leaseOver(job('u', 'A', { job: { lease_until: t0 - 1 } }), t0), true);
   ok('queue: FIFO per chat, not_before then created_at, delay from the read, TikTok gap, new chats wait');
 
+  // ---- leases on this laptop's clock ------------------------------------------------------------------------
+  // The laptop clock runs 4 minutes fast: the server's lease_until looks over at once, but the time left
+  // the server gave (kept as leaseAt) says 3 minutes. The job is not dropped, and not rushed either.
+  const fast = { ...job('c', 'A', { job: { lease_until: t0 - 60_000, lease_ms: 180_000 } }), leaseAt: t0 + 178_000 };
+  assert.equal(core.leaseOver(fast, t0), false, 'a fast laptop clock does not drop the job');
+  assert.equal(core.leaseUrgent(fast, t0), false);
+  assert.equal(core.leaseOver(fast, t0 + 179_000), true, 'it is over when its own time is up');
+  assert.equal(core.leaseUrgent(fast, t0 + 130_000), true);
+  // Items queued by an older build have only lease_until.
+  assert.equal(core.leaseEnd(job('o', 'A', { job: { lease_until: t0 + 5 } })), t0 + 5);
+  ok('leases: measured from the time left on this laptop, so a clock that is off never drops or rushes a job');
+
+  // ---- a held new chat job gets its turn --------------------------------------------------------------------
+  const held = { ...job('nc', null, { job: { kind: 'new_chat' }, arrived: t0 }), leaseAt: t0 + 180_000 };
+  assert.equal(core.nextJob([held], { now: t0 + 1000, holdNewChat: true }).item, null, 'held while customers wait');
+  const nearEnd = core.nextJob([held], { now: t0 + 180_000 - core.NEW_CHAT_URGENT_MS + 1, holdNewChat: true });
+  assert.equal(nearEnd.item?.job.id, 'nc', 'near its lease end it goes, before it can expire unsent');
+  assert.equal(core.leaseUrgent(held, t0 + 180_000 - core.NEW_CHAT_URGENT_MS + 1), true);
+  assert.equal(core.chooseStep({ scanDue: true, readyJob: true, jobUrgent: true, dueRead: true }), 'send', 'and before any scan or read');
+  const longHeld = { ...held, leaseAt: t0 + 10 * 60_000 };
+  assert.equal(core.nextJob([longHeld], { now: t0 + core.NEW_CHAT_MAX_HOLD_MS + 1, holdNewChat: true }).item?.job.id, 'nc', 'held at most 45 s in steady traffic');
+  ok('new chat jobs: held behind customer replies, but sent near the lease end or after 45 s');
+
   // Due threads: listed ones first, then the longest waiting; in one scan the lowest row (oldest) first.
   const at = (pos, since, live = true) => ({ live, e: { since, pos } });
   const order = [at(0, t0), at(4, t0), at(2, t0), at(1, t0 - 5000), at(3, t0 - 9000, false)].sort(core.readOrder).map((x) => x.e.pos);
@@ -121,7 +144,7 @@ export async function runChecks() {
     { external_id: 'm3', direction: 'in', body: 'how much' },
   ];
   const ref = ACX.tailRef(read);
-  assert.deepEqual(ref, { last_in_id: 'm3', last_in_body: 'how much', same: 1 });
+  assert.deepEqual(ref, { last_in_id: 'm3', last_in_body: 'how much', same: 1, outs_after: 0 });
   assert.equal(ACX.newerInbound(read, ref), false);
   assert.equal(ACX.newerInbound([...read, { external_id: 'm4', direction: 'in', body: 'for 26 inch' }], ref), true);
   assert.equal(ACX.newerInbound([...read, { external_id: 'm4', direction: 'out', body: 'our part one' }], ref), false, 'our own messages are not newer');
@@ -134,6 +157,26 @@ export async function runChecks() {
   assert.equal(ACX.newerInbound([{ external_id: null, direction: 'in', body: 'something else' }], r2), false, 'reference not found: never refuse on a guess');
   assert.equal(ACX.newerInbound(read, null), false);
   ok('newer message check: by id, by words, repeats count, our own messages and unknown references do not');
+
+  // ---- the owner answered by hand after the read ------------------------------------------------------------
+  const parts = ['Mock reply to: how much'];
+  assert.equal(ACX.ownerReplied(read, ref, parts), false, 'nothing new');
+  assert.equal(ACX.ownerReplied([...read, { external_id: 'o1', direction: 'out', body: 'its 499 mate' }], ref, parts), true, 'an outgoing message that is not ours');
+  assert.equal(ACX.ownerReplied([...read, { external_id: 'o1', direction: 'out', body: parts[0] }], ref, parts), false, 'this job itself (a try that was cut short)');
+  ACX.noteSent('Let me check that for you');
+  assert.equal(ACX.ownerReplied([...read, { external_id: 'o2', direction: 'out', body: 'Let me check that for you' }], ref, parts), false, 'something the agent sent from this page');
+  assert.equal(ACX.ownerReplied([...read, { external_id: 'o3', direction: 'out', body: 'sent by the agent before a reload' }], ref, parts, (m) => m.external_id === 'o3'), false, 'the adapter knows it as ours');
+  // Our messages that were already there at the read do not count; only new ones after them do.
+  const withOurs = [...read, { external_id: 'o4', direction: 'out', body: 'an earlier reply of ours' }];
+  const ref2 = ACX.tailRef(withOurs);
+  assert.equal(ref2.outs_after, 1);
+  assert.equal(ACX.ownerReplied(withOurs, ref2, parts), false);
+  assert.equal(ACX.ownerReplied([...withOurs, { external_id: 'o5', direction: 'out', body: 'owner from the phone' }], ref2, parts), true);
+  // An email shows our words with a signature after them.
+  assert.equal(ACX.ownerReplied([...read, { external_id: 'g1', direction: 'out', body: `${parts[0]}\n\n-- \nACX Ebikes` }], ref, parts), false, 'our email with its signature');
+  assert.equal(ACX.ownerReplied([...read, { external_id: 'o1', direction: 'out', body: 'x' }], { ...ref, outs_after: undefined }, parts), false, 'an old reference never refuses');
+  assert.equal(ACX.ownerReplied([{ external_id: 'zz', direction: 'in', body: 'other' }, { direction: 'out', body: 'y' }], ref, parts), false, 'reference not found: never refuse on a guess');
+  ok('owner replied check: a new outgoing message that is not ours refuses the reply; ours, old ones and unknown references do not');
 
   const now = new Date(2026, 10, 17, 15, 30, 20).getTime();
   assert.equal(ACX.labelTimeMax('15:29', now), new Date(2026, 10, 17, 15, 30, 0).getTime(), 'a clock label plus its minute');
@@ -161,6 +204,15 @@ export async function runChecks() {
   assert.equal(ACX.pauseScale(6000, 20_000), 0.3);
   assert.equal(ACX.pauseScale(6000, 1_000_000), 0.15);
   ok('pacing: typing_cps 0 or 200+ pastes at once, a missing speed keeps the old 11, busy lanes shrink pauses');
+
+  // ---- WhatsApp pack: pinned chats ------------------------------------------------------------------------------
+  const whatsapp = JSON.parse(readFileSync(join(root, 'extension', 'selectors', 'whatsapp.json'), 'utf8'));
+  assert.ok(whatsapp.version >= 5, 'pack version bumped for the pinned keys');
+  assert.deepEqual(whatsapp.chatList.rowPinned, ['[data-icon="pinned2"]', '[data-icon="pinned"]', '[data-testid="pinned"]']);
+  const pinnedAria = new RegExp(whatsapp.text.pinnedAria, 'i');
+  for (const label of ['Pinned chat', 'Chat fijado', 'Chat disematkan']) assert.ok(pinnedAria.test(label), label);
+  assert.ok(!pinnedAria.test('3 unread messages'));
+  ok('WhatsApp pack: pinned row selectors and the pinned chat label in three languages');
 
   // ---- TikTok pack: the live "request pending" text ----------------------------------------------------------
   const tiktok = JSON.parse(readFileSync(join(root, 'extension', 'selectors', 'tiktok.json'), 'utf8'));

@@ -54,6 +54,18 @@ describe('split code requests (no server)', () => {
     expect(codeTrigger('acxjohn', [line('in', 'can i get a code', NOW - 60_000)], NOW)).toEqual({ kind: 'context', since: NOW - 60_000 });
   });
 
+  it('an answer to our own code question still counts hours later and when it says more', () => {
+    const asked = NOW - 3 * 3_600_000;
+    const before = [line('in', 'can i get my own code', asked - 60_000), line('out', ASK, asked)];
+    // Creators often answer the next morning.
+    expect(codeTrigger('JAKE20', before, NOW)).toEqual({ kind: 'context', since: asked });
+    const long = 'yeah so I was thinking JAKE20 since thats my name and the year I started riding, my followers know me as jake on here and they all ride ebikes around town every weekend';
+    expect(long.length).toBeGreaterThan(160);
+    expect(codeTrigger(long, before, NOW)).toEqual({ kind: 'context', since: asked });
+    // Too long ago: not read as a request, but the reply gets a note so it never promises a code.
+    expect(codeTrigger('JAKE20', [line('out', ASK, NOW - 49 * 3_600_000)], NOW)).toBeNull();
+  });
+
   it('only ever makes a code the customer typed, and parks anything doubtful', () => {
     const base = {
       settings: DEFAULT_SETTINGS.discounts, request: { wants_code: true, code: 'JAKE20', confidence: 0.95 }, code: 'JAKE20',
@@ -152,6 +164,17 @@ describe('split code requests end to end', () => {
     const made = await inbound('tiktok', thread, [...first, { external_id: unique('m'), direction: 'in', body: lone }], { title: handle, contact: { name: handle, handle } });
     expect(made.jobs[0]!.parts).toEqual([TEMPLATE(lone)]);
     for (const j of [...ask.jobs, ...made.jobs]) await finish(j.id);
+  });
+
+  it('our code question answered 3 hours later still makes the code', async () => {
+    const c = await chat();
+    const asked = await c.say('yo can i get a creator code');
+    expect(asked.jobs[0]!.parts.join(' ')).toBe(ASK);
+    await sql('UPDATE messages SET ts = ts - ?, created_at = created_at - ? WHERE conversation_id = ?', [3 * 3_600_000, 3 * 3_600_000, asked.conversation_id]);
+    const code = unique('LATE').toUpperCase();
+    const made = await c.say(code);
+    expect(made.jobs[0]!.parts).toEqual([TEMPLATE(code)]);
+    expect(await codes(made.conversation_id!)).toEqual([{ code, status: 'live', made_by: 'agent' }]);
   });
 
   it('a split request already dealt with is not done twice', async () => {

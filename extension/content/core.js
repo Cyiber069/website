@@ -29,7 +29,7 @@
 //   typing pauses at all (each part goes in whole).
 //
 // Throw new ACX.Fail(code, message, retryable) for expected failures. Codes the server understands:
-// thread_not_found, composer_missing, composer_busy, send_not_confirmed, not_on_whatsapp, invalid_number,
+// thread_not_found, composer_missing, composer_busy (the box changed while typing), draft_in_chat (text that is not ours in this chat's box), owner_busy (the owner is using the tab), owner_replied (the owner answered by hand after the read), send_not_confirmed, not_on_whatsapp, invalid_number,
 // logged_out, blocked, timeout, newer_message, unknown.
 //
 // Everything site specific (selectors, text patterns) comes from the selector pack: ACX.q('group.name').
@@ -410,18 +410,62 @@
   const normBody = (s) => squash(s).toLowerCase().slice(0, 200);
   const usableMsgs = (messages) => (Array.isArray(messages) ? messages : []).filter((m) => m && (m.direction === 'in' || m.direction === 'out'));
 
-  /** { last_in_id, last_in_body, same }: the last customer message and how many with the same words. */
+  /**
+   * { last_in_id, last_in_body, same, outs_after }: the last customer message, how many with the same
+   * words, and how many of our messages (the agent's or the owner's) came after it when the chat was read.
+   */
   function tailRef(messages) {
     const list = usableMsgs(messages);
     let at = -1;
     for (let i = list.length - 1; i >= 0; i--) if (list[i].direction === 'in') { at = i; break; }
-    if (at < 0) return { last_in_id: null, last_in_body: null, same: 0 };
+    if (at < 0) return { last_in_id: null, last_in_body: null, same: 0, outs_after: 0 };
     const body = normBody(list[at].body);
     return {
       last_in_id: list[at].external_id ? String(list[at].external_id) : null,
       last_in_body: body,
       same: list.filter((m) => m.direction === 'in' && normBody(m.body) === body).length,
+      outs_after: list.length - 1 - at,
     };
+  }
+
+  /** Where the message `ref` describes is in `list` (by id, else by its words), or -1. */
+  function tailIndex(list, ref) {
+    if (!ref || (ref.last_in_id == null && ref.last_in_body == null)) return -1;
+    if (ref.last_in_id) {
+      for (let i = list.length - 1; i >= 0; i--) if (String(list[i].external_id || '') === ref.last_in_id) return i;
+    }
+    if (ref.last_in_body == null) return -1;
+    let at = -1;
+    list.forEach((m, i) => { if (m.direction === 'in' && normBody(m.body) === ref.last_in_body) at = i; });
+    return at;
+  }
+
+  // What this page sent for the agent lately (words, when), so the owner's own messages can be told apart.
+  const ownSent = new Map();
+  /** Call after each part the agent sent. */
+  function noteSent(text) {
+    const now = Date.now();
+    ownSent.set(normBody(text), now);
+    for (const [k, at] of ownSent) if (now - at > 2 * 3600_000) ownSent.delete(k);
+  }
+
+  /**
+   * True when the owner answered the customer by hand after the read `ref` describes: an outgoing
+   * message came after the read that is not one of `parts` (this job) and not something the agent sent
+   * from this page (`ownIds`, `noteSent`). Needs a reference from a newer build (outs_after). When the
+   * reference cannot be found the answer is false: nothing is refused on a guess.
+   */
+  function ownerReplied(messages, ref, parts = [], isOurs = null) {
+    if (!ref || typeof ref.outs_after !== 'number') return false;
+    const list = usableMsgs(messages);
+    const at = tailIndex(list, ref);
+    if (at < 0) return false;
+    const mine = [...(Array.isArray(parts) ? parts : []).map(normBody), ...ownSent.keys()].filter(Boolean);
+    // An email shows our text with a signature after it: our words at the start count as ours.
+    const ours = (body) => mine.some((x) => body === x || (x.length >= 8 && body.startsWith(x)));
+    const outs = list.slice(at + 1).filter((m) => m.direction === 'out');
+    // The first `outs_after` were there when the chat was read; the rest came after it.
+    return outs.slice(ref.outs_after).some((m) => !ours(normBody(m.body)) && !(isOurs && isOurs(m)));
   }
 
   /**
@@ -1089,7 +1133,7 @@
     // typing and pacing
     insertText, humanType, clearComposer, instant, cpsOf, pauseScale, humanPause,
     // the end of a thread, and list time labels
-    tailRef, newerInbound, isClock, labelAge, labelTimeMax, timeMoved, stableTime,
+    tailRef, newerInbound, ownerReplied, noteSent, isClock, labelAge, labelTimeMax, timeMoved, stableTime,
     // diagnostics + activity
     diag, snapshot, skeleton, watch, nudge, toWorker,
     // photos, and whole videos for the vision model

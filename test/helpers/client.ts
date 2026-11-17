@@ -26,7 +26,7 @@ export const unique = (prefix: string) => `${prefix}${Date.now().toString(36)}${
 export interface Msg { external_id?: string | null; direction: 'in' | 'out'; body: string; kind?: string; ts?: number | null }
 
 /** Post what the extension saw in a thread and return the final decision line of the stream. */
-export async function inbound(channel: string, threadId: string, messages: Msg[], extra: Record<string, unknown> = {}): Promise<Outcome> {
+export async function inbound(channel: string, threadId: string, messages: Msg[], extra: Record<string, unknown> = {}, top: Record<string, unknown> = {}): Promise<Outcome> {
   const res = await fetch(`${BASE()}/api/agent/inbound`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.ACX_TEST_DEVICE!}` },
@@ -34,6 +34,7 @@ export async function inbound(channel: string, threadId: string, messages: Msg[]
       channel,
       thread: { external_id: threadId, title: `Customer ${threadId.slice(0, 6)}`, contact: { name: `Customer ${threadId.slice(0, 6)}` }, ...extra },
       messages,
+      ...top,
     }),
   });
   const lines = (await res.text()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
