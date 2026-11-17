@@ -1,6 +1,6 @@
 // Health: is everything working, and what went wrong if not.
-import { get } from '../api.js';
-import { $, html, icon, setHTML, unavailable, skeletonCards, ago, dayClock, chBadge, chName, CHANNELS, num, plural } from '../ui.js';
+import { del, get, post } from '../api.js';
+import { $, html, icon, setHTML, unavailable, skeletonCards, ago, dayClock, chBadge, chName, CHANNELS, num, plural, copyText, toastError, clock } from '../ui.js';
 import { channelState } from './live.js';
 
 const LIMITS = { read: 5000000, write: 100000 };
@@ -30,6 +30,7 @@ export default {
   focus: true,
   mount(view, ctx) {
     let data = null, error = null, lastSig = '';
+    let share = { active: false, url: '', expires_at: null, busy: false };
     setHTML(view, skeletonCards(3));
 
     function paint() {
@@ -52,6 +53,17 @@ export default {
           <span class="eyebrow">Last 24 hours</span>
           <p class="hero__state">${problems ? `${plural(problems, 'thing needs', 'things need')} a look.` : 'All good.'}</p>
           <p class="hero__sub">${problems ? 'Details below, with what to do about each one.' : 'The laptop is online and nothing has failed.'}</p>
+        </section>
+
+        <section class="card stack" aria-labelledby="hx-h">
+          <div class="card__head"><h2 class="eyebrow" id="hx-h">Share with Claude</h2>${share.active ? html`<span class="pill pill--live"><span class="dot dot--live" aria-hidden="true"></span>Sharing</span>` : ''}</div>
+          ${share.url ? html`<p class="muted">Copy this link and send it to Claude. It works until ${clock(share.expires_at)} tomorrow.</p>
+            <input class="input num" type="text" readonly value="${share.url}" aria-label="Report link" data-share-url>
+            <div class="row"><button type="button" class="btn btn--primary" data-action="share-copy">Copy link</button><button type="button" class="btn" data-action="share-stop">Stop sharing</button></div>`
+          : share.active ? html`<p class="muted">A link is live until ${clock(share.expires_at)}. Make a new one if you lost it. The old one stops working.</p>
+            <div class="row"><button type="button" class="btn btn--primary" data-action="share-make" ${share.busy ? 'disabled' : ''}>Make a new link</button><button type="button" class="btn" data-action="share-stop">Stop sharing</button></div>`
+          : html`<p class="muted">If something is not working, make a link and send it to Claude. It shows what your laptop and the agent did today so the fault can be found and fixed. What customers wrote, their numbers and their emails are left out. The link stops working after 24 hours.</p>
+            <div><button type="button" class="btn btn--primary" data-action="share-make" ${share.busy ? 'disabled' : ''}>Make a link</button></div>`}
         </section>
 
         <section class="card stack" aria-labelledby="hl-h">
@@ -117,7 +129,23 @@ export default {
       const sig = JSON.stringify([{ ...data, now: 0, devices: (data.devices || []).map((d) => [d.id, d.online, d.status]) }, ctx.overview?.channels, Math.floor(Date.now() / 60000)]);
       if (sig !== lastSig) { lastSig = sig; paint(); }
     }
-    view.addEventListener('click', (e) => { if (e.target.closest('[data-action="retry"]')) load(); });
+    async function loadShare() {
+      try { const l = await get('/api/support/link'); share = { ...share, active: Boolean(l.active), expires_at: l.expires_at }; } catch { /* the card still offers a new link */ }
+    }
+    view.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-action="retry"]')) load();
+      if (e.target.closest('[data-action="share-make"]')) {
+        share.busy = true; paint();
+        try { const l = await post('/api/support/link'); share = { active: true, url: l.url, expires_at: l.expires_at, busy: false }; }
+        catch (err) { share.busy = false; toastError(err); }
+        paint();
+      }
+      if (e.target.closest('[data-action="share-copy"]')) copyText(share.url, 'Link copied');
+      if (e.target.closest('[data-action="share-stop"]')) {
+        try { await del('/api/support/link'); share = { active: false, url: '', expires_at: null, busy: false }; paint(); } catch (err) { toastError(err); }
+      }
+    });
+    loadShare().then(() => { if (data) paint(); });
     load();
     return { tick: load };
   },

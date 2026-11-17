@@ -8,6 +8,7 @@ import * as hooks from './hooks';
 import * as kb from './kb';
 import * as recovery from './recovery';
 import * as sales from './sales';
+import * as support from './support';
 import * as testing from './testing';
 import * as voice from './voice';
 
@@ -22,6 +23,7 @@ export function buildRouter(): Router {
   recovery.register(r);
   discounts.register(r);
   sales.register(r);
+  support.register(r);
   connections.register(r);
   hooks.register(r);
   testing.register(r);
