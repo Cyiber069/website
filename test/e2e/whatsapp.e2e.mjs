@@ -345,7 +345,7 @@ async function main() {
   assert.equal((await sentTo(MAX)).length, 1, 'answered once');
   assert.ok((await mock('sent')).every((s) => !/^4477009004\d0@c\.us$/.test(s.jid)), 'chats that end with our own message are left alone');
   const waHealth = (await api('/api/overview')).device?.status?.channels?.whatsapp;
-  assert.ok(waHealth.last_ok_at > 0 && waHealth.version === '0.3.0', `health reported (${JSON.stringify(waHealth)})`);
+  assert.ok(waHealth.last_ok_at > 0 && waHealth.version === JSON.parse(readFileSync(join(root, 'extension', 'manifest.json'), 'utf8')).version, `health reported (${JSON.stringify(waHealth)})`);
   pass('10 minute sweep answers a customer message in a chat without an unread badge, once');
 
   // ---- photos and videos: captured from the page, answered by the brain, shown to the owner ---------------------------------------

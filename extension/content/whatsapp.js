@@ -217,7 +217,8 @@
 
   async function probe() {
     const unread = countUnread();
-    if (Q('state.qr')) return { state: 'logged_out', detail: 'Scan the QR code with your phone to link WhatsApp', unread: 0 };
+    // The chat list wins: a logged in page can never be "signed out", whatever else matches the QR selectors.
+    if (!Q('state.loggedIn') && Q('state.qr')) return { state: 'logged_out', detail: 'Scan the QR code with your phone to link WhatsApp', unread: 0 };
 
     const open = dialogs().map((d) => dialogKind(d));
     if (open.includes('conflict')) return { state: 'blocked', detail: MSG.conflict, unread };
@@ -237,7 +238,9 @@
     // While a new chat is being opened, its dialogs are for send() to judge (so the job gets the right error).
     if (open.includes('restricted') && !(await getPending())) return { state: 'blocked', detail: MSG.restricted, unread };
     if (open.includes('unknown')) return { state: 'blocked', detail: MSG.unknown, unread };
-    return { state: 'ready', detail: '', unread };
+    // WhatsApp shows this when the phone has been offline too long. Chats on screen still work, new ones may be late.
+    const paused = /syncing paused|open whatsapp on your phone to continue/i.test((document.querySelector('#main')?.textContent || '').slice(0, 2000) + ' ' + (document.querySelector('#side')?.textContent || '').slice(0, 2000));
+    return { state: 'ready', detail: paused ? 'WhatsApp says syncing is paused. Open WhatsApp on your phone' : '', unread };
   }
 
   // ---- chat list -----------------------------------------------------------------------------------------------
