@@ -7,7 +7,7 @@ import { sha256Hex } from '../lib/crypto';
 import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { bad } from '../lib/http';
-import { MEDIA_PER_REPORT, checkMedia, type MediaItem, type MediaRef } from '../lib/media';
+import { MEDIA_PER_REPORT, checkMedia, mediaExtras, type MediaItem, type MediaRef } from '../lib/media';
 import { getSettings } from '../lib/settings';
 import { HOUR, MIN } from '../lib/time';
 import { handleCodeTurn } from '../discounts/agent';
@@ -17,6 +17,8 @@ import { noReplyNeeded } from './noreply';
 export { noReplyNeeded };
 import { cancelAgentJobs, cancelForOptOut, emptyTarget, enqueue, leaseById } from './outbox';
 import { recordSalesRead } from '../sales/leads'; // SALES: lead stage tracking
+import { applyMeta, describeForBrain, parseMeta, type BrainMedia, type MediaExtra } from '../vision';
+import { wordsOf } from '../brain/prompt';
 
 const KINDS: MessageKind[] = ['text', 'image', 'voice', 'video', 'sticker', 'document', 'other'];
 const MAX_MESSAGES = 40;
@@ -101,7 +103,8 @@ export function parseInbound(raw: Record<string, unknown>): InboundPayload {
     if (m.direction !== 'in') continue;
     if (kept >= MEDIA_PER_REPORT) { media_rejected.push('too_many'); continue; }
     const res = checkMedia(raw);
-    if (res.ok) { m.media = res.item; kept++; } else media_rejected.push(res.reason);
+    // A video's cover may bring the uploaded video's ref, more frames and a shared post's details.
+    if (res.ok) { m.media = { ...res.item, ...mediaExtras(raw, res.item.kind) }; kept++; } else media_rejected.push(res.reason);
   }
   return {
     media_rejected,
@@ -140,34 +143,48 @@ const placeholderFor = (kind: MessageKind): string => {
 // ---- storing -----------------------------------------------------------------------------------
 
 /** Queue the insert of one picture and return what its message row remembers about it. */
-function mediaWrites(db: D1Database, writes: D1PreparedStatement[], media: MediaItem, messageId: string, convId: string, now: number): MediaRef {
+function mediaWrites(db: D1Database, writes: D1PreparedStatement[], media: MediaItem, messageId: string, convId: string, now: number, extras: Map<string, MediaExtra>): MediaRef {
   const id = uid('md');
+  // Small facts the vision model may need later (the sweeper has no report in memory). Never the frames.
+  const vision = media.shared || media.seconds ? JSON.stringify({ shared: media.shared ?? null, seconds: media.seconds ?? null }) : null;
   writes.push(stmt(
-    db, 'INSERT INTO media (id, message_id, conversation_id, kind, mime, data, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    id, messageId, convId, media.kind, media.mime, media.data, media.bytes, now,
+    db, 'INSERT INTO media (id, message_id, conversation_id, kind, mime, data, bytes, created_at, video_ref, vision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    id, messageId, convId, media.kind, media.mime, media.data, media.bytes, now, media.video_ref ?? null, vision,
   ));
+  if (media.frames?.length || media.shared) extras.set(messageId, { frames: media.frames, shared: media.shared ?? null });
   return { media: id, media_kind: media.kind };
 }
 
 /**
  * The pictures that came with the unanswered customer messages, for the brain: the newest 3, oldest
- * first. One query, and only when a message says it has a picture.
+ * first, with what the vision model saw when it has looked. One query, and only when a message says
+ * it has a picture.
  */
-async function loadMediaForBrain(db: D1Database, indexOf: (m: MessageRow) => number, unanswered: MessageRow[]): Promise<DecideMedia[]> {
+async function loadMediaForBrain(db: D1Database, indexOf: (m: MessageRow) => number, unanswered: MessageRow[]): Promise<BrainMedia[]> {
   const wanted = unanswered
     .filter((m) => m.status !== 'history')
-    .map((m) => ({ index: indexOf(m), id: parseJson<MediaRef>(m.meta, {}).media }))
-    .filter((x): x is { index: number; id: string } => typeof x.id === 'string' && x.index >= 0)
+    .map((m) => ({ index: indexOf(m), id: parseJson<MediaRef>(m.meta, {}).media, msg: m }))
+    .filter((x): x is { index: number; id: string; msg: MessageRow } => typeof x.id === 'string' && x.index >= 0)
     .slice(-MEDIA_PER_REPORT);
   if (!wanted.length) return [];
-  const found = await all<{ id: string; kind: DecideMedia['kind']; mime: DecideMedia['mime']; data: string }>(
-    db, 'SELECT id, kind, mime, data FROM media WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(wanted.map((w) => w.id)),
+  const found = await all<{ id: string; message_id: string; kind: DecideMedia['kind']; mime: DecideMedia['mime']; data: string; description: string | null; vision: string | null; file_name: string | null; file_uri: string | null; file_mime: string | null }>(
+    db,
+    `SELECT md.id, md.message_id, md.kind, md.mime, md.data, md.description, md.vision, vf.file_name, vf.file_uri, vf.mime AS file_mime
+     FROM media md LEFT JOIN vision_files vf ON vf.id = md.video_ref WHERE md.id IN (SELECT value FROM json_each(?))`,
+    JSON.stringify(wanted.map((w) => w.id)),
   );
   const byId = new Map(found.map((f) => [f.id, f]));
-  const out: DecideMedia[] = [];
+  const out: BrainMedia[] = [];
   for (const w of wanted) {
     const f = byId.get(w.id);
-    if (f) out.push({ index: w.index, kind: f.kind === 'video_frame' ? 'video_frame' : 'image', mime: f.mime, data: f.data });
+    if (!f) continue;
+    const item: BrainMedia = {
+      index: w.index, kind: f.kind === 'video_frame' ? 'video_frame' : 'image', mime: f.mime, data: f.data,
+      id: f.id, message_id: f.message_id, meta: parseMeta(f.vision), caption: wordsOf(w.msg).slice(0, 300),
+      video: f.file_name && f.file_uri ? { file_name: f.file_name, file_uri: f.file_uri, mime: f.file_mime || 'video/mp4' } : null,
+    };
+    applyMeta(item, f.description);
+    out.push(item);
   }
   return out;
 }
@@ -178,6 +195,8 @@ interface Stored {
   created: boolean;
   newInbound: number;
   takeover: boolean;
+  /** More frames and shared post details of this report's videos, by message id, for the vision model. */
+  extras: Map<string, MediaExtra>;
 }
 
 async function resolveConversation(db: D1Database, p: InboundPayload): Promise<{ conv: ConversationRow; contact: ContactRow; created: boolean }> {
@@ -267,13 +286,19 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
   let lastInboundAt: number | null = null;
   // Written in one batch below: a first look at a long chat is up to 40 rows, and the free plan allows 50 queries per request.
   const writes: D1PreparedStatement[] = [];
+  const extras = new Map<string, MediaExtra>();
 
   // The picture had not loaded when a message was first read: keep it now, for the owner's thumbnail.
   const lateMedia = (m: InboundMessage, st: MessageRow): void => {
     if (!m.media || m.direction !== 'in' || st.direction !== 'in') return;
     const meta = parseJson<Record<string, unknown>>(st.meta, {});
-    if (meta.media) return;
-    const next = JSON.stringify({ ...meta, ...mediaWrites(db, writes, m.media, st.id, conv.id, now) });
+    if (meta.media) {
+      // Read again with more of the video than before (it was uploaded, or frames came): the vision model can use them.
+      if (m.media.video_ref) writes.push(stmt(db, 'UPDATE media SET video_ref = ? WHERE id = ? AND video_ref IS NULL AND description IS NULL', m.media.video_ref, String(meta.media)));
+      if (m.media.frames?.length || m.media.shared) extras.set(st.id, { frames: m.media.frames, shared: m.media.shared ?? null });
+      return;
+    }
+    const next = JSON.stringify({ ...meta, ...mediaWrites(db, writes, m.media, st.id, conv.id, now, extras) });
     writes.push(stmt(db, 'UPDATE messages SET meta = ? WHERE id = ?', next, st.id));
     st.meta = next;
   };
@@ -326,7 +351,7 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
     }
     if (created && m.direction === 'out') status = 'history';
     const messageId = uid('m');
-    const ref: MediaRef = m.media && m.direction === 'in' ? mediaWrites(db, writes, m.media, messageId, conv.id, now) : {};
+    const ref: MediaRef = m.media && m.direction === 'in' ? mediaWrites(db, writes, m.media, messageId, conv.id, now, extras) : {};
     writes.push(stmt(
       db,
       `INSERT INTO messages (id, conversation_id, direction, author, external_id, body, kind, status, meta, ts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -365,7 +390,7 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
     });
   }
   const fresh = (await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', conv.id))!;
-  return { conv: fresh, contact, created, newInbound, takeover };
+  return { conv: fresh, contact, created, newInbound, takeover, extras };
 }
 
 // ---- deciding ------------------------------------------------------------------------------------
@@ -469,6 +494,8 @@ export interface ProcessOptions {
   live?: () => boolean;
   /** When the request arrived. The time limit counts from here. */
   startedAt?: number;
+  /** More frames and shared post details from the report in memory (by message id), for the vision model. */
+  extras?: Map<string, MediaExtra>;
 }
 
 /**
@@ -611,7 +638,10 @@ export async function processConversation(env: Env, convId: string, device: Devi
     try {
       // Photos and video frames of the unanswered messages. Losing them must not lose the reply.
       const at = new Map(timeline.map((l, i) => [l.msg?.id ?? '', i]));
-      const media = await loadMediaForBrain(db, (m) => at.get(m.id) ?? -1, unanswered).catch((err) => { console.error('media not loaded', err); return [] as DecideMedia[]; });
+      const media = await loadMediaForBrain(db, (m) => at.get(m.id) ?? -1, unanswered).catch((err) => { console.error('media not loaded', err); return [] as BrainMedia[]; });
+      // Google AI Studio describes what is not described yet, inside a time limit. Without a key, with
+      // the switch off or out of time, nothing changes (src/vision). Never throws.
+      if (media.length) await describeForBrain(env, settings, media, opts.extras ?? new Map(), { deadlineAt, channel: conv!.channel, conversationId: convId });
       decision = await decide(env, {
         channel: conv!.channel, contact_name: contact.display_name || null, subject: conv!.subject,
         history, context_notes: notes, now, mode: 'live', media,
@@ -750,7 +780,7 @@ export async function handleInbound(
   }
   onStored?.({ conversation_id: stored.conv.id, new_inbound: stored.newInbound });
   if (stored.takeover) return none(stored.conv.id, 'human_takeover', stored.newInbound);
-  const go = () => processConversation(env, stored.conv.id, device, stored.newInbound, { ...opts, startedAt });
+  const go = () => processConversation(env, stored.conv.id, device, stored.newInbound, { ...opts, startedAt, extras: stored.extras });
   let outcome: Outcome;
   if (!stored.newInbound && !stored.conv.needs_reply_since) {
     // A message request the owner just accepted: the earlier reply could not be sent while it was a
@@ -766,7 +796,7 @@ export async function handleInbound(
         // Never answered at all: a request seen earlier while it could not be replied to.
         || (await one<{ id: string }>(env.DB, `SELECT id FROM messages WHERE conversation_id = ? AND direction = 'out' LIMIT 1`, stored.conv.id)) === null;
     }
-    outcome = wasRequest ? await processConversation(env, stored.conv.id, device, 0, { ...opts, startedAt }) : none(stored.conv.id, 'nothing_new');
+    outcome = wasRequest ? await processConversation(env, stored.conv.id, device, 0, { ...opts, startedAt, extras: stored.extras }) : none(stored.conv.id, 'nothing_new');
   } else {
     outcome = await go();
   }

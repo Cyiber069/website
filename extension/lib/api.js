@@ -25,16 +25,17 @@ export function parsePairingString(text) {
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
-async function request(path, { method = 'POST', body, auth, signal, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+async function request(path, { method = 'POST', body, raw, contentType, auth, signal, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const a = auth ?? (await store.get('auth'));
   if (!a?.server_url) throw new ApiError(0, 'not_paired', 'Not paired yet');
-  const headers = { 'content-type': 'application/json' };
+  // `raw` (a Blob) goes as it is, with its own type: the video upload.
+  const headers = { 'content-type': raw ? contentType || raw.type || 'application/octet-stream' : 'application/json' };
   if (a.token) headers.authorization = `Bearer ${a.token}`;
   // Every call ends: a request that hangs (laptop woke up, network changed) must never stall the agent.
   const sig = signal || AbortSignal.timeout(timeoutMs);
   let res;
   try {
-    res = await fetch(`${a.server_url}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: sig, cache: 'no-store' });
+    res = await fetch(`${a.server_url}${path}`, { method, headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)), signal: sig, cache: 'no-store' });
   } catch (err) {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') throw new ApiError(0, 'timeout', 'The dashboard server did not answer in time');
     throw new ApiError(0, 'network', `Cannot reach the dashboard server (${err?.message || 'network error'})`);
@@ -73,24 +74,50 @@ export const jobResult = (jobId, result) => json(`/api/agent/jobs/${encodeURICom
 export const diagnostics = (channel, kind, data) => json('/api/agent/diagnostics', { body: { channel, kind, data } });
 
 /**
+ * One customer video, sent whole before the report that names it. The server streams the bytes to
+ * Google AI Studio and answers { ref } (a vision_files id) for the report's media.video_ref.
+ * Throws ApiError: 409 vision_off, 413 too_large or too_long, 415 not_a_video, 429 daily_cap, 502 vision_failed.
+ */
+export function uploadVideo(blob, { mime, seconds, channel, timeoutMs = 75_000 } = {}) {
+  const q = new URLSearchParams();
+  if (channel) q.set('channel', channel);
+  if (Number.isFinite(seconds) && seconds > 0) q.set('seconds', String(Math.round(seconds * 10) / 10));
+  return json(`/api/agent/media/video?${q}`, { raw: blob, contentType: mime || blob.type || 'video/mp4', timeoutMs });
+}
+
+/**
  * Report a thread and wait for the decision. The server streams one JSON object per line and
  * sends {"type":"ping"} while the brain is thinking, which also keeps this service worker alive.
  */
 const MEDIA_MAX_BASE64 = 250_000;
 const MEDIA_MAX_ITEMS = 3;
+const FRAME_MAX_BASE64 = 90_000;
+const FRAMES_MAX = 4;
+// The whole report stays under the server's 1.2 MB: pictures first, then video frames while they fit.
+const REPORT_MEDIA_BUDGET = 1_000_000;
 
 /**
  * Photos ride along inside the report. Keep only well formed ones under the size cap, the newest 3,
- * so a bad capture can never make the server refuse the whole report.
+ * so a bad capture can never make the server refuse the whole report. A video's extra frames are kept
+ * while the report has room (newest video first); `video` (the laptop's own note of the bytes) never goes.
  */
 export function trimMedia(messages) {
   let kept = 0;
-  const out = (Array.isArray(messages) ? messages : []).map((m) => ({ ...m }));
+  let used = 0;
+  const out = (Array.isArray(messages) ? messages : []).map((m) => ({ ...m, ...(m && m.media ? { media: { ...m.media } } : {}) }));
   for (let i = out.length - 1; i >= 0; i--) {
     const media = out[i].media;
     if (media === undefined) continue;
     const ok = media && out[i].direction === 'in' && typeof media.data === 'string' && media.data.length > 0 && media.data.length <= MEDIA_MAX_BASE64 && kept < MEDIA_MAX_ITEMS;
-    if (ok) kept++; else delete out[i].media;
+    if (ok) { kept++; used += media.data.length; delete media.video; } else delete out[i].media;
+  }
+  for (let i = out.length - 1; i >= 0; i--) {
+    const media = out[i].media;
+    if (!media || media.frames === undefined) continue;
+    const frames = (Array.isArray(media.frames) ? media.frames : []).filter((f) => typeof f === 'string' && f.length > 100 && f.length <= FRAME_MAX_BASE64).slice(0, FRAMES_MAX);
+    const fit = [];
+    for (const f of frames) { if (used + f.length > REPORT_MEDIA_BUDGET) break; fit.push(f); used += f.length; }
+    if (fit.length) media.frames = fit; else delete media.frames;
   }
   return out;
 }

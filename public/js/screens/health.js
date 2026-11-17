@@ -12,7 +12,7 @@ const JOB_ERRORS = {
 };
 const SOURCE = { auto: 'Agent reply', manual: 'Your message', review: 'Reply you approved', urgent: 'Your answer', recovery: 'Checkout reminder', alert: 'Alert to you', holding: 'Holding line', discount: 'Code message' };
 const KIND = { selector_miss: 'Could not find part of the page', dom_snapshot: 'Saved a copy of the page for fixing', error: 'Problem on the page', note: 'Note from the laptop' };
-const PROVIDER = { anthropic: 'Claude', workers_ai: 'Backup brain', mock: 'Test brain' };
+const PROVIDER = { anthropic: 'Claude', workers_ai: 'Backup brain', mock: 'Test brain', gemini: 'Photos and videos' };
 
 function jobError(text) {
   if (!text) return JOB_ERRORS.unknown;

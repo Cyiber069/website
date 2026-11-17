@@ -90,6 +90,12 @@ export const DEFAULT_SETTINGS: Settings = {
     follow_up_hours: 20,
     style: 'friendly',
   },
+  // Google AI Studio reads photos and videos (src/vision). On by default, but only once a key is saved.
+  vision: {
+    enabled: true,
+    model: 'gemini-3.8-flash',
+    video_daily_cap: 20,
+  },
   store: {
     name: 'ACX Ebikes',
     domain: 'acxebikes.com',

@@ -140,6 +140,16 @@ export interface SalesSettings {
   style: 'friendly' | 'relaxed' | 'keen';
 }
 
+/** Google AI Studio (Gemini) looks at customer photos and videos and describes them for the brain (src/vision). */
+export interface VisionSettings {
+  /** "Use it to look at photos and videos". Only works once a Google AI Studio key is saved. */
+  enabled: boolean;
+  /** Gemini model id, for example gemini-3.8-flash. */
+  model: string;
+  /** Most whole videos sent to Google per London day. More get a few frames looked at instead. 0: frames only. */
+  video_daily_cap: number;
+}
+
 export interface Settings {
   agent: { enabled: boolean };
   channels: Record<Channel, { mode: ChannelMode }>;
@@ -156,6 +166,8 @@ export interface Settings {
   discounts: DiscountSettings;
   /** Selling style and the follow up after a recommendation (src/sales). */
   sales: SalesSettings;
+  /** Photos and videos described by Google AI Studio (src/vision). */
+  vision: VisionSettings;
 }
 
 // ---- Tone and brain --------------------------------------------------------------------------
@@ -211,6 +223,17 @@ export interface DecideMedia {
   mime: 'image/jpeg' | 'image/png' | 'image/webp';
   /** base64, no data: prefix. */
   data: string;
+  /**
+   * What the vision model (Google AI Studio) saw in the photo or video, when it looked. Customer
+   * content: the brain gets it labelled as described by the vision model, never as instructions.
+   */
+  description?: string | null;
+  /** How the vision model saw it: one photo, a few frames of a video, the whole video, or a shared post's cover. */
+  via?: 'image' | 'frames' | 'video' | 'cover' | null;
+  /** The vision model could not make it out (too dark, blurred, cropped). */
+  unclear?: boolean;
+  /** Damage, a fault or a safety problem the vision model saw. */
+  problem?: 'none' | 'damage' | 'fault' | 'safety';
 }
 
 export interface LlmUsage {

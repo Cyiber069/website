@@ -25,9 +25,11 @@
 //  * a sweep every 10 minutes reports recent chats that end with a customer message, badge or not
 //  * state that must survive the worker stopping lives in chrome.storage.session: seen threads (with
 //    in flight flags that expire), queued replies and job results not yet delivered
+//  * a customer video the tab found (Google AI Studio connected) is uploaded whole before its report,
+//    inside the report's own async run (attachVideo), so it never holds up the lane
 import * as api from './lib/api.js';
 import * as core from './lib/lane-core.js';
-import { fetchMedia } from './lib/media.js';
+import { fetchMedia, fetchVideo } from './lib/media.js';
 import * as store from './lib/store.js';
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -410,7 +412,7 @@ async function readThread(lane, k) {
       channel: lane.channel,
       thread: cur?.t?.accepted ? { ...thread, just_accepted: true } : thread,
       messages: read.data.messages || [],
-    }, { readAt, conv, tail });
+    }, { readAt, conv, tail, tabId: lane.tabId });
     posted = true;
   } finally {
     if (!posted) {
@@ -440,6 +442,8 @@ function postInbound(lane, k, readSig, payload, meta) {
   const conv = meta.conv;
   if (conv) lane.threadCalls.set(conv, (lane.threadCalls.get(conv) || 0) + 1);
   (async () => {
+    // A customer video goes first, whole, so the report can name it. Time limited, never fails the report.
+    await attachVideo(lane, payload, meta.tabId ?? null).catch((err) => console.warn('[acx] video upload failed', err?.message || err));
     const mine = await coldGate();
     let decision = null;
     let error = null;
@@ -501,6 +505,79 @@ function postInbound(lane, k, readSig, payload, meta) {
     // Another lane may be waiting for a free slot under the laptop wide cap.
     for (const other of lanes) if (other !== lane && !other.running) kick(other);
   });
+}
+
+// ---- whole customer videos, for the vision model ----------------------------------------------------
+// The tab keeps the bytes of the newest customer video (WhatsApp) or names its https address (Gmail,
+// TikTok). Here they are pulled or fetched and sent to the server, which streams them to Google AI
+// Studio and answers a ref; the report then carries media.video_ref next to the video's cover. Any
+// failure (a cap, the switch off, no connection) is a diagnostic note: the frames and the cover still go.
+
+const VIDEO_UPLOAD_MS = 70_000;
+const VIDEO_CHUNK = 1024 * 1024;
+const videoRefs = new Map(); // `${channel}:${message id}` -> { ref, at }: one upload per video
+let videoPauseUntil = 0; // after a daily cap or "switched off" answer: no pulling 20 MB for nothing
+
+function bytesOf(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** The bytes the tab holds under `token`, piece by piece, as a Blob. */
+async function pullVideo(lane, tabId, token, deadline) {
+  const parts = [];
+  let offset = 0;
+  let mime = '';
+  for (let n = 0; n < 40; n++) {
+    const left = deadline - Date.now();
+    if (left < 500) throw new Error('timeout');
+    const res = await tabOp(lane, 'video_chunk', { token, offset, size: VIDEO_CHUNK }, Math.min(10_000, left), tabId);
+    if (!res.ok || !res.data || typeof res.data.data !== 'string') throw new Error(res.error_code || 'no_chunk');
+    const piece = bytesOf(res.data.data);
+    parts.push(piece);
+    offset += piece.length;
+    mime = res.data.mime || mime;
+    if (res.data.done || offset >= (res.data.total || 0) || !piece.length) break;
+  }
+  return new Blob(parts, { type: mime || 'video/mp4' });
+}
+
+/** Upload the newest customer video of a report (at most one) and put its ref on the media. Never throws. */
+async function attachVideo(lane, payload, tabId) {
+  const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+  const target = [...msgs].reverse().find((m) => m && m.direction === 'in' && m.media && m.media.video);
+  if (!target) return;
+  const v = target.media.video;
+  const now = Date.now();
+  for (const [k, e] of videoRefs) if (now - e.at > 3600_000) videoRefs.delete(k);
+  const key = `${lane.channel}:${target.external_id || v.url || v.token}`;
+  const known = videoRefs.get(key);
+  if (known) { target.media.video_ref = known.ref; return; }
+  if (now < videoPauseUntil || config?.vision?.whole_videos === false) return;
+  const deadline = now + VIDEO_UPLOAD_MS;
+  let step = 'bytes';
+  try {
+    let blob = null;
+    if (v.token && tabId != null) blob = await pullVideo(lane, tabId, v.token, deadline);
+    else if (v.url) {
+      const got = await fetchVideo(lane.channel, v.url, Math.min(40_000, deadline - Date.now()));
+      if (!got.ok) throw new Error(got.error);
+      blob = got.blob;
+    }
+    if (!blob || !blob.size) throw new Error('no_bytes');
+    step = 'upload';
+    const res = await api.uploadVideo(blob, { mime: v.mime || blob.type, seconds: v.seconds ?? target.media.seconds, channel: lane.channel, timeoutMs: Math.max(5000, deadline - Date.now()) });
+    if (res && typeof res.ref === 'string') {
+      target.media.video_ref = res.ref;
+      videoRefs.set(key, { ref: res.ref, at: Date.now() });
+    }
+  } catch (err) {
+    const code = String(err?.code || err?.message || 'failed').slice(0, 60);
+    if (code === 'daily_cap' || code === 'vision_off') videoPauseUntil = Date.now() + (code === 'daily_cap' ? 3600_000 : 600_000);
+    api.diagnostics(lane.channel, 'note', { video_upload: code, step, bytes: v.bytes || null }).catch(() => {});
+  }
 }
 
 // ---- the send queue -------------------------------------------------------------------------------

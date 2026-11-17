@@ -12,6 +12,10 @@
 //                           messages: [{ external_id, direction: 'in'|'out', body, kind, ts, media? }] }   oldest first, max 40
 //                         `media` is { kind: 'image' | 'video_frame', mime: 'image/jpeg', data: <base64> } when
 //                         ACX.captureMedia could copy the photo (or one frame of the video) out of the bubble.
+//                         For the newest customer video ACX.captureVideo may add `video` ({ token, bytes, mime,
+//                         seconds } held in this page, or { url, mime }), `frames` (small JPEGs) and `seconds`.
+//                         `shared` ({ author, caption }) marks a shared post (TikTok). The worker uploads
+//                         `video` first and replaces it with `video_ref` (see sw.js attachVideo).
 //   send({ job })      -> { sent_external_ids: [] }         types job.parts in order into job.target and sends them
 //   prepare({ job })   -> { navigate: url } | { ready: true }   optional, for new_chat jobs that need a page load first
 //   selftest()         -> { checks: [{ name, ok, detail }] }    optional
@@ -683,6 +687,230 @@
     return captured;
   }
 
+
+  // ---- whole videos, for the vision model ----------------------------------------------------------------------
+  // When Google AI Studio is connected (config.vision from the server), the newest unanswered customer video
+  // of a read can go to the server whole: the adapter finds the file, this part checks the caps (20 MB,
+  // about 2 minutes), keeps the bytes in this page until the service worker pulls them (op video_chunk),
+  // and samples a few small frames as the fallback. A video too big or too long, or one whose bytes cannot
+  // be had, gets the frames (or only its cover, as before). Never throws, never runs past its time limit.
+  const VIDEO = { max_bytes: 20 * 1024 * 1024, max_seconds: 130, budget_ms: 15_000, frames: 4, frame_max_base64: 80_000, keep_ms: 5 * 60_000, chunk_max: 2 * 1024 * 1024 };
+  const FRAME_STEPS = [[512, 0.55], [448, 0.5], [384, 0.45], [320, 0.4]];
+  const heldVideos = new Map(); // token -> { blob, at }
+  const capturedVideos = new Map(); // message id -> { at, video, frames, seconds } of a video already captured
+
+  /** Keep a video's bytes in this page for a few minutes and return the token the worker asks for. */
+  function holdVideo(blob) {
+    const now = Date.now();
+    for (const [k, v] of heldVideos) if (now - v.at > VIDEO.keep_ms) heldVideos.delete(k);
+    while (heldVideos.size >= 3) heldVideos.delete(heldVideos.keys().next().value);
+    const token = `v${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    heldVideos.set(token, { blob, at: now });
+    return token;
+  }
+
+  const blobBase64 = (blob) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => { const s = String(r.result || ''); resolve(s.slice(s.indexOf(',') + 1)); };
+    r.onerror = () => reject(r.error || new Error('read_failed'));
+    r.readAsDataURL(blob);
+  });
+
+  /** One piece of a held video for the worker: { data (base64), offset, total, done, mime }. */
+  async function videoChunk({ token, offset = 0, size = 1024 * 1024 } = {}) {
+    const held = heldVideos.get(String(token || ''));
+    if (!held) throw new Fail('unknown', 'That video is no longer here', false);
+    const start = Math.max(0, Math.floor(Number(offset) || 0));
+    const end = Math.min(held.blob.size, start + Math.min(VIDEO.chunk_max, Math.max(64 * 1024, Math.floor(Number(size) || 0))));
+    const data = await blobBase64(held.blob.slice(start, end));
+    const done = end >= held.blob.size;
+    if (done) heldVideos.delete(String(token)); // pulled once: free the memory
+    return { data, offset: start, total: held.blob.size, done, mime: held.blob.type || '' };
+  }
+
+  /** A small JPEG of the frame a video element shows now, or null (nothing decoded, or a cross origin video). */
+  function frameJpeg(video) {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h || video.readyState < 2) return null;
+    try {
+      for (const [side, quality] of FRAME_STEPS) {
+        const scale = Math.min(1, side / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const url = canvas.toDataURL('image/jpeg', quality);
+        const data = url.slice(url.indexOf(',') + 1);
+        if (url.startsWith('data:image/jpeg') && data.length > 100 && data.length <= VIDEO.frame_max_base64) return data;
+      }
+    } catch { /* a tainted canvas: frames of this video cannot be read here */ }
+    return null;
+  }
+
+  /** Resolve with the first of `events` the element fires, or 'timeout'. */
+  function once(el, events, ms) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; clearTimeout(t); for (const e of events) el.removeEventListener(e, on); resolve(v); };
+      const on = (e) => finish(e.type);
+      for (const e of events) el.addEventListener(e, on);
+      const t = setTimeout(() => finish('timeout'), Math.max(0, ms));
+    });
+  }
+
+  /**
+   * Up to `n` frames spread over the clip. Seeks when the length is known; a recording with no index
+   * (no length yet) is played muted and fast instead and a frame is taken now and then.
+   */
+  async function sampleFrames(video, n, deadline) {
+    const frames = [];
+    const left = () => deadline - Date.now();
+    try {
+      video.muted = true;
+      if (video.readyState < 1) await once(video, ['loadedmetadata', 'error'], Math.min(3000, left()));
+      const dur = video.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        for (let i = 0; i < n && left() > 300; i++) {
+          const at = dur * (0.1 + (0.8 * i) / Math.max(1, n - 1));
+          try { video.currentTime = Math.max(0, Math.min(dur - 0.05, at)); } catch { break; }
+          await once(video, ['seeked', 'error'], Math.min(1500, left()));
+          if (video.readyState < 2) await once(video, ['loadeddata', 'canplay'], Math.min(800, left()));
+          const f = frameJpeg(video);
+          if (f) frames.push(f);
+        }
+      } else if (left() > 600) {
+        video.playbackRate = 2;
+        try { await Promise.race([video.play(), new Promise((r) => setTimeout(r, 800))]); } catch { /* cannot play here */ }
+        let last = -1;
+        while (frames.length < n && left() > 300 && !video.ended && !video.error) {
+          await new Promise((r) => setTimeout(r, 150));
+          if (last < 0 || video.currentTime - last >= 0.25) {
+            const f = frameJpeg(video);
+            if (f) { frames.push(f); last = video.currentTime; }
+          }
+        }
+        try { video.pause(); } catch { /* ignore */ }
+      }
+    } catch { /* frames are a bonus */ }
+    return frames;
+  }
+
+  const withLimit = (p, ms) => Promise.race([Promise.resolve(p).catch(() => null), new Promise((r) => setTimeout(() => r(null), Math.max(0, ms)))]);
+
+  /**
+   * What to send for one video, from what the adapter found:
+   *   { blob, seconds?, mime? }        the file itself (kept here until the worker pulls it)
+   *   { url, mime?, seconds?, el? }    an https address the worker may fetch (Gmail, TikTok CDN)
+   *   { el, seconds? }                 a video element that plays here: frames only
+   * Resolves to { video?, frames?, seconds?, fail? }.
+   */
+  async function videoPayload(found, deadline) {
+    const out = {};
+    const left = () => deadline - Date.now();
+    let seconds = Number.isFinite(found.seconds) && found.seconds > 0 ? found.seconds : null;
+    if (found.blob) {
+      const blob = found.blob;
+      let el = null;
+      let url = '';
+      try { url = URL.createObjectURL(blob); el = document.createElement('video'); el.muted = true; el.preload = 'auto'; el.src = url; } catch { el = null; }
+      if (el && seconds === null) {
+        await once(el, ['loadedmetadata', 'error'], Math.min(2000, left()));
+        if (Number.isFinite(el.duration) && el.duration > 0) seconds = el.duration;
+      }
+      if (blob.size > VIDEO.max_bytes) out.fail = 'too_big';
+      else if (seconds !== null && seconds > VIDEO.max_seconds) out.fail = 'too_long';
+      else out.video = { token: holdVideo(blob), bytes: blob.size, mime: (blob.type || found.mime || 'video/mp4').split(';')[0], seconds };
+      if (el && left() > 800) out.frames = await sampleFrames(el, VIDEO.frames, deadline);
+      try { el && el.removeAttribute('src'); el && el.load(); } catch { /* ignore */ }
+      if (url) URL.revokeObjectURL(url);
+    } else if (found.url) {
+      out.video = { url: found.url, mime: found.mime || '', seconds };
+      // Frames from a copy of the player (a CDN video without CORS taints the canvas: then there are none).
+      if (left() > 1200) {
+        try {
+          const el = document.createElement('video');
+          el.muted = true; el.preload = 'auto'; el.crossOrigin = 'anonymous'; el.src = found.url;
+          out.frames = await sampleFrames(el, VIDEO.frames, deadline);
+          el.removeAttribute('src'); el.load();
+        } catch { /* no frames */ }
+      }
+    } else if (found.el) {
+      if (seconds === null && Number.isFinite(found.el.duration) && found.el.duration > 0) seconds = found.el.duration;
+      out.fail = 'no_bytes';
+      out.frames = await sampleFrames(found.el, VIDEO.frames, deadline);
+    }
+    if (out.frames && !out.frames.length) delete out.frames;
+    if (seconds !== null) out.seconds = Math.round(seconds * 10) / 10;
+    return out;
+  }
+
+  let visionCache = { at: 0, v: null };
+  /** What the server said about Google AI Studio on the last sync: { active, whole_videos }. */
+  async function visionConfig() {
+    if (Date.now() - visionCache.at < 10_000) return visionCache.v;
+    let v = null;
+    try { v = (await chrome.storage.local.get('config')).config?.vision || null; } catch { v = null; }
+    visionCache = { at: Date.now(), v };
+    return v;
+  }
+
+  /**
+   * For the newest unanswered customer video of a read (one per read): ask the adapter for the file
+   * (`find(m, deadline)` resolves to what videoPayload takes, optionally with `done()` to tidy up, or
+   * null) and add the result to that message's media: media.video, media.frames, media.seconds. A video
+   * whose cover could not be copied gets its first frame as the cover. Only when the vision model is
+   * connected. Never throws; about VIDEO.budget_ms at most.
+   */
+  async function captureVideo(messages, find) {
+    const started = Date.now();
+    const fails = [];
+    let pick = null;
+    try {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!m || m.direction !== 'in') break;
+        if (m._media && m._media.kind === 'video') { pick = m; break; }
+      }
+      if (!pick) return false;
+      const vision = await visionConfig();
+      if (!vision || !vision.active) return false;
+      // Read again before it was answered (a retry): the same video is not opened twice. The worker
+      // remembers the upload by message id, so a token already pulled does not matter.
+      const id = pick.external_id ? String(pick.external_id) : '';
+      for (const [k, v] of capturedVideos) if (Date.now() - v.at > VIDEO.keep_ms * 2) capturedVideos.delete(k);
+      const again = id ? capturedVideos.get(id) : null;
+      if (again) {
+        if (!pick.media && again.frames && again.frames.length) pick.media = { kind: 'video_frame', mime: 'image/jpeg', data: again.frames[0] };
+        if (pick.media) Object.assign(pick.media, again.video && vision.whole_videos !== false ? { video: again.video } : {}, again.frames ? { frames: again.frames } : {}, again.seconds ? { seconds: again.seconds } : {});
+        return Boolean(pick.media);
+      }
+      const deadline = started + VIDEO.budget_ms;
+      let found = null;
+      try { found = await withLimit(find(pick, deadline), deadline - Date.now() + 500); } catch (err) { fails.push(`find:${errName(err)}`); }
+      try {
+        if (!found || (!found.blob && !found.url && !found.el)) fails.push(found && found.why ? found.why : 'no_file');
+        else {
+          const p = (await withLimit(videoPayload(found, deadline), deadline - Date.now() + 1500)) || { fail: 'timeout' };
+          if (p.fail) fails.push(p.fail);
+          if (!pick.media && p.frames && p.frames.length) pick.media = { kind: 'video_frame', mime: 'image/jpeg', data: p.frames[0] };
+          if (pick.media) {
+            if (p.video && vision.whole_videos !== false) pick.media.video = p.video;
+            if (p.frames && p.frames.length) pick.media.frames = p.frames.slice(0, VIDEO.frames);
+            if (p.seconds) pick.media.seconds = p.seconds;
+          } else if (p.video) fails.push('no_cover');
+          if (id && (p.video || (p.frames && p.frames.length))) capturedVideos.set(id, { at: Date.now(), video: p.video || null, frames: p.frames ? p.frames.slice(0, VIDEO.frames) : null, seconds: p.seconds || null });
+        }
+      } finally {
+        // Close what the adapter opened (a media viewer), whatever happened.
+        if (found && typeof found.done === 'function') { try { await withLimit(found.done(), 3000); } catch { /* ignore */ } }
+      }
+    } catch (err) { fails.push(`error:${errName(err)}`); }
+    if (fails.length) diag('note', { video_capture: fails.slice(0, 4), ms: Date.now() - started, path: location.pathname.slice(0, 60) });
+    return Boolean(pick && pick.media && (pick.media.video || pick.media.frames));
+  }
+
   // ---- diagnostics ---------------------------------------------------------------------------------------
   let diagCount = 0;
   let diagWindow = Date.now();
@@ -819,6 +1047,7 @@
       case 'prepare': return adapter.prepare ? adapter.prepare(args || {}) : { ready: true };
       case 'selftest': return adapter.selftest ? adapter.selftest(args || {}) : { checks: [] };
       case 'health': return { hits: { ...hits }, pack_keys: Object.keys(pack).length };
+      case 'video_chunk': return videoChunk(args || {});
       default: throw new Fail('unknown', `Unknown operation ${op}`, false);
     }
   }
@@ -826,9 +1055,10 @@
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
       if (!msg || msg.acx !== true || !msg.op) return false;
-      // probe and health may run while a long send is in progress; everything else waits its turn.
+      // probe, health and video_chunk (the worker pulling a held video) may run while a long send is in
+      // progress; everything else waits its turn.
       const job = () => handle(msg.op, msg.args);
-      const run = msg.op === 'probe' || msg.op === 'health' ? job() : serial(msg.op, job);
+      const run = msg.op === 'probe' || msg.op === 'health' || msg.op === 'video_chunk' ? job() : serial(msg.op, job);
       Promise.resolve(run).then(
         (data) => respond({ ok: true, data: data ?? null }),
         (err) => {
@@ -862,8 +1092,8 @@
     tailRef, newerInbound, isClock, labelAge, labelTimeMax, timeMoved, stableTime,
     // diagnostics + activity
     diag, snapshot, skeleton, watch, nudge, toWorker,
-    // photos
-    captureMedia, hasMedia,
+    // photos, and whole videos for the vision model
+    captureMedia, hasMedia, captureVideo, videoPayload, sampleFrames, frameJpeg, holdVideo,
     get alive() { return alive; },
   };
 })();

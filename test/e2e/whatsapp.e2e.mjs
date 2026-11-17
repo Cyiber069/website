@@ -1,5 +1,6 @@
 // End to end test of the WhatsApp adapter: real backend (wrangler dev, mock brain), real Chromium
 // with the unpacked extension, and a mock of WhatsApp Web served under https://web.whatsapp.com/.
+// Google AI Studio is a fake (test/helpers/fake-gemini.mjs) the backend is pointed at in test mode.
 //
 //   node test/e2e/whatsapp.e2e.mjs            exit code 0 = everything passed
 //   HEADED=1 node test/e2e/whatsapp.e2e.mjs   watch it happen
@@ -13,6 +14,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
 import { jpegSize } from './mocks/image.mjs';
+import { startFakeGemini } from '../helpers/fake-gemini.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright'); // pre-installed on the machine, not a dependency of the repo
@@ -397,6 +399,80 @@ async function main() {
     assert.match(note.data, /canvas|fetch/);
     await api(`/api/urgent/${deadCard.id}/dismiss`, { body: {} });
     pass(`photo that cannot be copied: owner asked silently, failure noted in diagnostics (${JSON.parse(note.data).media_capture[0]})`);
+  }
+
+  // ---- Google AI Studio: a photo described, a video opened in the viewer, captured whole, streamed and watched ------------------
+  {
+    const fake = await startFakeGemini();
+    const GKEY = 'AIzaSyE2EfakeKEYforTheVisionModel012345';
+    const rowsOf = (threadId) => sql(
+      `SELECT md.kind, md.video_ref, md.vision, md.description FROM media md JOIN conversations cv ON cv.id = md.conversation_id
+       WHERE cv.external_thread_id = ? ORDER BY md.created_at, md.id`, [threadId]);
+    const laptopVision = async () => (await sw.evaluate(() => chrome.storage.local.get('config'))).config?.vision ?? null;
+    try {
+      await api('/api/test/vision-base', { body: { url: fake.url } });
+      await api('/api/connections/vision', { method: 'PUT', body: { gemini_api_key: GKEY, video_daily_cap: 20 } });
+      // The owner has no Claude key, so Workers AI (text only) answers: from what the vision model wrote.
+      await api('/api/connections/brain', { method: 'PUT', body: { provider: 'workers_ai' } });
+      await until('the laptop to hear photos and videos are read', async () => (await laptopVision())?.active === true);
+      const clip = await until('the mock clip to be recorded', () => mock('videoClip'));
+
+      const ZOE = '447700900881@c.us';
+      await mock('receive', '+44 7700 900881', '', { kind: 'image', photo: true });
+      const described = await until('reply to the described photo', async () => (await sentTo(ZOE))[0]);
+      assert.match(described.text, /^Mock read the vision model: Fake vision saw a photo/, 'the text only brain answered from the description');
+      const shown = fake.generateCalls();
+      assert.equal(shown.length, 1, 'Google was asked once');
+      assert.ok(shown[0].json.contents[0].parts.some((p) => p.inlineData?.mimeType === 'image/jpeg' && p.inlineData.data.length > 1000), 'the captured JPEG went to Google');
+      assert.equal(shown[0].headers['x-goog-api-key'], GKEY);
+      const photoRow = (await rowsOf(ZOE))[0];
+      assert.match(photoRow.description, /^Fake vision saw a photo/);
+      const zoeConv = await conversation(ZOE);
+      assert.equal((await api('/api/urgent')).urgent.filter((u) => u.conversation_id === zoeConv.id).length, 0, 'no Urgent card: the agent could answer it');
+      assert.match((await api(`/api/conversations/${zoeConv.id}`)).messages[0].media.description, /^Fake vision saw a photo/, 'the owner sees what it saw under the thumbnail');
+      pass('photo: described by Google AI Studio and answered by the text only brain from the description');
+
+      await mock('receive', '+44 7700 900881', 'what is this noise', { kind: 'video', photo: true, video: true });
+      const watched = await until('reply to the video', async () => (await sentTo(ZOE))[1], { timeout: 90_000 });
+      assert.match(watched.text, /^Mock read the vision model: Fake vision watched the video/, 'the brain answered from the whole video');
+      const ups = fake.requests((q) => q.path === '/upload/v1beta/files' && /finalize/.test(q.headers['x-goog-upload-command'] || ''));
+      assert.equal(ups.length, 1, 'uploaded once');
+      assert.equal(ups[0].bytes, clip.size, `every byte of the clip reached Google (${ups[0].bytes} of ${clip.size})`);
+      assert.ok(ups[0].head.startsWith('1a45dfa3'), 'a WebM file');
+      const viewers = await mock('viewerLog');
+      assert.equal(viewers.length, 1, 'the media viewer was opened once');
+      assert.equal(viewers[0].muted, true, 'the player was muted');
+      assert.equal(viewers[0].audible, false, 'it never played with sound');
+      assert.equal(viewers[0].chat_after, viewers[0].chat, 'the chat stayed open');
+      assert.equal(await mock('viewerOpen'), false, 'the viewer was closed again');
+      const videoRow = (await rowsOf(ZOE))[1];
+      assert.equal(videoRow.kind, 'video_frame');
+      assert.match(videoRow.video_ref || '', /^vf_/);
+      assert.equal(JSON.parse(videoRow.vision).via, 'video');
+      assert.equal(fake.requests((q) => q.method === 'DELETE').length, 1, 'the video was deleted from Google once watched');
+      pass(`video: opened in the viewer (muted, closed by ${viewers[0].how}), ${Math.round(clip.size / 1024)} KB captured whole, streamed to Google, watched, answered`);
+
+      // Over the daily cap: the laptop sends a few frames of the video instead of the file.
+      const today = (await api('/api/connections')).vision.videos_today;
+      await api('/api/connections/vision', { method: 'PUT', body: { video_daily_cap: today } });
+      await until('the laptop to hear the video cap is reached', async () => (await laptopVision())?.whole_videos === false);
+      await sleep(10_500); // the tab's own copy of the setting lives 10 s
+      const LEO = '447700900882@c.us';
+      await mock('receive', '+44 7700 900882', 'and this one', { kind: 'video', photo: true, video: true });
+      await until('reply to the second video', async () => (await sentTo(LEO))[0], { timeout: 90_000 });
+      const framesRow = (await rowsOf(LEO))[0];
+      const via = JSON.parse(framesRow.vision).via;
+      const last = fake.generateCalls().at(-1);
+      const pictures = last.json.contents[0].parts.filter((p) => p.inlineData).length;
+      assert.equal(via, 'frames', `looked at frames of the video (${pictures} pictures)`);
+      assert.ok(pictures >= 2, 'the cover and at least one frame');
+      assert.equal(fake.requests((q) => q.path === '/upload/v1beta/files' && /finalize/.test(q.headers['x-goog-upload-command'] || '')).length, 1, 'no second upload over the cap');
+      pass(`video over the daily cap: ${pictures} pictures of it looked at instead of the file`);
+    } finally {
+      await api('/api/connections/vision', { method: 'PUT', body: { gemini_api_key: '', video_daily_cap: 20 } }).catch(() => {});
+      await api('/api/connections/brain', { method: 'PUT', body: { provider: 'auto' } }).catch(() => {});
+      await fake.stop();
+    }
   }
 
   // ---- final sweep ---------------------------------------------------------------------------------------------------------------

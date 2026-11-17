@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "notes": "Gmail selector pack. Seeded from InboxSDK GMAIL_SELECTORS (@inboxsdk/core 2.2.35, 13 Nov 2026), gmail.js 1.1.16, FlowCrypt, Mailvelope and Briskine. Lists are tried first to last. Entries are selector strings or {s, attr, closest}. Keys ending in Class are class names. Everything under text and classify is a regular expression source (case insensitive). Not yet run against a live account: use Run a check in the popup.",
 
   "typing": {
@@ -175,7 +175,8 @@
     "url": [{ "s": "[download_url^=\"image/\"]", "attr": "download_url" }],
     "image": ["div.a3s img[src*=\"view=fimg\"]", "div.a3s img[src*=\"attid=\"]", "div.a3s img[src*=\"googleusercontent.com\"]", ".aQH img", "img.aQG"],
     "skip": [".gmail_quote", "blockquote", ".gmail_extra", ".gmail_signature", "[data-smartmail=\"gmail_signature\"]", "div.adL", "div.yj6qo", "div.adm"],
-    "min_side": 120
+    "min_side": 120,
+    "video_url": [{ "s": "[download_url^=\"video/\"]", "attr": "download_url" }]
   },
 
   "classify": {

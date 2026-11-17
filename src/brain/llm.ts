@@ -50,8 +50,13 @@ export interface PromptImage {
   data: string;
 }
 
-/** Only Claude gets pictures. Workers AI answers from the text alone. */
-export const canSeeImages = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || choice.provider === 'mock';
+/**
+ * Only Claude gets pictures. Workers AI answers from the text alone, including what the vision model
+ * (Google AI Studio, src/vision) wrote about a photo. The mock stands in for Claude, or for Workers AI
+ * when the test sets the provider to workers_ai (model "mock-text").
+ */
+export const canSeeImages = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || (choice.provider === 'mock' && choice.model !== MOCK_TEXT_MODEL);
+export const MOCK_TEXT_MODEL = 'mock-text';
 
 /**
  * The user turn for Claude: plain text when there are no pictures, otherwise each picture after its
@@ -105,7 +110,8 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
  * the binding exists; the mock in test mode.
  */
 export async function chooseProvider(env: Env, settings: Settings): Promise<ProviderChoice> {
-  if (env.ACX_TEST_MODE === '1') return { provider: 'mock', model: 'mock', apiKey: null };
+  // Tests: the mock, which can see pictures like Claude, or reads text only like Workers AI when that provider is chosen.
+  if (env.ACX_TEST_MODE === '1') return { provider: 'mock', model: settings.brain.provider === 'workers_ai' ? MOCK_TEXT_MODEL : 'mock', apiKey: null };
   const brain = settings.brain;
   const key = ((await getSecret(env.DB, 'anthropic_api_key')) ?? env.ANTHROPIC_API_KEY ?? '').trim();
   const workers: ProviderChoice | null = env.AI ? { provider: 'workers_ai', model: brain.workers_ai_model, apiKey: null } : null;

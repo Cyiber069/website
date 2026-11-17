@@ -604,8 +604,11 @@
         kind,
         ts: model && model.t ? model.t * 1000 : pre.ts,
         author: pre.author,
-        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia). Voice notes are left alone.
-        _media: kind === 'image' || kind === 'video' ? { el: m.row, kind } : null,
+        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia), and for a video
+        // what the bridge knows about it (findVideo). Voice notes are left alone.
+        _media: kind === 'image' || kind === 'video'
+          ? { el: m.row, kind, info: model ? { duration: model.duration || null, size: model.size || null, view_once: Boolean(model.view_once) } : {} }
+          : null,
       });
     }
     return out;
@@ -729,6 +732,62 @@
     if (li.kind === 'chat' && normTitle(li.name) !== normTitle(cur.title)) throw new Fail('thread_not_found', 'The message box belongs to a different chat', true);
   }
 
+  // ---- the whole video, for the vision model ---------------------------------------------------------------------
+
+  /** The open media viewer, when one shows. */
+  const viewerOpen = () => { const v = Q('media.viewer'); return v && visible(v) ? v : null; };
+
+  /** Close the media viewer the way a person would: Escape, then its close button. The chat stays as it was. */
+  async function closeViewer(title) {
+    for (let round = 0; round < 2 && viewerOpen(); round++) {
+      ACX.key(document.activeElement || document.body, 'Escape', { keyCode: 27, which: 27 });
+      if (await waitFor(() => !viewerOpen(), { timeout: 1200, interval: 150 })) break;
+      const btn = Q('media.viewer_close', viewerOpen() || document);
+      if (btn) ACX.click(btn);
+      await waitFor(() => !viewerOpen(), { timeout: 1200, interval: 150 });
+    }
+    if (viewerOpen()) ACX.diag('note', { video_capture: ['viewer_still_open'] });
+    const cur = currentChat();
+    if (title && cur && normTitle(cur.title) !== normTitle(title)) ACX.diag('note', { video_capture: ['chat_changed'] });
+  }
+
+  /**
+   * The file of a customer video. WhatsApp Web only loads it when it is opened, so: open it in the
+   * media viewer, keep the player muted and paused, read the bytes behind its blob: address, and close
+   * the viewer again (done). Never for a view once video. A video the bridge says is huge is not opened.
+   */
+  async function findVideo(m, deadline) {
+    const left = () => deadline - Date.now();
+    const info = (m._media && m._media.info) || {};
+    const bubble = m._media.el;
+    if (info.view_once || Q('media.view_once', bubble)) return { why: 'view_once' };
+    if (info.size && info.size > 64 * 1024 * 1024) return { why: 'too_big_to_open', seconds: info.duration || null };
+    const opener = Q('media.video_open', bubble);
+    if (!opener) return { why: 'no_opener' };
+    const title = currentChat()?.title || '';
+    const done = () => closeViewer(title);
+    if (viewerOpen()) await closeViewer(title); // left over from before: start clean
+    ACX.click(opener);
+    const viewer = await waitFor(() => viewerOpen(), { timeout: Math.max(300, Math.min(4000, left())), interval: 200 });
+    if (!viewer) return { why: 'no_viewer', done };
+    const quiet = (v) => { try { v.muted = true; if (!v.paused) v.pause(); } catch { /* ignore */ } return v; };
+    const video = await waitFor(() => {
+      const v = Q('media.viewer_video', viewerOpen() || viewer);
+      if (v) quiet(v);
+      return v && /^blob:/.test(v.currentSrc || v.src || '') ? v : null;
+    }, { timeout: Math.max(300, Math.min(8000, left())), interval: 200 });
+    if (!video) return { why: 'no_video_in_viewer', done };
+    quiet(video);
+    const seconds = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : info.duration || null;
+    let blob = null;
+    try {
+      const res = await fetch(video.currentSrc || video.src, { signal: AbortSignal.timeout(Math.max(500, Math.min(5000, left()))) });
+      if (res.ok) blob = await res.blob();
+    } catch { blob = null; } // a streamed player has no file behind its address: frames only
+    if (blob && blob.size > 0) return { blob, seconds, mime: blob.type || 'video/mp4', done };
+    return { el: video, seconds, done };
+  }
+
   async function read({ key }) {
     const title = String(key || '').trim();
     if (!title) throw new Fail('thread_not_found', 'No chat given', false);
@@ -751,6 +810,8 @@
     if (messages.length) lastSeen[cur.title] = messages[messages.length - 1].external_id;
     // Photos and video previews of the newest customer messages ride along. Never throws, at most about 5 s.
     await ACX.captureMedia(messages);
+    // The newest customer video itself, when Google AI Studio is connected. Never throws, at most about 15 s.
+    await ACX.captureVideo(messages, findVideo);
     const out = messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts }));
     // What the end of the chat looked like: send() refuses the reply if the customer wrote again since.
     return { thread, messages: out, tail: ACX.tailRef(out) };

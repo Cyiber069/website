@@ -15,7 +15,7 @@ export function mockSales(text: string): SalesRead {
   return { stage: 'none', product: null };
 }
 
-export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
+export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesImages?: boolean } = {}): Decision {
   const last = [...input.history].reverse().find((m) => m.direction === 'in');
   const text = (last?.body ?? '').toLowerCase();
   const base: Decision = {
@@ -26,7 +26,11 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
   // Photos reached the brain (src/pipeline/inbound.ts loads them, decide.ts passes them on). The fixed
   // line proves it in tests. A caption with "unclear-photo" takes the escalation path of an unclear photo.
   const media = input.media ?? [];
-  if (media.length) {
+  // A text only brain (Workers AI stand in) gets what the vision model wrote, never the pictures.
+  if (opts.seesImages === false) {
+    const said = media.filter((p) => p.description).map((p) => String(p.description));
+    if (said.length) return { ...base, parts: [`Mock read the vision model: ${said.join(' / ').slice(0, 120)}`], note: `mock read ${said.length} description${said.length === 1 ? '' : 's'}` };
+  } else if (media.length) {
     const frames = media.filter((p) => p.kind === 'video_frame').length;
     const saw = `mock saw ${media.length} photo${media.length === 1 ? '' : 's'}${frames ? ` with ${frames} video frame${frames === 1 ? '' : 's'}` : ''}`;
     if (text.includes('unclear-photo')) {
@@ -35,7 +39,8 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
         escalate: { question: 'The photo is too dark to make out (mock). The customer wants to know if it fits.', reason: 'The photo is unclear (mock)', category: 'other' },
       };
     }
-    return { ...base, parts: [`M${saw.slice(1)}`], note: saw };
+    const described = media.filter((p) => p.description).length;
+    return { ...base, parts: [`M${saw.slice(1)}${described ? `, ${described} described` : ''}`], note: saw };
   }
   // The owner explained the situation on an Urgent card (src/brain/note.ts). Every later reply in the chat follows it too.
   const guided = input.context_notes.some((n) => n.startsWith('Owner guidance'));

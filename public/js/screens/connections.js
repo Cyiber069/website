@@ -1,4 +1,5 @@
-// Connections: the laptop, the AI brain, Shopify, phone notifications, channel modes, pacing, password.
+// Connections: the laptop, the AI brain, Google AI Studio (photos and videos), Shopify, phone notifications,
+// channel modes, pacing, password.
 import { api, get, post, put, del } from '../api.js';
 import { $, html, raw, icon, setHTML, toast, toastError, friendly, unavailable, skeletonCards, switchRow, segmented, field, busy, ago, copyText, confirmDialog, chBadge, chName, CHANNELS, plural } from '../ui.js';
 import { pushState, enablePush, disablePush } from '../push.js';
@@ -16,14 +17,15 @@ export default {
     let conn = null, connErr = null;
     let settings = null, settingsErr = null;
     let push = { supported: false, permission: 'default', subscribed: false };
-    let brainTest = null, shopTest = null;
+    let brainTest = null, shopTest = null, visionTest = null;
     let pairTimer = null;
     let laptopSig = '';
 
     setHTML(view, html`
-      <nav class="chips jump" aria-label="Jump to">${[['laptop', 'Laptop'], ['brain', 'AI brain'], ['shopify', 'Shopify'], ['notify', 'Notifications'], ['channels', 'Channels'], ['pacing', 'Pacing'], ['account', 'Password']].map(([id, t]) => html`<a class="chip" href="#sec-${id}" data-jump>${t}</a>`)}</nav>
+      <nav class="chips jump" aria-label="Jump to">${[['laptop', 'Laptop'], ['brain', 'AI brain'], ['vision', 'Photos and videos'], ['shopify', 'Shopify'], ['notify', 'Notifications'], ['channels', 'Channels'], ['pacing', 'Pacing'], ['account', 'Password']].map(([id, t]) => html`<a class="chip" href="#sec-${id}" data-jump>${t}</a>`)}</nav>
       <section class="card stack" id="sec-laptop" aria-labelledby="h-laptop">${skeletonCards(1)}</section>
       <section class="card stack" id="sec-brain" aria-labelledby="h-brain">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-vision" aria-labelledby="h-vision">${skeletonCards(1)}</section>
       <section class="card stack" id="sec-shopify" aria-labelledby="h-shopify">${skeletonCards(1)}</section>
       <section class="card stack" id="sec-notify" aria-labelledby="h-notify">${skeletonCards(1)}</section>
       <section class="card stack" id="sec-channels" aria-labelledby="h-channels">${skeletonCards(1)}</section>
@@ -91,6 +93,31 @@ export default {
           <div id="brain-test" aria-live="polite">${brainTest ? testResult(brainTest, brainTest.ok ? `Working. It answered in ${(brainTest.ms / 1000).toFixed(1)} seconds${brainTest.sample ? `: "${brainTest.sample}"` : '.'}` : null) : ''}</div>
         </form>`);
     }
+    // ---- Google AI Studio: photos and videos ---------------------------------------------------------------
+    function paintVision() {
+      const box = $('#sec-vision', view);
+      if (!conn) { setHTML(box, html`${head('vision', 'i-search', 'Google AI Studio', 'Looks at photos and videos for the agent.')}${unavailable('The Google AI Studio settings', connErr)}`); return; }
+      const v = conn.vision || {};
+      const saved = Boolean(v.key?.saved);
+      const models = v.models || [];
+      const note = models.find((m) => m.id === v.model)?.note || 'Any Gemini model name works here.';
+      const state = !saved ? 'Turns on by itself once a key is saved.' : v.enabled ? 'On. The agent gets a short note of what each photo or video shows.' : 'Off. Photos and videos go to you in Urgent as before.';
+      setHTML(box, html`
+        ${head('vision', 'i-search', 'Google AI Studio', 'Looks at the photos and videos customers send, so the agent can answer them. You pay Google for what it uses.', savedTag(v.key, 'Key saved', 'No key yet'))}
+        <form class="stack form" id="vision-form" novalidate>
+          ${field({ label: saved ? 'Replace the Google AI Studio key' : 'Google AI Studio key', name: 'gemini_api_key', type: 'password', placeholder: 'AIza...', attrs: 'autocomplete="off" spellcheck="false"', hint: 'Get one at aistudio.google.com under Get API key. It is kept on the server and never shown again.' })}
+          ${switchRow({ name: 'enabled', checked: v.enabled !== false, label: 'Use it to look at photos and videos', hint: state })}
+          <div class="field"><label class="field__label" for="vision-model">Model</label>
+            <input class="input" id="vision-model" name="model" list="vision-models" value="${v.model || ''}" autocomplete="off" spellcheck="false" placeholder="gemini-3.8-flash">
+            <datalist id="vision-models">${models.map((m) => html`<option value="${m.id}">${m.label}</option>`)}</datalist>
+            <p class="field__hint" id="vision-model-note">${note}</p></div>
+          ${field({ label: 'Most videos a day', name: 'video_daily_cap', type: 'number', value: v.video_daily_cap ?? 20, attrs: 'min="0" max="500" inputmode="numeric"', hint: `${plural(v.videos_today || 0, 'video')} watched today. Past this number it looks at a few pictures from each video instead. 0 means pictures only.` })}
+          <p class="form-error" role="alert" hidden></p>
+          <div class="wrap"><button type="submit" class="btn btn--primary">Save</button><button type="button" class="btn" data-action="vision-test">Test key</button>${saved ? html`<button type="button" class="btn btn--ghost" data-action="vision-off">Remove key</button>` : ''}</div>
+          <div id="vision-test" aria-live="polite">${visionTest ? testResult(visionTest, `Working. Google answered in ${(visionTest.ms / 1000).toFixed(1)} seconds with ${visionTest.model}.`) : ''}</div>
+        </form>`);
+    }
+
     const testResult = (r, okText) => html`<p class="banner ${r.ok ? 'banner--ok' : 'banner--down'}">${icon(r.ok ? 'i-check' : 'i-stop')}<span>${r.ok ? okText : html`<b>Not working.</b> ${r.error || 'No reason was given. Check the details above and try again.'}`}</span></p>`;
 
     // ---- Shopify ---------------------------------------------------------------------------------------
@@ -204,7 +231,7 @@ export default {
       try { conn = await get('/api/connections'); connErr = null; }
       catch (err) { if (err.name === 'AuthError') return; connErr = err; }
       push = await pushState();
-      paintBrain(); paintShopify(); paintNotify();
+      paintBrain(); paintVision(); paintShopify(); paintNotify();
     }
     async function loadSettings() {
       try { settings = (await get('/api/settings')).settings; settingsErr = null; }
@@ -217,6 +244,7 @@ export default {
     view.addEventListener('input', (e) => { const f = e.target.closest('#alerts-form, #pacing-form, #gmail-form'); if (f) f.querySelector('[type=submit]').disabled = false; });
     view.addEventListener('change', async (e) => {
       if (e.target.id === 'brain-model') { $('#model-note', view).textContent = conn?.brain?.models?.find((m) => m.id === e.target.value)?.note || ''; return; }
+      if (e.target.id === 'vision-model') { $('#vision-model-note', view).textContent = conn?.vision?.models?.find((m) => m.id === e.target.value.trim())?.note || 'Any Gemini model name works here.'; return; }
       const f = e.target.closest('#alerts-form, #pacing-form'); if (f) f.querySelector('[type=submit]').disabled = false;
       const holder = e.target.closest('[data-change]');
       if (!holder) return;
@@ -254,6 +282,25 @@ export default {
             conn = { ...conn, ...(await put('/api/connections/brain', body)) }; brainTest = null; clean(f);
             toast(key ? 'Key saved. Press Test it to check it works.' : 'Brain settings saved.');
             paintBrain(); ctx.refreshOverview();
+          } catch (err) { formError(f, friendly(err, 'Not saved. Try again.')); }
+        });
+      }
+      if (f.id === 'vision-form') {
+        const key = f.elements.gemini_api_key.value.trim();
+        const model = f.elements.model.value.trim().toLowerCase();
+        const cap = Number(f.elements.video_daily_cap.value);
+        if (key.startsWith('sk-ant-')) { formError(f, 'That is a Claude key. The Google key is in Google AI Studio under Get API key.'); f.elements.gemini_api_key.focus(); return; }
+        if (key && (/\s/.test(key) || key.length < 20)) { formError(f, 'That does not look like a Google AI Studio key. Copy it again from aistudio.google.com.'); f.elements.gemini_api_key.focus(); return; }
+        if (!/^gemini[a-z0-9.-]*$/.test(model)) { formError(f, 'Type a Gemini model name, like gemini-3.8-flash.'); f.elements.model.focus(); return; }
+        if (!Number.isInteger(cap) || cap < 0 || cap > 500) { formError(f, 'Videos a day should be a whole number from 0 to 500.'); f.elements.video_daily_cap.focus(); return; }
+        formError(f);
+        return busy(btn, async () => {
+          try {
+            const body = { enabled: f.elements.enabled.checked, model, video_daily_cap: cap };
+            if (key) body.gemini_api_key = key;
+            conn = { ...conn, ...(await put('/api/connections/vision', body)) }; visionTest = null; clean(f);
+            toast(key ? 'Key saved. Press Test key to check it works.' : 'Saved.');
+            paintVision();
           } catch (err) { formError(f, friendly(err, 'Not saved. Try again.')); }
         });
       }
@@ -343,6 +390,20 @@ export default {
           catch (err) { if (err.name === 'AuthError') return; brainTest = { ok: false, error: friendly(err, 'The test did not run. Try again.') }; }
           paintBrain();
         });
+      }
+      if (action === 'vision-test') {
+        return busy(b, async () => {
+          b.textContent = 'Testing';
+          try { visionTest = await post('/api/connections/vision/test'); }
+          catch (err) { if (err.name === 'AuthError') return; visionTest = { ok: false, error: friendly(err, 'The test did not run. Try again.') }; }
+          paintVision();
+        });
+      }
+      if (action === 'vision-off') {
+        if (!(await confirmDialog({ title: 'Remove the Google AI Studio key?', text: 'The agent stops looking at photos and videos. They go to you in Urgent again.', confirm: 'Remove', danger: true }))) return;
+        try { conn = { ...conn, ...(await put('/api/connections/vision', { gemini_api_key: '' })) }; visionTest = null; toast('Key removed.', { type: 'warn' }); paintVision(); }
+        catch (err) { toastError(err, 'Could not remove it. Try again.'); }
+        return;
       }
       if (action === 'shop-test') {
         return busy(b, async () => {

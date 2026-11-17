@@ -13,6 +13,7 @@ import { processConversation } from '../pipeline/inbound';
 import { answerUrgent, answerUrgentWithNote, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
 import { currentDevice, pairingCodeRow, selectorPack } from './agent';
 import { checkDiscountPatch } from '../discounts/rules';
+import { checkVisionPatch } from '../vision';
 import { monitorRows } from '../pipeline/monitor';
 import { usageToday } from '../lib/usage';
 import { replyTimes } from '../pipeline/replytime';
@@ -42,12 +43,16 @@ async function recentMessages(db: D1Database, convIds: string[], n: number, dire
   return out;
 }
 
-/** The picture a message came with, for a thumbnail: { id, kind } or null. Read from the message row, no extra query. */
-function mediaOf(m: MessageRow, now: number): { id: string; kind: string } | null {
+/**
+ * The picture a message came with, for a thumbnail: { id, kind } or null, plus description (what the
+ * vision model saw, src/vision) once it has looked. Read from the message row, no extra query.
+ */
+function mediaOf(m: MessageRow, now: number): { id: string; kind: string; description?: string } | null {
   const ref = parseJson<MediaRef>(m.meta, {});
   // Pictures are deleted after 14 days (src/cron.ts): do not point at one that is gone.
   if (typeof ref.media !== 'string' || m.created_at < now - MEDIA_KEEP_DAYS * DAY) return null;
-  return { id: ref.media, kind: ref.media_kind === 'video_frame' ? 'video_frame' : 'image' };
+  const kind = ref.media_kind === 'video_frame' ? 'video_frame' : 'image';
+  return typeof ref.media_desc === 'string' && ref.media_desc ? { id: ref.media, kind, description: ref.media_desc } : { id: ref.media, kind };
 }
 
 async function conversationsById(db: D1Database, ids: string[]): Promise<Map<string, ConversationRow & { display_name: string | null }>> {
@@ -374,7 +379,7 @@ export function register(r: Router): void {
     const patch = await c.body<Record<string, unknown>>(64_000);
     // The recovery message is changed through /api/recovery so approval is always deliberate.
     if (group === 'recovery') { delete patch.template; delete patch.consent_confirmed; }
-    const clean = group === 'discounts' ? checkDiscountPatch(patch) : patch;
+    const clean = group === 'discounts' ? checkDiscountPatch(patch) : group === 'vision' ? checkVisionPatch(patch) : patch;
     const next = await patchSettings(c.db, group, clean as Partial<Settings[typeof group]>);
     return json({ ok: true, [group]: next });
   });

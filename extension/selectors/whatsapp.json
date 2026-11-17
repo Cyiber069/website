@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "_meta": {
     "pack": "whatsapp-web",
     "built": "2026-11-17",
@@ -130,7 +130,12 @@
     "poster": ["[data-testid*=\"video\"] img", "img[src^=\"blob:\"]", "img[src^=\"data:image\"]"],
     "background": ["[data-testid*=\"video\"] [style*=\"background-image\"]", "[style*=\"background-image\"]"],
     "skip": ["[data-testid=\"quoted-message\"]", "[aria-label=\"Quoted message\"]", "[aria-label=\"Mensaje citado\"]", "[data-testid=\"sticker-container\"]"],
-    "min_side": 48
+    "min_side": 48,
+    "video_open": ["[data-testid=\"video-thumb\"]", "[data-testid=\"media-video-thumb\"]", { "s": "[data-icon*=\"media-play\"]", "closest": "[role=\"button\"]" }, { "s": "[data-icon*=\"video-play\"]", "closest": "[role=\"button\"]" }, "[aria-label*=\"video\" i][role=\"button\"]", "[data-testid*=\"video\"][role=\"button\"]"],
+    "viewer": ["[data-testid=\"media-viewer\"]", "[data-testid=\"media-viewer-modal\"]", "[data-testid=\"media-viewer-container\"]", "div[role=\"dialog\"]:has(video)", "div[data-animate-modal-popup=\"true\"]:has(video)"],
+    "viewer_video": ["video[src^=\"blob:\"]", "video"],
+    "viewer_close": ["[data-testid=\"media-viewer-close\"]", "[aria-label=\"Close\"]", "[aria-label=\"Cerrar\"]", { "s": "[data-icon=\"x-viewer\"]", "closest": "button,[role=\"button\"]" }, { "s": "[data-icon=\"x\"]", "closest": "button,[role=\"button\"]" }],
+    "view_once": ["[data-icon*=\"view-once\"]", "[data-testid*=\"view-once\"]", "[aria-label*=\"view once\" i]", "[aria-label*=\"ver una vez\" i]"]
   },
   "urls": {
     "home": "https://web.whatsapp.com/",

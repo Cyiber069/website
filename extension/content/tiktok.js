@@ -767,8 +767,14 @@
       const name = chat.nick || chat.handle;
       // Photos and video covers of the newest customer messages ride along. Never throws, at most about 5 s.
       const shown = usable.slice(-MAX_MESSAGES);
-      for (const m of shown) m._media = m.kind === 'image' || m.kind === 'video' ? { el: m.el, kind: m.kind } : null;
+      for (const m of shown) m._media = m.kind === 'image' || m.kind === 'video' ? { el: m.el, kind: m.kind, shared: m.kind === 'video' && Boolean(q('media.shared_card', m.el, QUIET)) } : null;
       await ACX.captureMedia(shown);
+      // A shared post is someone else's video: its cover goes with who posted it and its caption, never the clip.
+      for (const m of shown) if (m.media && m._media && m._media.shared) m.media.shared = sharedPost(m.el);
+      // A video the customer sent in the chat itself, when Google AI Studio is connected. At most about 15 s.
+      const own = shown.map((m) => (m._media && m._media.shared ? { ...m, _media: null } : m));
+      await ACX.captureVideo(own, dmVideo);
+      own.forEach((m, i) => { if (m.media) shown[i].media = m.media; });
       const messages = shown.map((m) => ({ external_id: m.serverId || null, direction: m.direction, body: m.body, kind: m.kind, ts: null, ...(m.media ? { media: m.media } : {}) }));
       return {
         thread: { external_id, title: name, is_group, subject: null, contact: { name, phone: null, email: null, handle: chat.handle || null } },
@@ -778,6 +784,31 @@
     } finally {
       await tidy();
     }
+  }
+
+  /** Who posted a shared video and its caption, as shown on the card. Customer content for the vision model. */
+  function sharedPost(el) {
+    const author = (val('media.shared_author', el) || '').replace(/^.*\/@/, '').replace(/[/?#].*$/, '').replace(/^@/, '').trim().slice(0, 60);
+    const caption = squash(val('media.shared_caption', el) || '').slice(0, 300);
+    return author || caption ? { author, caption } : null;
+  }
+
+  /** The file of a video sent in the chat: its https address for the service worker, or the bytes of a blob: one. */
+  async function dmVideo(m) {
+    const node = q('media.dm_video', m._media.el, QUIET);
+    const src = node ? node.currentSrc || node.src || node.getAttribute('src') || '' : '';
+    if (!src) return { why: 'no_src' };
+    const video = node.tagName === 'VIDEO' ? node : node.closest('video');
+    const seconds = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+    if (/^https:/i.test(src)) return { url: src, seconds };
+    if (/^blob:/i.test(src)) {
+      try {
+        const res = await fetch(src, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) return { blob: await res.blob(), seconds };
+      } catch { /* a streamed player: frames only */ }
+      return video ? { el: video, seconds } : { why: 'no_bytes' };
+    }
+    return { why: 'odd_src' };
   }
 
   // ---- send -----------------------------------------------------------------------------------------------

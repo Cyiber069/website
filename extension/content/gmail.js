@@ -641,16 +641,20 @@
       for (const m of all) {
         for (const part of m.out ? splitOwnMessage(m) : [m]) {
           const kind = !part.body && part.attachments ? 'document' : 'text';
-          // A customer email that shows a picture (an attachment card or an inline photo): copy it for the brain.
-          const _media = !part.out && ACX.hasMedia(m.el, 'image') ? { el: m.el, kind: 'image' } : null;
+          // A customer email with a video attachment: its card picture is the cover, its download address
+          // the file (fetched by the service worker for the vision model). Else a picture (an attachment
+          // card or an inline photo): copy it for the brain.
+          const video = !part.out ? videoAttachment(m.el) : null;
+          const _media = video ? { el: m.el, kind: 'video', video } : !part.out && ACX.hasMedia(m.el, 'image') ? { el: m.el, kind: 'image' } : null;
           if (!part.body && kind === 'text' && !_media) continue;
           messages.push({ external_id: part.id, direction: part.out ? 'out' : 'in', body: part.body, kind, ts: part.ts, _media });
         }
       }
       await ACX.captureMedia(messages); // never throws, at most about 5 s
+      await ACX.captureVideo(messages, (msg) => ({ url: msg._media.video.url, mime: msg._media.video.mime })); // never throws, at most about 15 s
       for (const msg of messages) {
         // A photo with no words is a photo, not a file. Without a copy and without words there is nothing to report.
-        if (msg.media && !msg.body) msg.kind = 'image';
+        if (msg.media && !msg.body) msg.kind = msg.media.kind === 'video_frame' ? 'video' : 'image';
         delete msg._media;
       }
       for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].body && messages[i].kind === 'text') messages.splice(i, 1);
@@ -669,6 +673,23 @@
     } finally {
       await goInbox();
     }
+  }
+
+  /**
+   * The first video attachment of a message: { url, mime, name } from its download address
+   * ("video/mp4:clip.mp4:https://mail.google.com/..."), or null.
+   */
+  function videoAttachment(root) {
+    for (const e of chain('media.video_url')) {
+      let els = [];
+      try { els = Array.from(root.querySelectorAll(e.s)); } catch { continue; }
+      for (const el of els) {
+        const raw = String((e.attr ? el.getAttribute(e.attr) : el.getAttribute('download_url')) || '');
+        const m = /^(video\/[\w.+-]+):([^:]*):(https:\/\/.+)$/i.exec(raw.trim());
+        if (m) return { mime: m[1].toLowerCase(), name: m[2], url: m[3] };
+      }
+    }
+    return null;
   }
 
   // ---- the reply box ---------------------------------------------------------------------------------------

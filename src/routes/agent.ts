@@ -5,13 +5,14 @@ import whatsappPack from '../../extension/selectors/whatsapp.json';
 import type { Channel, DeviceRow, Settings } from '../types';
 import { CHANNELS } from '../types';
 import { randomToken, sha256Hex } from '../lib/crypto';
-import { all, parseJson, run, uid } from '../lib/db';
+import { all, one, parseJson, run, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError, json, ndjsonStream, oneOf, str, type Ctx, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
 import { MIN } from '../lib/time';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
 import { completeJob, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
+import { VISION_SECRET, londonDayStart, receiveVideo } from '../vision';
 
 const POLL_SECONDS = 20;
 export const ONLINE_WINDOW_MS = 100_000;
@@ -67,8 +68,10 @@ export async function selectorPack(db: D1Database): Promise<{ version: string; p
   return { version: `${BASE_VERSION}.${override?.rev ?? 0}`, pack };
 }
 
-function clientConfig(settings: Settings, selectorsVersion: string, origin: string) {
+function clientConfig(settings: Settings, selectorsVersion: string, origin: string, vision: { active: boolean; whole_videos: boolean }) {
   return {
+    // Google AI Studio reads photos and videos: the tabs only open and send videos while it does.
+    vision,
     enabled: settings.agent.enabled,
     channels: settings.channels,
     pacing: { settle_seconds: settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
@@ -122,6 +125,15 @@ function statusSignature(s: DeviceStatus): string {
     const fresh = c?.last_ok_at ? Math.min(3, Math.floor(Math.max(0, (s.reported_at || 0) - c.last_ok_at) / (5 * MIN))) : -1;
     return c ? [c.state, c.detail, c.unread, c.busy, c.last_error, c.recoveries, c.version, fresh] : null;
   })]);
+}
+
+/** Whether the vision model is on (a key and the switch), and whether whole videos may still go today. One small query. */
+async function visionState(db: D1Database, settings: Settings, now: number): Promise<{ active: boolean; whole_videos: boolean }> {
+  if (!settings.vision.enabled) return { active: false, whole_videos: false };
+  const row = await one<{ k: number | null; n: number }>(db,
+    'SELECT (SELECT 1 FROM secrets WHERE key = ?) AS k, (SELECT COUNT(*) FROM vision_files WHERE created_at >= ?) AS n', VISION_SECRET, londonDayStart(now));
+  const active = Boolean(row?.k);
+  return { active, whole_videos: active && Number(row?.n ?? 0) < settings.vision.video_daily_cap };
 }
 
 function requireDevice(c: Ctx): DeviceRow {
@@ -181,10 +193,10 @@ export function register(r: Router): void {
       return st?.state === 'ready' && (st.sending !== null || !st.busy);
     });
     const jobs = status.paused_locally ? [] : await leaseDue(c.db, device, settings, ready);
-    const sel = await selectorPack(c.db);
+    const [sel, vision] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now)]);
     return json({
       server_time: c.now,
-      config: clientConfig(settings, sel.version, c.url.origin),
+      config: clientConfig(settings, sel.version, c.url.origin, vision),
       jobs,
       selectors: body.selectors_version === sel.version ? null : sel,
     });
@@ -204,6 +216,13 @@ export function register(r: Router): void {
       // so the next sync hands them over, without counting a try.
       if (!delivered && outcome.jobs.length) await releaseLeases(c.db, device, outcome.jobs.map((j) => j.id));
     });
+  });
+
+  // One customer video, before the report that names it. The bytes go straight through to Google
+  // (src/vision receiveVideo): nothing is stored here but a small row saying where it is.
+  r.post('/api/agent/media/video', 'device', async (c) => {
+    const device = requireDevice(c);
+    return json(await receiveVideo(c.env, await getSettings(c.db), c.req, c.url, device.id));
   });
 
   r.post('/api/agent/jobs/:id/result', 'device', async (c) => {
