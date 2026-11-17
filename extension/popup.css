@@ -1,7 +1,14 @@
+/* Same palette as the dashboard (public/css/acx.css). The popup cannot load that file, so the values are repeated here once. */
 :root {
-  --bg: #0a0b0d; --surface: #131519; --raised: #1a1d22; --line: #262a31;
-  --text: #f2f3f5; --muted: #9aa0aa; --accent: #c8ff2e; --accent-ink: #0a0b0d;
-  --good: #3ddc84; --warn: #f5a524; --bad: #ff5c5c;
+  color-scheme: dark;
+  --bg: #07080D; --surface: #0F1018; --raised: #1F2130; --line: #25283A; --line-strong: #393D54;
+  --text: #F3F4F8; --muted: #B1B4C4;
+  --brand-blue: #4F8BFF; --brand-indigo: #7C6BFF; --brand-violet: #A855F7;
+  --grad: linear-gradient(135deg, var(--brand-blue) 0%, var(--brand-indigo) 52%, var(--brand-violet) 100%);
+  --grad-strong: linear-gradient(135deg, #2563EB 0%, #5850EC 52%, #7C3AED 100%);   /* white text 5.2:1 to 5.7:1 */
+  --grad-strong-hover: linear-gradient(135deg, #2F6BF0 0%, #6258EE 52%, #8344F0 100%);
+  --accent: #6C9BFF; --accent-ink: #FFFFFF;
+  --good: #38BDF8; --warn: #FFB224; --bad: #FF6680;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -9,13 +16,14 @@ body { width: 340px; background: var(--bg); color: var(--text); font: 13px/1.45 
 header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .mark { width: 30px; height: 30px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); display: grid; place-items: center; }
 .mark span { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
-body[data-state="on"] .mark span { background: var(--accent); box-shadow: 0 0 0 4px rgba(200, 255, 46, .16); }
+body[data-state="on"] .mark { border-color: color-mix(in srgb, var(--brand-indigo) 55%, transparent); }
+body[data-state="on"] .mark span { background: var(--grad); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-indigo) 22%, transparent); }
 body[data-state="error"] .mark span { background: var(--bad); }
 .title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .title strong { font-size: 14px; letter-spacing: .01em; }
 .title small { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 3px 8px; border-radius: 999px; background: var(--raised); border: 1px solid var(--line); color: var(--muted); }
-body[data-state="on"] .pill { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+body[data-state="on"] .pill { background: var(--grad-strong); color: var(--accent-ink); border-color: transparent; background-origin: border-box; }
 body[data-state="error"] .pill { color: var(--bad); border-color: var(--bad); }
 .lead { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
 .steps { margin: 0 0 12px; padding-left: 18px; color: var(--muted); }
@@ -25,8 +33,10 @@ body[data-state="error"] .pill { color: var(--bad); border-color: var(--bad); }
 input[type="text"] { width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font: inherit; }
 input[type="text"]:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button { font: inherit; font-weight: 600; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; cursor: pointer; flex: 1; }
-button:hover { border-color: #3a404a; }
-button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:hover { border-color: var(--line-strong); }
+button.primary { background: var(--grad-strong); background-origin: border-box; color: var(--accent-ink); border-color: transparent; }
+button.primary:hover { background: var(--grad-strong-hover); background-origin: border-box; border-color: transparent; }
+input[type="checkbox"] { accent-color: var(--accent); }
 button.danger { color: var(--bad); }
 button:disabled { opacity: .55; cursor: default; }
 .row { display: flex; gap: 8px; margin-top: 10px; }
@@ -34,7 +44,7 @@ button:disabled { opacity: .55; cursor: default; }
 .channels { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .channels li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 12px; }
 .channels .meta { flex-basis: 100%; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.35; }
-.channels .meta.bad { color: var(--bad, #c4342d); }
+.channels .meta.bad { color: var(--bad); }
 .channels li + li { border-top: 1px solid var(--line); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.ready { background: var(--good); }
