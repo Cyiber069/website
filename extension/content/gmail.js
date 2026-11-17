@@ -344,6 +344,9 @@
     }
   }
 
+  // The list fallback takes over the view (a search, then back to the inbox): at most once a minute.
+  let listScanAt = 0;
+
   async function scan() {
     await stateReady;
     if (isStandaloneCompose()) {
@@ -353,10 +356,16 @@
     let found = [];
     const feed = await fetchFeed();
     if (feed) {
-      found = feed.entries.filter((e) => HEX_ID.test(e.id)).map((e) => ({
-        key: e.id, name: e.name, email: e.email, subject: e.subject, preview: e.snippet, sig: `${e.id}|${e.stamp}|${e.snippet.slice(0, 80)}`,
-      }));
+      found = feed.entries.filter((e) => HEX_ID.test(e.id)).map((e) => {
+        const at = Date.parse(e.stamp);
+        return {
+          key: e.id, name: e.name, email: e.email, subject: e.subject, preview: e.snippet, sig: `${e.id}|${e.stamp}|${e.snippet.slice(0, 80)}`,
+          ts_max: Number.isFinite(at) ? at + 1000 : null,
+        };
+      });
     } else {
+      if (Date.now() - listScanAt < 60_000) return { threads: [], source: 'none' };
+      listScanAt = Date.now();
       const rows = await scanList();
       if (!rows) return { threads: [], source: 'none' };
       const looksRead = rows.filter((r) => !r.unread).length;
@@ -376,6 +385,7 @@
         preview: [t.subject, t.preview].filter(Boolean).join(': ').slice(0, 200),
         is_group: false,
         sig: t.sig,
+        ts_max: t.ts_max ?? null,
       });
     }
     return { threads, source: feed ? 'feed' : 'list' };
@@ -644,6 +654,7 @@
         delete msg._media;
       }
       for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].body && messages[i].kind === 'text') messages.splice(i, 1);
+      const shown = messages.slice(-40);
       return {
         thread: {
           external_id: threadId,
@@ -652,7 +663,8 @@
           subject: subject || null,
           contact: { name: title, phone: null, email: contact.email || null, handle: null },
         },
-        messages: messages.slice(-40),
+        messages: shown,
+        tail: ACX.tailRef(shown), // send() refuses the reply if the customer wrote again since
       };
     } finally {
       await goInbox();
@@ -779,9 +791,13 @@
     throw new Fail('composer_missing', 'Could not type into the reply box', true);
   }
 
-  /** A pause that scales with the length of the text, so a reply is not typed in zero time. */
+  /**
+   * A pause that scales with the length of the text (older servers send a typing speed). typing_cps 0
+   * means as fast as possible: no pause at all.
+   */
   async function typingPause(text, cps, share) {
-    const total = Math.min(6000, Math.max(400, (text.length / Math.max(3, cps || 11)) * 1000));
+    if (ACX.instant(cps)) return;
+    const total = Math.min(6000, Math.max(400, (text.length / Math.max(3, ACX.cpsOf(cps))) * 1000));
     await sleep(total * share * ACX.rand(0.8, 1.2));
   }
 
@@ -812,7 +828,7 @@
 
   const jobText = (job) => (Array.isArray(job.parts) ? job.parts : []).map((p) => String(p).replace(/\r\n?/g, '\n').trim()).filter(Boolean).join('\n\n');
 
-  async function sendReply(job) {
+  async function sendReply(job, newerThan) {
     const text = jobText(job);
     const target = job.target || {};
     requireFree();
@@ -833,6 +849,14 @@
         await remember(job, ids, threadId, text);
         done = true;
         return { sent_external_ids: ids, already_sent: true };
+      }
+
+      // The customer wrote again after the read this reply was decided on: refuse it. A box holding
+      // exactly our text (an earlier try cut short) is ours to throw away, so it never blocks the chat.
+      if (newerThan && ACX.newerInbound(before.map((m) => ({ external_id: m.id, direction: m.out ? 'out' : 'in', body: m.body })), newerThan)) {
+        const left = openCompose(main);
+        if (left && squash(composeUserText(left.body)) === squash(text)) await discardCompose(left, main);
+        throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
       }
 
       // A box that is already open is a draft: the owner's, or ours from a try that stopped half way.
@@ -1023,7 +1047,7 @@
     }
   }
 
-  async function send({ job }) {
+  async function send({ job, newer_than: newerThan }) {
     await stateReady;
     if (!job || !job.id || !jobText(job)) throw new Fail('unknown', 'Empty job', false);
     // A job that was already sent from this browser is only confirmed again.
@@ -1036,7 +1060,7 @@
     try {
       if (job.kind === 'new_chat') return await sendNew(job);
       if (isStandaloneCompose()) { goHomeSoon(); throw new Fail('timeout', 'Gmail is returning to the inbox', true); }
-      return await sendReply(job);
+      return await sendReply(job, newerThan);
     } finally {
       sending = false;
     }
