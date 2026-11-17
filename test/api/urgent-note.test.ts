@@ -36,7 +36,7 @@ describe('owner note on an Urgent item', () => {
     const res = await api(`/api/urgent/${c.urgentId}/note`, { body: { note } });
     expect(res.status, JSON.stringify(res.data)).toBe(200);
     expect(res.data).toMatchObject({ ok: true, queued_as: 'pending', learned: true, status: 'answered' });
-    expect(res.data.parts[0]).toContain('mock reply following owner guidance');
+    expect(res.data.parts[0]).toContain('Mock reply following owner guidance');
     expect(res.data.parts.join(' ')).not.toContain(note);
 
     const jobs = await urgentJobs(c.urgentId);
@@ -71,7 +71,7 @@ describe('owner note on an Urgent item', () => {
       { external_id: unique('m'), direction: 'in', body: 'nice so can I order one now' },
     ]);
     expect(later.action).toBe('reply');
-    expect(later.jobs[0]!.parts[0]).toContain('mock reply following owner guidance to: nice so can I order one now');
+    expect(later.jobs[0]!.parts[0]).toContain('Mock reply following owner guidance to: nice so can I order one now');
     await finish(later.jobs[0]!.id);
 
     // Done once means done.

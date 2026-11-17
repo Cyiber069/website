@@ -24,8 +24,8 @@ export interface VoiceSettings {
   mirror_level: 'match' | 'light' | 'off';
   max_chars: number;
   max_sentences: number;
-  /** none: strip nearly all commas. light: only where meaning needs them. normal: leave as written. */
-  commas: 'none' | 'light' | 'normal';
+  /** none: strip nearly all commas. normal: leave as written. (An old stored 'light' is read as normal, see lib/settings.ts.) */
+  commas: 'none' | 'normal';
   emojis: 'mirror' | 'never' | 'sometimes';
   /** Owner written rules appended to the style card, plain text. */
   extra_rules: string;
@@ -162,7 +162,7 @@ export interface ToneProfile {
   address_terms: string[];
   elongation: number; // 0..1 share of words with stretched letters
   emoji_rate: number; // emojis per message
-  lowercase: boolean; // customer writes mostly without capitals
+  lowercase: boolean; // customer writes mostly without capitals (a fact about them: replies never copy it)
   punctuation: 'none' | 'light' | 'full';
   avg_chars: number;
   language: string; // BCP 47 guess, "en" when unsure

@@ -1,5 +1,6 @@
 // Cheap, deterministic read of how a customer writes. The profile is fed to the model so it can
-// mirror the customer, and to the sanitizer so the final text matches (lower case, no full stop, ...).
+// mirror the customer, and to the sanitizer so the final text matches (greeting, emoji, no full stop, ...).
+// Lower case is measured but never mirrored: the owner wants every reply to start with a capital.
 //
 // Ported from the reference in the voice research (research/voice.md section F, voice_ref/tone.mjs).
 // The test vectors in test/unit/vectors/tone.vectors.json were generated from that reference: keep the
@@ -304,7 +305,7 @@ export function mirrorPlan(tone: ToneProfile, voice: Partial<Pick<VoiceSettings,
     greeting,                                         // say this once, only in the first reply of a conversation
     address,                                          // at most once per reply, '' means use none
     stretch_words: stretch,                           // how many words may carry ONE extra letter (broo, heyy)
-    lowercase: !off && level === 'match' && tone.lowercase && (tone.register === 'hype' || tone.register === 'casual'),
+    lowercase: false,                                 // always false: the owner wants proper capitals whatever the customer does
     emoji_max: off || voice.emojis === 'never' ? 0 : voice.emojis === 'sometimes' ? 1 : Math.min(2, Math.ceil(tone.emoji_rate || 0)),
     exclamations_max: upset || formal || serious ? 0 : tone.register === 'hype' ? 2 : 1,
     slang_ok: off ? [] : tone.slang.filter((s) => ['sick', 'mint', 'sound', 'sorted', 'buzzing', 'proper', 'decent', 'quid', 'cheers', 'nah', 'yeah', 'defo', 'rapid', 'beast', 'insane', 'mental', 'wheelie', 'surron'].includes(s)),

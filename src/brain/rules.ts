@@ -7,25 +7,25 @@ import {
 import { sanitizeDetailed, type StyleContext } from './style';
 import { isSeriousTopic } from './tone';
 
-// Fallback lines for when the model's own wording cannot be used. The sanitizer still adapts
-// capitals and the final full stop to the customer.
+// Fallback lines for when the model's own wording cannot be used. Written properly, with a capital
+// at the start. The sanitizer still takes care of the final full stop.
 const HOLDING: Record<string, string> = {
-  en: 'let me check that for you',
-  es: 'déjame comprobarlo y te digo',
-  fr: 'je vérifie ça et je reviens vers vous',
-  de: 'ich kläre das kurz und melde mich',
-  it: 'controllo e ti faccio sapere',
-  nl: 'ik zoek het even voor je uit',
-  pt: 'vou verificar e já te digo',
-  pl: 'sprawdzę to i dam znać',
+  en: 'Let me check that for you',
+  es: 'Déjame comprobarlo y te digo',
+  fr: 'Je vérifie ça et je reviens vers vous',
+  de: 'Ich kläre das kurz und melde mich',
+  it: 'Controllo e ti faccio sapere',
+  nl: 'Ik zoek het even voor je uit',
+  pt: 'Vou verificar e já te digo',
+  pl: 'Sprawdzę to i dam znać',
 };
 export const holdingLine = (language: string): string => HOLDING[language] ?? HOLDING.en!;
 
 /** What to say when the customer sent something that cannot be opened. Honest, and it often gets the question typed out. */
 export function mediaHoldingLine(kinds: string[], language: string): string {
   if (language !== 'en') return holdingLine(language);
-  if (kinds.every((k) => k === 'voice')) return "sorry I can't play voice notes on here. can you type it out for me?";
-  return 'let me get someone to take a look at that for you';
+  if (kinds.every((k) => k === 'voice')) return "Sorry, I can't play voice notes on here. Can you type it out for me?";
+  return 'Let me get someone to take a look at that for you';
 }
 
 /** Notes for the prompt from the tone analysis. The reply language follows the customer here. */
@@ -73,7 +73,7 @@ const UNSURE = /\b(?:not (?:so |too |really |100% |entirely |totally |quite )?su
 
 export const soundsUnsure = (text: string): boolean => UNSURE.test(text.replace(/[\u2018\u2019\u02bc]/g, "'"));
 
-const CONFIDENT_HOLDING = ['let me check that for you', 'let me find out and come back to you', "leave it with me I'll check that now"];
+const CONFIDENT_HOLDING = ['Let me check that for you', 'Let me find out and come back to you', "Leave it with me, I'll check that now"];
 
 /** A confident holding line, varied a little per conversation. Plain and calm for an upset customer. */
 export function confidentHoldingLine(tone: ToneProfile, seed: string): string {
@@ -112,10 +112,10 @@ export function productLink(text: string): string | null {
  */
 export function botLines(tone: ToneProfile, settings: Settings): string[] {
   const brand = settings.voice.brand_name || settings.store.name;
-  if (tone.mood === 'angry' || tone.mood === 'frustrated') return [`Yes this is ${brand}'s AI assistant`, "I've asked the team to take over this chat now"];
+  if (tone.mood === 'angry' || tone.mood === 'frustrated') return [`Yes, this is ${brand}'s AI assistant`, "I've asked the team to take over this chat now"];
   if (tone.register === 'formal') return [`This is the ${settings.store.name} AI assistant. A member of the team can take over whenever you prefer.`];
   if (tone.register === 'neutral') return [`This is ${brand}'s AI assistant`, "The team can take over any time if you'd rather talk to a person. What can I help with?"];
-  return [`this is the ${brand} AI assistant`, 'the team can jump in whenever you want a person'];
+  return [`This is the ${brand} AI assistant`, 'The team can jump in whenever you want a person'];
 }
 
 /**

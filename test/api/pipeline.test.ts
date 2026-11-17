@@ -43,7 +43,7 @@ describe('inbound to reply', () => {
     const job = first.jobs[0]!;
     expect(job.kind).toBe('reply');
     expect(job.target.thread_external_id).toBe(t);
-    expect(job.parts[0]).toContain('mock reply to: yo how long is delivery');
+    expect(job.parts[0]).toContain('Mock reply to: yo how long is delivery');
     expect(job.pacing.delay_ms).toBeGreaterThan(0);
 
     // Reporting the same thread again while the job is out does nothing.
@@ -88,10 +88,10 @@ describe('inbound to reply', () => {
   it('sends multi part replies in order and ignores group chats', async () => {
     const t = wa();
     const r = await inbound('whatsapp', t, [msg('m1', 'two-parts please')]);
-    expect(r.jobs[0]!.parts).toEqual(['hey', 'mock second part']);
+    expect(r.jobs[0]!.parts).toEqual(['Hey', 'Mock second part']);
     await finish(r.jobs[0]!.id);
     const conv = await api(`/api/conversations/${r.conversation_id}`);
-    expect(conv.data.messages.filter((m: any) => m.direction === 'out').map((m: any) => m.body)).toEqual(['hey', 'mock second part']);
+    expect(conv.data.messages.filter((m: any) => m.direction === 'out').map((m: any) => m.body)).toEqual(['Hey', 'Mock second part']);
 
     const g = await inbound('whatsapp', `${unique('group')}@g.us`, [msg('g1', 'hello all')], { is_group: true });
     expect(g.action).toBe('none');
@@ -372,6 +372,33 @@ describe('settings and health', () => {
     expect((await api('/api/settings')).data.settings.voice.max_chars).toBe(200);
     expect((await api('/api/settings/nope', { method: 'PUT', body: {} })).status).toBe(404);
     await api('/api/settings/voice', { method: 'PUT', body: { max_chars: 260 } });
+  });
+
+  it('reads a stored "light" comma setting as normal, and "almost none" still strips commas', async () => {
+    const stored = async () => JSON.parse((await sql("SELECT value FROM settings WHERE key = 'voice'")).data.results[0].value).commas;
+    const reply = async (body: string) => {
+      const r = await inbound('whatsapp', wa(), [msg('m1', body)]);
+      await finish(r.jobs[0]!.id);
+      return r.jobs[0]!.parts[0];
+    };
+    // A fresh install has normal commas.
+    expect((await api('/api/settings')).data.settings.voice.commas).toBe('normal');
+
+    // The live database still holds the old default. Put it there the way it is stored, without the API.
+    await api('/api/settings/voice', { method: 'PUT', body: { max_chars: 260 } });
+    await sql("UPDATE settings SET value = json_set(value, '$.commas', 'light') WHERE key = 'voice'");
+    expect(await stored()).toBe('light');
+    expect((await api('/api/settings')).data.settings.voice.commas).toBe('normal');
+    expect(await reply('yo bro, delivery to leeds please')).toBe('Mock reply to: yo bro, delivery to leeds please');
+    // An old dashboard tab that still sends "light" saves normal, and any save repairs the stored row.
+    expect((await api('/api/settings/voice', { method: 'PUT', body: { commas: 'light' } })).data.voice.commas).toBe('normal');
+    expect(await stored()).toBe('normal');
+
+    await api('/api/settings/voice', { method: 'PUT', body: { commas: 'none' } });
+    expect((await api('/api/settings')).data.settings.voice.commas).toBe('none');
+    expect(await reply('yo bro, delivery to leeds please')).toBe('Mock reply to: yo bro delivery to leeds please');
+    await api('/api/settings/voice', { method: 'PUT', body: { commas: 'normal' } });
+    expect(await stored()).toBe('normal');
   });
 
   it('serves the overview, events, health and selector overrides', async () => {

@@ -346,7 +346,7 @@ describe('agent makes discount codes', () => {
     const code = newCode('OFF');
     const { res } = await ask(`I would like to make my discount code ${code}`);
     expect(res.action).toBe('reply');
-    expect(res.jobs[0]!.parts[0]).toContain('mock reply to');
+    expect(res.jobs[0]!.parts[0]).toContain('Mock reply to');
     expect(await rowsFor(res.conversation_id!)).toHaveLength(0);
     expect(await urgentFor(res.conversation_id!)).toHaveLength(0);
     await finish(res.jobs[0]!.id);
@@ -357,7 +357,7 @@ describe('agent makes discount codes', () => {
     await fakeShopify('created');
     const { res } = await ask('hey can I get a discount code for my page');
     expect(res.action).toBe('reply');
-    expect(res.jobs[0]!.parts.join(' ').toLowerCase()).toContain('what do you want your code to be');
+    expect(res.jobs[0]!.parts.join(' ')).toBe('Nice one, what do you want your code to be?');
     expect(await rowsFor(res.conversation_id!)).toHaveLength(0);
     await finish(res.jobs[0]!.id);
   });
@@ -374,7 +374,7 @@ describe('agent makes discount codes', () => {
   it('a message with no code words never calls the code check', async () => {
     const { res } = await ask('how long is delivery to leeds');
     expect(res.action).toBe('reply');
-    expect(res.jobs[0]!.parts[0]).toContain('mock reply to');
+    expect(res.jobs[0]!.parts[0]).toContain('Mock reply to');
     await finish(res.jobs[0]!.id);
   });
 });

@@ -138,15 +138,15 @@ describe('photos in the prompt', () => {
 describe('mock brain with photos', () => {
   const tone = analyzeTone([]).profile;
   it('answers with a fixed line that proves the picture arrived', () => {
-    expect(mockDecide(input([inMsg('[sent a photo]', 'image')], { media: [photo(0)] }), tone)).toMatchObject({ action: 'reply', parts: ['mock saw 1 photo'] });
-    expect(mockDecide(input([inMsg('', 'image'), inMsg('', 'video')], { media: [photo(0), photo(1, 'video_frame')] }), tone).parts).toEqual(['mock saw 2 photos with 1 video frame']);
-    expect(mockDecide(input([inMsg('hello there')]), tone).parts).toEqual(['mock reply to: hello there']);
+    expect(mockDecide(input([inMsg('[sent a photo]', 'image')], { media: [photo(0)] }), tone)).toMatchObject({ action: 'reply', parts: ['Mock saw 1 photo'] });
+    expect(mockDecide(input([inMsg('', 'image'), inMsg('', 'video')], { media: [photo(0), photo(1, 'video_frame')] }), tone).parts).toEqual(['Mock saw 2 photos with 1 video frame']);
+    expect(mockDecide(input([inMsg('hello there')]), tone).parts).toEqual(['Mock reply to: hello there']);
   });
   it('escalates an unclear photo with a description for the owner and a confident holding line', () => {
     const d = mockDecide(input([inMsg('unclear-photo does it fit', 'image')], { media: [photo(0)] }), tone);
     expect(d.action).toBe('escalate');
     expect(d.escalate!.question).toMatch(/photo is too dark/i);
-    expect(d.parts).toEqual(['let me check that for you']);
+    expect(d.parts).toEqual(['Let me check that for you']);
   });
 });
 
@@ -185,7 +185,7 @@ describe('decide with photos', () => {
     const env: Env = { DB: fakeDb('sk-ant-test'), ASSETS: {} as Fetcher };
     const d = await decide(env, input([outMsg('hey'), inMsg('[sent a photo]', 'image')], { media: [photo(1)] }));
     expect(d.action).toBe('reply');
-    expect(d.parts.join(' ')).toContain('nice bike');
+    expect(d.parts).toEqual(['Nice bike what wheel size is it']);
     expect(requests.length).toBeGreaterThanOrEqual(1);
     const body = requests[0];
     expect(body.messages).toHaveLength(1);

@@ -169,7 +169,7 @@ async function main() {
   });
   // The brain's style rules may change the letter case of a reply, so texts are compared with what the server queued.
   assert.equal(draft.parts.length, 1);
-  assert.match(draft.parts[0], /^mock reply to: yo how long is delivery to leeds$/i);
+  assert.match(draft.parts[0], /^Mock reply to: yo how long is delivery to Leeds$/);
   assert.equal(draft.subject, 'Delivery time');
   assert.equal(draft.customer_message, 'yo how long is delivery to Leeds', 'quoted history and phone signature are stripped');
   const conv = (await sql('SELECT cv.external_thread_id, ct.email, ct.display_name FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id WHERE cv.id = ?', [draft.conversation_id]))[0];
@@ -209,7 +209,7 @@ async function main() {
   const queued = async (threadId) => (await sql(`SELECT o.parts FROM outbox o JOIN conversations cv ON cv.id = o.conversation_id WHERE cv.external_thread_id = ? ORDER BY o.created_at`, [threadId])).map((r) => JSON.parse(r.parts));
   const twoParts = (await queued(priya.threadId))[0];
   // For email the server may already merge the parts into one text with a blank line; both shapes end up as one email.
-  assert.match(second.text, /^hey\n\nmock second part$/i, 'several parts become one email with blank lines between them');
+  assert.match(second.text, /^Hey\n\nMock second part$/, 'several parts become one email with blank lines between them');
   assert.equal(second.text, twoParts.join('\n\n'));
 
   // The customer answers in the same thread (quoting us). The thread now has collapsed messages.
@@ -218,7 +218,7 @@ async function main() {
   await until('the reply to Priya\'s follow up', () => gmail.sent().length === 3);
   const third = gmail.sent()[2];
   assert.equal(third.threadId, priya.threadId);
-  assert.match(third.text, /^mock reply to: and do you ship to ireland$/i, 'the quote of our own email is not part of the question');
+  assert.match(third.text, /^Mock reply to: and do you ship to ireland$/i, 'the quote of our own email is not part of the question');
   assert.equal(third.text, (await queued(priya.threadId))[1].join('\n\n'));
   const priyaConv = (await sql('SELECT id, paused_until FROM conversations WHERE external_thread_id = ?', [priya.threadId]))[0];
   assert.equal(priyaConv.paused_until, null, 'our own email was not mistaken for the owner typing');

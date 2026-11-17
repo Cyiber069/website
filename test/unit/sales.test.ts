@@ -38,7 +38,7 @@ describe('sales playbook in the prompt', () => {
     expect(text).toMatch(/road legal or off road, their budget/);
     expect(text).toMatch(/Recommend one product/);
     expect(text).toMatch(/Never write a link that is not in the knowledge/);
-    expect(text).toMatch(/this is the one you can grab it here/);
+    expect(text).toMatch(/This is the one, you can grab it here/);
     expect(text).toMatch(/Never more than one extra/);
     expect(text).toMatch(/No made up urgency, no stock levels/);
     expect(text).toMatch(/If the customer is angry, complaining or has a problem with an order, do not sell at all/);
@@ -131,7 +131,7 @@ describe('never sounding unsure', () => {
       expect(soundsUnsure(d.parts[0]!), phrase).toBe(false);
     }
     const two = enforce(raw({ action: 'escalate', escalate: esc, parts: ['no idea on that one', 'let me check'] }), h);
-    expect(two.parts).toEqual(['let me check']);
+    expect(two.parts).toEqual(['Let me check']);
   });
 
   it('varies the confident line a little and stays plain for upset customers', () => {
@@ -153,7 +153,7 @@ describe('selling rules in code', () => {
     // A made up figure in the known part drops it, the holding line stays.
     const bad = enforce(raw({ action: 'escalate', escalate: esc, parts: ['the 2000w bundle is £499', 'leave it with me on the box'] }), h);
     expect(bad.parts).toHaveLength(1);
-    expect(bad.parts[0]).toMatch(/leave it with me/);
+    expect(bad.parts[0]).toMatch(/^Leave it with me/);
   });
 
   it('never sends a link that is not in the knowledge', () => {

@@ -13,7 +13,7 @@ export const DEFAULT_SETTINGS: Settings = {
     mirror_level: 'match',
     max_chars: 260,
     max_sentences: 3,
-    commas: 'light',
+    commas: 'normal',
     emojis: 'mirror',
     extra_rules: '',
     banned_phrases: [],
@@ -116,6 +116,19 @@ function mergeKnown<T>(defaults: T, stored: unknown): T {
   return out as T;
 }
 
+/**
+ * Values that older versions stored and that no longer exist. Applied every time settings are read or
+ * written, so the stored row never has to be edited by hand.
+ *   voice.commas 'light' (the old default, "only when needed") now means 'normal': commas as written.
+ */
+function upgrade<G extends Group>(group: G, value: Settings[G]): Settings[G] {
+  if (group === 'voice') {
+    const voice = value as Settings['voice'];
+    if (voice.commas !== 'none') voice.commas = 'normal';
+  }
+  return value;
+}
+
 let cache: { at: number; value: Settings } | null = null;
 const CACHE_MS = 5_000;
 
@@ -128,7 +141,7 @@ export async function getSettings(db: D1Database, fresh = false): Promise<Settin
     try { stored[r.key] = JSON.parse(r.value); } catch { /* ignore a corrupt row, defaults apply */ }
   }
   const value = {} as Record<Group, unknown>;
-  for (const g of GROUPS) value[g] = mergeKnown(DEFAULT_SETTINGS[g], stored[g]);
+  for (const g of GROUPS) value[g] = upgrade(g, mergeKnown(DEFAULT_SETTINGS[g], stored[g]));
   cache = { at: Date.now(), value: value as unknown as Settings };
   return cache.value;
 }
@@ -136,7 +149,7 @@ export async function getSettings(db: D1Database, fresh = false): Promise<Settin
 /** Shallow-merge a patch into one settings group and persist it. Unknown keys are dropped. */
 export async function patchSettings<G extends Group>(db: D1Database, group: G, patch: Partial<Settings[G]>): Promise<Settings[G]> {
   const current = (await getSettings(db, true))[group];
-  const next = mergeKnown(DEFAULT_SETTINGS[group], { ...(current as object), ...(patch as object) });
+  const next = upgrade(group, mergeKnown(DEFAULT_SETTINGS[group], { ...(current as object), ...(patch as object) }));
   await run(
     db,
     'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',

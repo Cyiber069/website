@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../../src/lib/settings';
-import { numbersPreserved, sanitizeParts, styleViolations, type SanitizeOptions } from '../../src/brain/sanitize';
+import { numbersPreserved, properCase, sanitizeParts, styleViolations, type SanitizeOptions } from '../../src/brain/sanitize';
 import { finalizeParts, lengthLimits, sanitizeDetailed, sanitizeReply, violations, type StyleContext } from '../../src/brain/style';
 import { analyzeTone, isSeriousTopic, profileTone } from '../../src/brain/tone';
 import type { Channel, HistoryMessage, ToneProfile, VoiceSettings } from '../../src/types';
@@ -38,7 +38,7 @@ describe('sanitizer vectors from the voice report', () => {
 describe('hard guarantees', () => {
   it('hold for every vector under every tone, comma setting and channel, and a second pass changes nothing', () => {
     let runs = 0;
-    for (const c of cases) for (const tone of Object.values(tones)) for (const commas of ['none', 'light', 'normal'] as const) for (const channel of ['whatsapp', 'gmail'] as const) {
+    for (const c of cases) for (const tone of Object.values(tones)) for (const commas of ['none', 'normal'] as const) for (const channel of ['whatsapp', 'gmail'] as const) {
       const opts = { ...c.opts, tone, commas, channel, max_chars: c.opts.max_chars ?? (channel === 'gmail' ? 600 : 260) };
       const r = sanitizeParts(c.input, opts);
       const label = `${c.name} [${tone.register}/${tone.mood}/${commas}/${channel}] -> ${JSON.stringify(r.parts)}`;
@@ -128,13 +128,13 @@ describe('golden replies from the voice report', () => {
 
 describe('sanitizeReply: dashes', () => {
   const cases2: [string, string][] = [
-    ['Sure — delivery is 2–4 days', 'sure delivery is 2 to 4 days'],
-    ['yeah the 72-volt battery fits', 'yeah the 72 volt battery fits'],
-    ['its road-legal and plug-and-play', 'its road legal and plug and play'],
-    ['the e-bike kit is £649', 'the ebike kit is £649'],
-    ['prices are £500-£600', 'prices are £500 to £600'],
+    ['Sure — delivery is 2–4 days', 'Sure, delivery is 2 to 4 days'],
+    ['yeah the 72-volt battery fits', 'Yeah the 72 volt battery fits'],
+    ['its road-legal and plug-and-play', 'Its road legal and plug and play'],
+    ['the e-bike kit is £649', 'The ebike kit is £649'],
+    ['prices are £500-£600', 'Prices are £500 to £600'],
     ['3-5 working days', '3 to 5 working days'],
-    ['delivery -- about 3 days', 'delivery about 3 days'],
+    ['delivery -- about 3 days', 'Delivery about 3 days'],
   ];
   for (const [input, want] of cases2) {
     it(`"${input}"`, () => {
@@ -145,27 +145,40 @@ describe('sanitizeReply: dashes', () => {
   }
 
   it('turns a dash between two full thoughts into two sentences', () => {
-    expect(sanitizeReply('its in stock right now - we can ship it tomorrow', ctx(chill))).toBe('its in stock right now. we can ship it tomorrow');
+    expect(sanitizeReply('its in stock right now - we can ship it tomorrow', ctx(chill))).toBe('Its in stock right now. We can ship it tomorrow');
   });
 });
 
 describe('sanitizeReply: commas', () => {
-  it('drops conversational commas for casual customers', () => {
-    expect(sanitizeReply('Hey bro, delivery is 3 days', ctx(chill))).toBe('hey bro delivery is 3 days');
-    expect(sanitizeReply('yeah, it fits most bikes', ctx(chill))).toBe('yeah it fits most bikes');
-    expect(sanitizeReply('no worries mate, its sorted', ctx(chill))).toBe('no worries mate its sorted');
-    expect(sanitizeReply('its in stock, and ships tomorrow', ctx(chill))).toBe('its in stock and ships tomorrow');
-    expect(sanitizeReply('if its the 2000w, you need the 48v battery', ctx(chill))).toBe('if its the 2000w you need the 48v battery');
+  it('keeps commas as written, also for casual customers', () => {
+    expect(sanitizeReply('Hey bro, delivery is 3 days', ctx(chill))).toBe('Hey bro, delivery is 3 days');
+    expect(sanitizeReply('yeah, it fits most bikes', ctx(chill))).toBe('Yeah, it fits most bikes');
+    expect(sanitizeReply('no worries mate, its sorted', ctx(chill))).toBe('No worries mate, its sorted');
+    expect(sanitizeReply('its in stock, and ships tomorrow', ctx(chill))).toBe('Its in stock, and ships tomorrow');
+    expect(sanitizeReply('if its the 2000w, you need the 48v battery', ctx(chill))).toBe('If its the 2000w, you need the 48v battery');
+    expect(sanitizeReply('Hey bro,all good ,thanks', ctx(chill))).toBe('Hey bro, all good, thanks');   // only the spacing is tidied
+  });
+
+  it('normal is the default, and a stored "light" from before means the same', () => {
+    expect(DEFAULT_SETTINGS.voice.commas).toBe('normal');
+    const old = { commas: 'light' } as unknown as Partial<VoiceSettings>;
+    expect(sanitizeReply('Hey bro, delivery is 3 days', ctx(chill, old))).toBe('Hey bro, delivery is 3 days');
   });
 
   it('keeps real lists and numbers', () => {
-    expect(sanitizeReply('comes with the motor, controller, display and throttle', ctx(chill))).toBe('comes with the motor, controller, display and throttle');
-    expect(sanitizeReply('that one is £1,299', ctx(chill))).toBe('that one is £1,299');
+    expect(sanitizeReply('comes with the motor, controller, display and throttle', ctx(chill))).toBe('Comes with the motor, controller, display and throttle');
+    expect(sanitizeReply('that one is £1,299', ctx(chill))).toBe('That one is £1,299');
   });
 
-  it('can strip every comma or leave them alone', () => {
-    expect(sanitizeReply('motor, controller, display', ctx(chill, { commas: 'none' }))).toBe('motor controller display');
-    expect(sanitizeReply('Hey bro, all good', ctx(chill, { commas: 'normal' }))).toBe('hey bro, all good');
+  it('strips conversational commas when the owner picks almost none', () => {
+    const none = ctx(chill, { commas: 'none' });
+    expect(sanitizeReply('Hey bro, delivery is 3 days', none)).toBe('Hey bro delivery is 3 days');
+    expect(sanitizeReply('yeah, it fits most bikes', none)).toBe('Yeah it fits most bikes');
+    expect(sanitizeReply('no worries mate, its sorted', none)).toBe('No worries mate its sorted');
+    expect(sanitizeReply('its in stock, and ships tomorrow', none)).toBe('Its in stock and ships tomorrow');
+    expect(sanitizeReply('if its the 2000w, you need the 48v battery', none)).toBe('If its the 2000w you need the 48v battery');
+    expect(sanitizeReply('motor, controller, display', none)).toBe('Motor controller display');
+    expect(sanitizeReply('that one is £1,299', none)).toBe('That one is £1,299');   // never the comma inside a number
   });
 });
 
@@ -178,7 +191,7 @@ describe('sanitizeReply: machine habits', () => {
   });
 
   it('removes phrases the owner banned', () => {
-    expect(sanitizeReply('no worries, it ships tomorrow', ctx(chill, { banned_phrases: ['no worries'] }))).toBe('it ships tomorrow');
+    expect(sanitizeReply('no worries, it ships tomorrow', ctx(chill, { banned_phrases: ['no worries'] }))).toBe('It ships tomorrow');
     expect(sanitizeReply('Awesome! It ships tomorrow', ctx(plain, { banned_phrases: ['awesome'] }))).toBe('It ships tomorrow');
   });
 
@@ -190,9 +203,16 @@ describe('sanitizeReply: machine habits', () => {
 });
 
 describe('sanitizeReply: mirroring', () => {
-  it('writes lower case with no final full stop for a casual texter', () => {
-    expect(sanitizeReply('Yeah it does. Ships tomorrow.', ctx(chill))).toBe('yeah it does. ships tomorrow');
-    expect(sanitizeReply('I think so. I will check.', ctx(chill))).toBe('i think so. i will check');
+  it('keeps capitals and drops the final full stop for a casual texter', () => {
+    expect(chill.lowercase).toBe(true);   // the customer writes in lower case. The reply does not copy that.
+    expect(sanitizeReply('Yeah it does. Ships tomorrow.', ctx(chill))).toBe('Yeah it does. Ships tomorrow');
+    expect(sanitizeReply('I think so. I will check.', ctx(chill))).toBe('I think so. I will check');
+  });
+
+  it('adds the capitals a lower case draft left out', () => {
+    expect(sanitizeReply('yeah it does. ships tomorrow', ctx(chill))).toBe('Yeah it does. Ships tomorrow');
+    expect(sanitizeReply("i think so. i'll check and i can hold one", ctx(chill))).toBe("I think so. I'll check and I can hold one");
+    expect(finalizeParts(['hey broo', 'the 5000w does about 50mph', 'private land only though'], ctx(chill))).toEqual(['Hey broo', 'The 5000w does about 50mph', 'Private land only though']);
   });
 
   it('keeps capitals for a neutral customer, and full stops for a formal one', () => {
@@ -217,10 +237,10 @@ describe('sanitizeReply: mirroring', () => {
   it('mirrors emoji only as far as the customer and the owner allow', () => {
     const emojiFan: StyleContext = { ...ctx(toneOf('yo 🔥🔥', 'is it fast 🔥')), customer_emojis: ['🔥'] };
     expect(sanitizeReply('yeah its rapid 🔥🔥🔥🔥', emojiFan).match(/🔥/g)).toHaveLength(2);
-    expect(sanitizeReply('yeah its rapid 🔥', { ...emojiFan, voice: { ...emojiFan.voice, emojis: 'never' } })).toBe('yeah its rapid');
+    expect(sanitizeReply('yeah its rapid 🔥', { ...emojiFan, voice: { ...emojiFan.voice, emojis: 'never' } })).toBe('Yeah its rapid');
     expect(sanitizeReply('It ships tomorrow 🔥', ctx(plain))).toBe('It ships tomorrow');
     // Checklist style emoji never go out, whoever uses them.
-    expect(sanitizeReply('✅ in stock 🚀', emojiFan)).toBe('in stock');
+    expect(sanitizeReply('✅ in stock 🚀', emojiFan)).toBe('In stock');
   });
 
   it('stays plain for an upset customer or a serious topic', () => {
@@ -262,7 +282,7 @@ describe('length limits', () => {
 
 describe('finalizeParts', () => {
   it('cleans every part, drops empties and repeats', () => {
-    expect(finalizeParts(['Hey bro,', '', 'I hope this helps!', 'Delivery is 2-4 days.', 'Delivery is 2-4 days.'], ctx(chill))).toEqual(['hey bro', 'delivery is 2 to 4 days']);
+    expect(finalizeParts(['Hey bro,', '', 'I hope this helps!', 'Delivery is 2-4 days.', 'Delivery is 2-4 days.'], ctx(chill))).toEqual(['Hey bro', 'Delivery is 2 to 4 days']);
     expect(finalizeParts([], ctx(chill))).toEqual([]);
     expect(finalizeParts(['   '], ctx(chill))).toEqual([]);
   });
@@ -270,7 +290,7 @@ describe('finalizeParts', () => {
   it('never sends more than three chat messages, folding the rest into the last', () => {
     const out = finalizeParts(['hey', 'its in stock', 'ships tomorrow', 'arrives friday', 'tracked'], ctx(chill, { max_sentences: 8 }));
     expect(out).toHaveLength(3);
-    expect(out.join(' ')).toContain('tracked');
+    expect(out).toEqual(['Hey', 'Its in stock', 'Ships tomorrow. Arrives friday. Tracked']);
   });
 
   it('sends one message on email', () => {
@@ -282,11 +302,102 @@ describe('finalizeParts', () => {
   });
 
   it('leaves the test mode replies readable', () => {
-    expect(finalizeParts(['mock reply to: yo how long is delivery'], ctx(chill))).toEqual(['mock reply to: yo how long is delivery']);
-    expect(finalizeParts(['polished: fits any 135mm dropout'], ctx(chill))).toEqual(['polished: fits any 135mm dropout']);
+    expect(finalizeParts(['Mock reply to: yo how long is delivery'], ctx(chill))).toEqual(['Mock reply to: yo how long is delivery']);
+    expect(finalizeParts(['Polished: fits any 135mm dropout'], ctx(chill))).toEqual(['Polished: fits any 135mm dropout']);
     const dashes = finalizeParts(['Sure — delivery is 2-4 days, and it is free - no worries!'], ctx(plain));
     expect(dashes).toHaveLength(1);
     expect(dashes[0]).toContain('2 to 4 days');
     expect(violations(dashes[0]!)).toEqual([]);
+  });
+});
+
+// ---- proper writing: capitals whatever the customer does -------------------------------------------
+
+describe('properCase', () => {
+  it('starts every message and every sentence with a capital', () => {
+    expect(properCase('hey bro, the kit fits. it ships in 2 days')).toBe('Hey bro, the kit fits. It ships in 2 days');
+    expect(properCase('it fits! you can order today? yes')).toBe('It fits! You can order today? Yes');
+    expect(properCase('no. it does not fit')).toBe('No. It does not fit');
+    expect(properCase('Already fine. Nothing to do')).toBe('Already fine. Nothing to do');
+    expect(properCase('')).toBe('');
+  });
+
+  it('writes the word I as a capital, in English only', () => {
+    expect(properCase("yeah i'm sure i've seen it, i'd say i'll check if i can")).toBe("Yeah I'm sure I've seen it, I'd say I'll check if I can");
+    expect(properCase('(i think so)')).toBe('(I think so)');
+    expect(properCase('the kit is in stock')).toBe('The kit is in stock');   // no i inside a word is touched
+    expect(properCase('sprawdzę to i dam znać', false)).toBe('Sprawdzę to i dam znać');
+    expect(properCase('controllo i cavi e ti faccio sapere', false)).toBe('Controllo i cavi e ti faccio sapere');
+  });
+
+  it('leaves links, emails and bare domains alone, also at the start', () => {
+    const link = 'https://acxebikes.com/products/a-i-b?i=1&q=i';
+    expect(properCase(`${link} is the one. grab it there`)).toBe(`${link} is the one. Grab it there`);
+    expect(properCase(`you can grab it here ${link}`)).toBe(`You can grab it here ${link}`);
+    expect(properCase('email help@acxebikes.com. i will reply')).toBe('Email help@acxebikes.com. I will reply');
+    expect(properCase('i@example.com is my address')).toBe('i@example.com is my address');
+    expect(properCase('acxebikes.com has it. www.acxebikes.com too')).toBe('acxebikes.com has it. www.acxebikes.com too');
+  });
+
+  it('leaves product codes, numbers and names with a capital inside alone', () => {
+    expect(properCase('kt-60v-20ah is in stock. grab it')).toBe('kt-60v-20ah is in stock. Grab it');
+    expect(properCase('the i-2000 and the ACX-72V-40AH fit')).toBe('The i-2000 and the ACX-72V-40AH fit');
+    expect(properCase('5000w does about 50mph. 72v only')).toBe('5000w does about 50mph. 72v only');
+    expect(properCase('iPhone holders fit. eBay kits do not. kWh is on the label')).toBe('iPhone holders fit. eBay kits do not. kWh is on the label');
+    expect(properCase('it is £1,299.00 today. then £1,499')).toBe('It is £1,299.00 today. Then £1,499');
+  });
+
+  it('does not treat an abbreviation or an ellipsis as the end of a sentence', () => {
+    expect(properCase('use a tool e.g. a spanner. then tighten it')).toBe('Use a tool e.g. a spanner. Then tighten it');
+    expect(properCase('the big one i.e. the 72v')).toBe('The big one i.e. the 72v');
+    expect(properCase('bags, lights etc. are extra')).toBe('Bags, lights etc. are extra');
+    expect(properCase('we ship in the U.K. only')).toBe('We ship in the U.K. only');
+    expect(properCase('hmm... let me check')).toBe('Hmm... let me check');
+  });
+
+  it('looks past a leading emoji, quote or bracket', () => {
+    expect(properCase('🔥 nice one bro')).toBe('🔥 Nice one bro');
+    expect(properCase('🔥nice one bro')).toBe('🔥Nice one bro');
+    expect(properCase('sorted. 🔥 let me know')).toBe('Sorted. 🔥 Let me know');
+    expect(properCase('nice one 🔥 let me know')).toBe('Nice one 🔥 let me know');   // an emoji alone does not end a sentence
+    expect(properCase('"yes it fits" is what they said')).toBe('"Yes it fits" is what they said');
+    expect(properCase('(private land only)')).toBe('(Private land only)');
+    expect(properCase('it fits. "sorted" is the word')).toBe('It fits. "Sorted" is the word');
+  });
+
+  it('starts each line of an email with a capital', () => {
+    expect(properCase('hi Margaret\n\nyes, the kit fits.\n\nkind regards\nACX Ebikes')).toBe('Hi Margaret\n\nYes, the kit fits.\n\nKind regards\nACX Ebikes');
+  });
+
+  it('never touches the hidden spans the sanitizer protects', () => {
+    const hidden = '\u{E000}\u{E100}\u{E001}';
+    expect(properCase(`${hidden} is the one. it fits ${hidden}. ok`)).toBe(`${hidden} is the one. It fits ${hidden}. Ok`);
+  });
+
+  it('changes nothing on a second pass', () => {
+    for (const t of ['hey bro, the kit fits. it ships in 2 days', "i'm on it... one sec", '🔥 nice. https://acxebikes.com/x is it']) expect(properCase(properCase(t))).toBe(properCase(t));
+  });
+});
+
+describe('capitals in the pipeline', () => {
+  it('keeps a protected lower case code, a link and an order number exactly, and still capitalises around them', () => {
+    const style: StyleContext = { ...ctx(chill, { max_chars: 400 }), protect: ['acx-bbs-72'] };
+    expect(sanitizeReply('acx-bbs-72 is in stock. it ships tomorrow', style)).toBe('acx-bbs-72 is in stock. It ships tomorrow');
+    expect(sanitizeReply('you want the acx-bbs-72 kit. i can send the link https://acxebikes.com/products/acx-bbs-72?i=1', style)).toBe('You want the acx-bbs-72 kit. I can send the link https://acxebikes.com/products/acx-bbs-72?i=1');
+    expect(sanitizeReply('#1042-2 went out today. tracking is by email', style)).toBe('#1042-2 went out today. Tracking is by email');
+  });
+
+  it('holds for every register, mood and mirror level', () => {
+    const angry = toneOf('this is a joke, refund me now');
+    for (const tone of [chill, plain, formal, angry]) for (const mirror_level of ['match', 'light', 'off'] as const) {
+      const out = finalizeParts(['yeah it fits', 'it ships tomorrow. i will send tracking'], ctx(tone, { mirror_level }));
+      for (const part of out) expect(part, `${tone.register}/${mirror_level}`).toMatch(/^\p{Lu}/u);
+      expect(out.join(' ')).toMatch(/\. I will send tracking/);
+    }
+  });
+
+  it('does not use the capital I rule in another language', () => {
+    const polish: ToneProfile = { ...plain, language: 'pl' };
+    expect(sanitizeReply('sprawdzę to i dam znać', ctx(polish))).toBe('Sprawdzę to i dam znać');
   });
 });

@@ -397,11 +397,11 @@ describe('the message', () => {
     let view = await overview();
     const text = (id: string) => view.eligible.find((e: any) => e.id === id).preview_text as string;
 
-    expect(text(named)).toMatch(/^Hey Jake you left Road Legal Kit/);
+    expect(text(named)).toMatch(/^Hey Jake, you left Road Legal Kit/);
     expect(text(named)).toContain('and 1 other item in your basket at ACX Ebikes');
     expect(text(named)).toContain('Want me to hold it for you?');
     expect(text(named)).toMatch(/Reply STOP if you'd rather not hear from us$/);
-    expect(text(nameless)).toMatch(/^Hey you left Trail Kit 72V/);
+    expect(text(nameless)).toMatch(/^Hey, you left Trail Kit 72V/);
     for (const id of [named, nameless]) {
       expect(text(id)).not.toMatch(/link|https?:|\{|\}/i);
       expect(violations(text(id))).toEqual([]);
@@ -512,7 +512,7 @@ describe('the run', () => {
     expect(job.target).toMatchObject({ phone: row.phone_e164, title: 'Ana', thread_external_id: null });
     expect(job.parts).toHaveLength(1);
     expect(job.parts[0]).toBe(row.message_text);
-    expect(job.parts[0]).toMatch(/^Hey Ana you left Trail Kit 72V in your basket at ACX Ebikes\. Want me to hold it for you\? Reply STOP/);
+    expect(job.parts[0]).toMatch(/^Hey Ana, you left Trail Kit 72V in your basket at ACX Ebikes\. Want me to hold it for you\? Reply STOP/);
     expect(violations(job.parts[0]!)).toEqual([]);
     expect(job.pacing.delay_ms).toBeGreaterThan(0);
 

@@ -35,11 +35,11 @@ export default {
       setHTML(styleEl, html`<form class="card stack form" id="voice-form" novalidate>
         <div><h2 class="eyebrow">How the agent writes</h2><p class="meta">It should sound like someone at the shop texting, never like a robot.</p></div>
         ${segmented({ legend: 'Copy the customer\'s style', name: 'mirror_level', value: voice.mirror_level, options: [['match', 'Match them'], ['light', 'A little'], ['off', 'Do not copy']] })}
-        <p class="field__hint">Match them: "yoooo brooo" gets "hey broo" back. Formal customers always get plain polite replies.</p>
+        <p class="field__hint">Match them: "yoooo brooo" gets "Hey broo" back. Every reply starts with a capital letter. Formal customers always get plain polite replies.</p>
         <div class="field"><label class="field__label" for="v-chars">Longest reply: <span class="num" id="v-chars-out">${voice.max_chars}</span> letters</label>
           <input type="range" class="range" id="v-chars" name="max_chars" min="80" max="600" step="20" value="${voice.max_chars}"><p class="field__hint">A normal text message is about 160 letters.</p></div>
         ${segmented({ legend: 'Most sentences in one reply', name: 'max_sentences', value: voice.max_sentences, options: [[1, '1'], [2, '2'], [3, '3'], [4, '4'], [5, '5']] })}
-        ${segmented({ legend: 'Commas', name: 'commas', value: voice.commas, options: [['none', 'Almost none'], ['light', 'Only when needed'], ['normal', 'Normal']] })}
+        ${segmented({ legend: 'Commas', name: 'commas', value: voice.commas === 'none' ? 'none' : 'normal', options: [['none', 'Almost none'], ['normal', 'Normal']] })}
         ${segmented({ legend: 'Emoji', name: 'emojis', value: voice.emojis, options: [['mirror', 'Only if they do'], ['sometimes', 'Sometimes'], ['never', 'Never']] })}
         ${field({ label: 'Your own rules', name: 'extra_rules', value: voice.extra_rules, textarea: true, rows: 3, placeholder: 'For example: never promise a delivery date', hint: 'Plain words. One rule per line.' })}
         ${field({ label: 'Words and phrases it must never use', name: 'banned_phrases', value: (voice.banned_phrases || []).join('\n'), textarea: true, rows: 3, placeholder: 'One per line', hint: 'For example: valued customer' })}

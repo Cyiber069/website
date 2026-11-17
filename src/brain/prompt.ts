@@ -106,11 +106,10 @@ export function ownerRules(settings: Settings): string {
   const v = settings.voice;
   const lines: string[] = [];
   if (v.commas === 'none') lines.push('Do not use commas at all, except inside a number.');
-  if (v.commas === 'normal') lines.push('Commas may be used the way a careful texter uses them. Still none after a greeting.');
   if (v.emojis === 'never') lines.push('Never use emoji.');
   if (v.emojis === 'sometimes') lines.push('One emoji is fine when it fits, even if the customer used none. Never more than one.');
   if (v.mirror_level === 'off') lines.push('Mirroring is switched off. Write in a plain friendly even voice with normal capitals whatever the customer does. The mirror plan already reflects this.');
-  if (v.mirror_level === 'light') lines.push('Mirror lightly: their greeting, their length and how casual they are. No lower case mirroring, no stretched words and no slang.');
+  if (v.mirror_level === 'light') lines.push('Mirror lightly: their greeting, their length and how casual they are. No stretched words and no slang.');
   if (v.bot_question_policy === 'escalate') {
     lines.push('If the customer sincerely asks whether they are talking to a bot or a person, do not answer it yourself: set flags.asked_if_bot, choose escalate with category human_request and leave parts empty. The owner answers that one.');
   }

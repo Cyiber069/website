@@ -16,7 +16,8 @@ export const mentionsCode = (text: string): boolean => CODE_HINT.test(text);
 export const ASK_FOR_CODE_NOTE =
   'The customer wants their own discount code for the creator offer but did not say what it should be. Ask them in one short line, in their tone, what they want their code to be (letters and numbers only). Do not say any code is made or live.';
 
-export const HOLDING_CODE_LINE = 'nice one let me get that sorted for you';
+/** Sent as written (it does not pass through the style rules), so it is written properly here. */
+export const HOLDING_CODE_LINE = 'Nice one, let me get that sorted for you';
 
 // Checked as parts of the code, so a few harmless codes go to the owner too. That is the safe side.
 const OFFENSIVE = [

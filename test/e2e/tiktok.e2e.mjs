@@ -181,7 +181,7 @@ async function main() {
   const draft = await until('draft in the review list', async () => (await owner('/api/urgent')).review.find((r) => r.channel === 'tiktok'));
   assert.equal(draft.customer, 'Jake');
   assert.equal(draft.customer_message, 'yo how long is delivery');
-  assert.match(draft.parts[0], /mock reply to: yo how long is delivery/);
+  assert.match(draft.parts[0], /Mock reply to: yo how long is delivery/);
   const [convRow] = await sql('SELECT cv.external_thread_id, ct.handle, ct.display_name FROM conversations cv JOIN contacts ct ON ct.id = cv.contact_id WHERE cv.id = ?', [draft.conversation_id]);
   assert.equal(convRow.external_thread_id, jakeId, 'thread id is the TikTok conversation id');
   assert.equal(convRow.handle, 'jake.rides');
@@ -223,7 +223,7 @@ async function main() {
   await until('auto reply to Mia', async () => (await sent()).length === 2);
   out = await sent();
   assert.equal(out[1].convId, miaId);
-  assert.match(out[1].text, /mock reply to: ok/);
+  assert.match(out[1].text, /Mock reply to: ok/);
   pass('auto mode: new DM answered automatically');
 
   await sleep(500);
@@ -234,7 +234,7 @@ async function main() {
   await mock(() => window.mock.receive('jake.rides', 'two-parts please'));
   await until('two part reply', async () => (await sent()).length === 5);
   out = await sent();
-  assert.deepEqual(out.slice(3).map((s) => [s.convId, s.text]), [[jakeId, 'hey'], [jakeId, 'mock second part']]);
+  assert.deepEqual(out.slice(3).map((s) => [s.convId, s.text]), [[jakeId, 'Hey'], [jakeId, 'Mock second part']]);
   assert.ok(out[4].at - out[3].at >= 1900, `parts are spaced out (${out[4].at - out[3].at} ms)`);
   pass('two part reply sent in order with a pause between the parts');
 
@@ -244,7 +244,7 @@ async function main() {
   await until('all jobs recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 5);
   const miaMsgs = await sql(`SELECT m.direction, m.body, m.status FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.external_thread_id = ? ORDER BY m.ts, m.created_at`, [miaId]);
   assert.equal(miaMsgs.filter((m) => m.direction === 'in' && m.body === 'ok').length, 3, 'three identical customer messages stored as three');
-  assert.equal(miaMsgs.filter((m) => m.direction === 'out' && /mock reply to: ok/.test(m.body)).length, 3, 'each one got its own reply');
+  assert.equal(miaMsgs.filter((m) => m.direction === 'out' && /Mock reply to: ok/.test(m.body)).length, 3, 'each one got its own reply');
   pass('the same text sent again counts as a new message (closed chat, open chat, closed chat)');
 
   // ---- reading: kinds, directions, ids ------------------------------------------------------------------
@@ -349,7 +349,7 @@ async function main() {
   assert.equal(jakeLegacy.ok, true, JSON.stringify(jakeLegacy));
   assert.equal(jakeLegacy.data.thread.external_id, jakeId, 'conversation id still comes from the row id attribute');
   assert.ok(jakeLegacy.data.messages.length >= 5 && jakeLegacy.data.messages.every((m) => m.external_id === null), 'no message ids in the legacy layout');
-  assert.deepEqual(jakeLegacy.data.messages.slice(-3).map((m) => [m.direction, m.body]), [['out', 'hey'], ['out', 'mock second part'], ['out', 'sent with enter']]);
+  assert.deepEqual(jakeLegacy.data.messages.slice(-3).map((m) => [m.direction, m.body]), [['out', 'Hey'], ['out', 'Mock second part'], ['out', 'sent with enter']]);
   const samLegacy = await op('send', { job: fake({ target: { thread_external_id: samId, title: 'Sam', handle: 'sam.new' } }) });
   assert.deepEqual([samLegacy.ok, samLegacy.error_code, samLegacy.retryable, samLegacy.error], [false, 'blocked', false, 'Accept the message request in TikTok first'], JSON.stringify(samLegacy));
   await mock(() => window.mock.receive('mia_b', 'ok'));
@@ -383,7 +383,7 @@ async function main() {
   await mock(() => window.mock.receive('mia_b', 'are you still there'));
   await until('answer after the recovery', async () => (await sent()).length === before + 1);
   assert.equal((await sent()).at(-1).convId, miaId);
-  assert.equal((await sent()).at(-1).text, 'mock reply to: are you still there');
+  assert.equal((await sent()).at(-1).text, 'Mock reply to: are you still there');
   await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 8);
   pass(`watchdog: hung tab reloaded (${healed.recoveries} fix today, "${healed.last_error}"), channel answers again`);
 
@@ -417,7 +417,7 @@ async function main() {
   before = (await sent()).length;
   await mock((src) => window.mock.receive('mia_b', '', { kind: 'image', src }), `${CDN}/tos-mock/photo.png`);
   await until('reply to the photo', async () => (await sent()).length === before + 1);
-  assert.equal((await sent()).at(-1).text, 'mock saw 1 photo', 'the photo reached the brain and was answered');
+  assert.equal((await sent()).at(-1).text, 'Mock saw 1 photo', 'the photo reached the brain and was answered');
   assert.equal((await sent()).at(-1).convId, miaId);
   const shot = (await mediaRows())[0];
   assert.deepEqual([shot.kind, shot.mime, shot.message_kind], ['image', 'image/jpeg', 'image']);
@@ -428,7 +428,7 @@ async function main() {
 
   await mock((src) => window.mock.receive('mia_b', '', { kind: 'video', src }), `${CDN}/tos-mock/cover.png`);
   await until('reply to the video', async () => (await sent()).length === before + 2);
-  assert.equal((await sent()).at(-1).text, 'mock saw 1 photo with 1 video frame');
+  assert.equal((await sent()).at(-1).text, 'Mock saw 1 photo with 1 video frame');
   assert.deepEqual((await mediaRows()).map((r) => [r.kind, r.message_kind]), [['image', 'image'], ['video_frame', 'video']]);
   const thumb = await fetch(`${base}/api/media/${shot.id}`, { headers: { cookie } });
   assert.deepEqual([thumb.status, thumb.headers.get('content-type')], [200, 'image/jpeg']);

@@ -156,7 +156,7 @@ async function main() {
   const t0 = Date.now();
   await mock('receive', 'Jake', 'yo how long is delivery');
   const first = (await until('reply to Jake', async () => (await sentTo(JAKE))[0]));
-  assert.equal(first.text, 'mock reply to: yo how long is delivery');
+  assert.equal(first.text, 'Mock reply to: yo how long is delivery');
   assert.equal(first.title, 'Jake');
   const took = first.at - t0;
   assert.ok(took >= 700, `the reply was typed at a human pace (took ${took} ms)`);
@@ -193,7 +193,7 @@ async function main() {
   await mock('receive', 'Riders Club', 'two-parts for everyone', { author: 'Sam' });
   await mock('receive', 'Lena', 'two-parts please');
   const two = await until('two part reply to Lena', async () => { const s = await sentTo(LENA); return s.length >= 2 ? s : null; });
-  assert.deepEqual(two.map((s) => s.text), ['hey', 'mock second part']);
+  assert.deepEqual(two.map((s) => s.text), ['Hey', 'Mock second part']);
   assert.ok(two[1].at > two[0].at, 'parts arrive in order');
   const lena = await until('Lena conversation on the server', () => conversation(LENA));
   assert.equal(lena.phone, null, 'no phone is invented for a hidden id');
@@ -203,7 +203,7 @@ async function main() {
   await mock('showDialog', 'whatsnew');
   await mock('receive', '+44 7700 900456', 'do you have the x2');
   const third = await until('reply to the unsaved number', async () => (await sentTo(UNSAVED))[0]);
-  assert.equal(third.text, 'mock reply to: do you have the x2');
+  assert.equal(third.text, 'Mock reply to: do you have the x2');
   const st3 = await mock('state');
   assert.equal(st3.dialog, null, 'the dialog was closed');
   assert.equal(st3.continueClicked, 0, 'never pressed Continue on an unknown dialog');
@@ -216,14 +216,14 @@ async function main() {
   // The server runs every text through its style rules, so take the exact wording from the queue.
   const partsOf = async (source) => { const r = (await sql('SELECT parts FROM outbox WHERE conversation_id = ? AND source = ? ORDER BY created_at DESC LIMIT 1', [jake.id, source]))[0]; return r ? JSON.parse(r.parts) : null; };
   const holding = (await until('holding line to be queued', () => partsOf('holding')))[0];
-  assert.match(holding, /let me check/);
+  assert.match(holding, /^Let me check/);
   await until('holding line to Jake', async () => (await sentTo(JAKE)).find((s) => s.text === holding));
   const card = await until('Urgent card', async () => (await api('/api/urgent')).urgent.find((u) => u.conversation_id === jake.id && String(u.question).includes('unknown-question')));
   await api(`/api/urgent/${card.id}/answer`, { body: { answer: 'fits any 135mm dropout', learn: false } });
   const answer = (await until('owner answer to be queued', () => partsOf('urgent')))[0];
   assert.match(answer, /fits any 135mm dropout/);
   await until('owner answer typed into the chat', async () => (await sentTo(JAKE)).find((s) => s.text === answer));
-  assert.deepEqual((await sentTo(JAKE)).map((s) => s.text), ['mock reply to: yo how long is delivery', holding, answer]);
+  assert.deepEqual((await sentTo(JAKE)).map((s) => s.text), ['Mock reply to: yo how long is delivery', holding, answer]);
   pass('escalated question appears in /api/urgent and the owner answer is typed into the chat');
 
   // ---- 5. never types over someone's draft ------------------------------------------------------------------------------------
@@ -235,7 +235,7 @@ async function main() {
   assert.equal((await mock('chats')).find((c) => c.jid === LENA).draft, 'half typed by the owner', 'the draft is untouched');
   await mock('setDraft', 'Lena', '');
   await sql('UPDATE outbox SET not_before = 0 WHERE id = ?', [busy.id]);
-  await until('reply to Lena once the draft is gone', async () => (await sentTo(LENA)).find((s) => s.text === 'mock reply to: what colours do you have'));
+  await until('reply to Lena once the draft is gone', async () => (await sentTo(LENA)).find((s) => s.text === 'Mock reply to: what colours do you have'));
   pass('composer with a draft is left alone (composer_busy), reply goes out once it is free');
 
   // ---- 6. groups are ignored ------------------------------------------------------------------------------------------------------
@@ -297,7 +297,7 @@ async function main() {
   // ---- 10. builds with bare message ids: identity through the bridge, then through IndexedDB ------------------------------------------------
   await mock('set', { idForm: 'bare', bridge: true });
   await mock('receive', '11122233344455@lid', 'hi from a hidden id', { title: 'Nora', phone: '447700900777' });
-  await until('reply to Nora', async () => (await sentTo('11122233344455@lid')).find((s) => s.text === 'mock reply to: hi from a hidden id'));
+  await until('reply to Nora', async () => (await sentTo('11122233344455@lid')).find((s) => s.text === 'Mock reply to: hi from a hidden id'));
   const nora = await until('Nora conversation', () => conversation('11122233344455@lid'));
   assert.equal(nora.phone, '+447700900777', 'phone behind the hidden id comes from the bridge');
   const noraMsgs = await until('Nora messages recorded', async () => { const m = await messagesOf(nora.id); return m.length >= 2 ? m : null; });
@@ -307,7 +307,7 @@ async function main() {
 
   await mock('set', { bridge: false });
   await mock('receive', '22233344455566@lid', 'hello without a bridge', { title: 'Omar', phone: '447700900888' });
-  await until('reply to Omar', async () => (await sentTo('22233344455566@lid')).find((s) => s.text === 'mock reply to: hello without a bridge'));
+  await until('reply to Omar', async () => (await sentTo('22233344455566@lid')).find((s) => s.text === 'Mock reply to: hello without a bridge'));
   const omar = await until('Omar conversation', () => conversation('22233344455566@lid'));
   assert.equal(omar.phone, '+447700900888', 'phone comes from the contact store');
   pass('bare id build without the bridge: chat id resolved from IndexedDB');
@@ -339,7 +339,7 @@ async function main() {
   assert.equal((await sentTo(MAX)).length, 0, 'the normal scan does not see a read chat it never saw change');
   await sw.evaluate(() => chrome.storage.local.set({ timing: { sweep_ms: 1000 } })); // the sweep is due now instead of in 10 minutes
   const swept = await until('the sweep answers Max', async () => (await sentTo(MAX))[0]);
-  assert.equal(swept.text, 'mock reply to: is the x5 back in stock');
+  assert.equal(swept.text, 'Mock reply to: is the x5 back in stock');
   await sw.evaluate(() => chrome.storage.local.set({ timing: null }));
   for (let i = 0; i < 6; i++) { await kick(); await sleep(700); }
   assert.equal((await sentTo(MAX)).length, 1, 'answered once');
@@ -357,7 +357,7 @@ async function main() {
     // A photo with no words. Before this the owner got an Urgent card for every one of these.
     await mock('receive', '+44 7700 900555', '', { kind: 'image', photo: true });
     const sawPhoto = await until('reply to the photo', async () => (await sentTo(PIA))[0]);
-    assert.equal(sawPhoto.text, 'mock saw 1 photo', 'the photo reached the brain and was answered');
+    assert.equal(sawPhoto.text, 'Mock saw 1 photo', 'the photo reached the brain and was answered');
     const shot = (await until('the photo to be stored', async () => { const r = await mediaRows(PIA); return r.length ? r : null; }))[0];
     assert.deepEqual([shot.kind, shot.mime, shot.message_kind, shot.body], ['image', 'image/jpeg', 'image', '[sent a photo]']);
     assert.ok(shot.data.length <= 250_000, `under the size cap (${shot.data.length} characters of base64)`);
@@ -376,7 +376,7 @@ async function main() {
     // A video: one frame (its preview picture) goes along, and the unclear path lands in Urgent with a description.
     await mock('receive', '+44 7700 900555', 'unclear-photo what is wrong with it', { kind: 'video', photo: true });
     const holding = await until('holding line for the video', async () => (await sentTo(PIA))[1]);
-    assert.equal(holding.text, 'let me check that for you');
+    assert.equal(holding.text, 'Let me check that for you');
     const frames = await mediaRows(PIA);
     assert.deepEqual(frames.map((f) => [f.kind, f.message_kind]), [['image', 'image'], ['video_frame', 'video']]);
     const card = (await api('/api/urgent')).urgent.find((u) => u.conversation_id === piaConv.id);

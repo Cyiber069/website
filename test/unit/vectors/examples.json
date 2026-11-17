@@ -16,9 +16,9 @@
    ],
    "action": "reply",
    "parts": [
-    "hey broo",
-    "the 5000w does about 50mph on the 72v battery 🔥",
-    "private land only though as its not road legal"
+    "Hey broo",
+    "The 5000W does about 50mph on the 72V battery 🔥",
+    "Private land only though, as it's not road legal"
    ]
   },
   {
@@ -33,8 +33,8 @@
    ],
    "action": "reply",
    "parts": [
-    "hey mate yeah we do",
-    "the 72v 40ah is £649 and its in stock"
+    "Hey mate, yeah we do",
+    "The 72V 40Ah is £649 and it's in stock"
    ]
   },
   {
@@ -98,9 +98,9 @@
    ],
    "action": "reply",
    "parts": [
-    "no worries",
-    "52v gives a bit more speed and pull than 48v on the same motor",
-    "is it mostly for road or trails? and whats your budget"
+    "No worries",
+    "52V gives a bit more speed and pull than 48V on the same motor",
+    "Is it mostly for road or trails? And what's your budget?"
    ]
   },
   {
@@ -115,7 +115,7 @@
    ],
    "action": "reply",
    "parts": [
-    "which kit are you after? the 250w road legal one or one of the bigger ones"
+    "Which kit are you after? The 250W road legal one or one of the bigger ones?"
    ]
   },
   {
@@ -188,7 +188,7 @@
    ],
    "action": "reply",
    "parts": [
-    "Sorry I can't play voice notes on here",
+    "Sorry, I can't play voice notes on here",
     "Can you type it out for me?"
    ]
   },
@@ -207,7 +207,7 @@
     "opt_out": true
    },
    "parts": [
-    "no worries you won't hear from us again"
+    "No worries, you won't hear from us again"
    ]
   },
   {
@@ -225,8 +225,8 @@
     "asked_if_bot": true
    },
    "parts": [
-    "yeah this is the ACX AI assistant",
-    "the team can jump in any time if you want a person. what did you need?"
+    "Yeah, this is the ACX AI assistant",
+    "The team can jump in any time if you want a person. What did you need?"
    ]
   },
   {
@@ -258,9 +258,9 @@
    ],
    "action": "reply",
    "parts": [
-    "haha can't help with that one bro",
-    "anything over 250w or 15.5mph is private land only by law",
-    "if you want road legal the 250w kit is the one"
+    "Haha, can't help with that one bro",
+    "Anything over 250W or 15.5mph is private land only by law",
+    "If you want road legal, the 250W kit is the one"
    ]
   },
   {
@@ -293,8 +293,8 @@
    ],
    "action": "reply",
    "parts": [
-    "yeah we do",
-    "its £25 and takes 3 to 5 working days"
+    "Yeah we do",
+    "It's £25 and takes 3 to 5 working days"
    ]
   },
   {
@@ -310,7 +310,7 @@
    "action": "escalate",
    "category": "discount_price",
    "parts": [
-    "good shout bro let me ask the team and come back to you"
+    "Good shout bro, let me ask the team and come back to you"
    ]
   },
   {
@@ -350,15 +350,15 @@
    "register": "hype or casual",
    "asked": "u a bot?",
    "parts": [
-    "yeah this is the ACX AI assistant",
-    "the team can jump in whenever you want a person"
+    "Yeah, this is the ACX AI assistant",
+    "The team can jump in whenever you want a person"
    ]
   },
   {
    "register": "neutral",
    "asked": "Am I talking to a real person?",
    "parts": [
-    "No this is ACX's AI assistant",
+    "No, this is ACX's AI assistant",
     "The team can take over any time if you'd rather talk to a person. What can I help with?"
    ]
   },
@@ -373,7 +373,7 @@
    "register": "angry",
    "asked": "IS THIS A BOT?? get me a human",
    "parts": [
-    "Yes this is ACX's AI assistant",
+    "Yes, this is ACX's AI assistant",
     "I've asked the team to take over this chat now"
    ]
   }

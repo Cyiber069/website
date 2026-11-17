@@ -48,8 +48,8 @@ Return one JSON object with one field, text.`;
 /** The fixed line used when the model is not available or its text fails a check. */
 export function fallbackFollowUp(input: Pick<FollowUpInput, 'product' | 'link' | 'tone'>): string {
   const name = input.product?.trim() ? `the ${input.product.trim().replace(/^the\s+/i, '')}` : 'that one';
-  const hey = input.tone.register === 'formal' ? 'Hi' : 'hey';
-  return `${hey} just checking in on ${name}. any questions about it just ask ${input.link}`;
+  const hey = input.tone.register === 'formal' ? 'Hi' : 'Hey';
+  return `${hey}, just checking in on ${name}. Any questions about it, just ask ${input.link}`;
 }
 
 /** Run the checks and the style rules on a candidate. Returns the parts, or null when it may not be sent. */

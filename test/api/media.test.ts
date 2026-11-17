@@ -13,7 +13,7 @@ describe('a photo from a customer', () => {
   it('is stored, reaches the brain and gets answered instead of going to the owner', async () => {
     const r = await inbound('whatsapp', wa(), [photoMsg('p1')]);
     expect(r.action).toBe('reply');
-    expect(r.jobs[0]!.parts).toEqual(['mock saw 1 photo']);
+    expect(r.jobs[0]!.parts).toEqual(['Mock saw 1 photo']);
     expect(r.queries).toBeLessThanOrEqual(LIMIT);
 
     const rows = await mediaOf(r.conversation_id!);
@@ -31,11 +31,11 @@ describe('a photo from a customer', () => {
 
   it('passes one frame of a video as a video frame, and at most 3 pictures', async () => {
     const one = await inbound('whatsapp', wa(), [photoMsg('v1', '', PNG_B64, 'video')]);
-    expect(one.jobs[0]!.parts).toEqual(['mock saw 1 photo with 1 video frame']);
+    expect(one.jobs[0]!.parts).toEqual(['Mock saw 1 photo with 1 video frame']);
     expect((await mediaOf(one.conversation_id!))[0]).toMatchObject({ kind: 'video_frame', mime: 'image/png' });
 
     const many = await inbound('whatsapp', wa(), [photoMsg('a'), photoMsg('b'), photoMsg('c'), photoMsg('d', 'which one fits')]);
-    expect(many.jobs[0]!.parts).toEqual(['mock saw 3 photos']);
+    expect(many.jobs[0]!.parts).toEqual(['Mock saw 3 photos']);
     expect(await mediaOf(many.conversation_id!)).toHaveLength(3);
     expect(many.queries).toBeLessThanOrEqual(LIMIT);
   });
@@ -43,7 +43,7 @@ describe('a photo from a customer', () => {
   it('takes the unclear photo path: the owner gets a description and the customer a confident holding line', async () => {
     const r = await inbound('whatsapp', wa(), [photoMsg('u1', 'unclear-photo does it fit')]);
     expect(r.action).toBe('escalate');
-    expect(r.jobs[0]!.parts).toEqual(['let me check that for you']);
+    expect(r.jobs[0]!.parts).toEqual(['Let me check that for you']);
     const res = await api('/api/urgent');
     expect(res.queries).toBeLessThanOrEqual(LIMIT);
     const item = res.data.urgent.find((u: any) => u.conversation_id === r.conversation_id);
@@ -60,7 +60,7 @@ describe('a photo from a customer', () => {
     const first = await inbound('whatsapp', t, [photoMsg('q1')]);
     const reply = first.jobs[0]!.parts[0]!;
     const second = await inbound('whatsapp', t, [photoMsg('q1'), { external_id: 'o1', direction: 'out', body: reply }, { external_id: 'q2', direction: 'in', body: 'ok and delivery' }]);
-    expect(second.jobs[0]!.parts[0]).toContain('mock reply to: ok and delivery');
+    expect(second.jobs[0]!.parts[0]).toContain('Mock reply to: ok and delivery');
   });
 });
 

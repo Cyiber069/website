@@ -31,50 +31,50 @@ export function mockDecide(input: DecideInput, tone: ToneProfile): Decision {
     const saw = `mock saw ${media.length} photo${media.length === 1 ? '' : 's'}${frames ? ` with ${frames} video frame${frames === 1 ? '' : 's'}` : ''}`;
     if (text.includes('unclear-photo')) {
       return {
-        ...base, action: 'escalate', confidence: 0.9, parts: ['let me check that for you'], note: `${saw}, unclear`,
+        ...base, action: 'escalate', confidence: 0.9, parts: ['Let me check that for you'], note: `${saw}, unclear`,
         escalate: { question: 'The photo is too dark to make out (mock). The customer wants to know if it fits.', reason: 'The photo is unclear (mock)', category: 'other' },
       };
     }
-    return { ...base, parts: [saw], note: saw };
+    return { ...base, parts: [`M${saw.slice(1)}`], note: saw };
   }
   // The owner explained the situation on an Urgent card (src/brain/note.ts). Every later reply in the chat follows it too.
   const guided = input.context_notes.some((n) => n.startsWith('Owner guidance'));
   if (guided) {
-    return { ...base, parts: [`mock reply following owner guidance to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock owner guidance' };
+    return { ...base, parts: [`Mock reply following owner guidance to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock owner guidance' };
   }
   if (text.includes('warranty on the moon') || text.includes('unknown-question')) {
     return {
-      ...base, action: 'escalate', confidence: 0.2, parts: ['good question let me check that for you'],
+      ...base, action: 'escalate', confidence: 0.2, parts: ['Good question, let me check that for you'],
       escalate: { question: last?.body ?? '', reason: 'Not in the knowledge base (mock)', category: 'unknown' },
     };
   }
   if (/^\s*stop\s*$/.test(text) || text.includes('stop messaging')) {
-    return { ...base, parts: ['no worries you will not hear from us again'], flags: { ...base.flags, opt_out: true } };
+    return { ...base, parts: ['No worries, you will not hear from us again'], flags: { ...base.flags, opt_out: true } };
   }
   if (text.includes('are you a bot')) {
-    return { ...base, parts: ['this is the ACX assistant. the team can jump in whenever you want'], flags: { ...base.flags, asked_if_bot: true } };
+    return { ...base, parts: ['This is the ACX assistant. The team can jump in whenever you want'], flags: { ...base.flags, asked_if_bot: true } };
   }
   // The pipeline saw a code request with no code in it (src/discounts/agent.ts ASK_FOR_CODE_NOTE).
   if (input.context_notes.some((n) => n.startsWith('The customer wants their own discount code'))) {
-    return { ...base, parts: ['nice one what do you want your code to be'], note: 'mock asks for the code' };
+    return { ...base, parts: ['Nice one, what do you want your code to be?'], note: 'mock asks for the code' };
   }
   // (The draft is only shaky, it never says "not sure": the never sound unsure guard would turn that into a holding line.)
-  if (text.includes('lowconf')) return { ...base, confidence: 0.3, parts: ['i think it is about 3 days'] };
+  if (text.includes('lowconf')) return { ...base, confidence: 0.3, parts: ['I think it is about 3 days'] };
   // The agent sounding unsure (owner rule test): the guard in rules.ts turns this into a holding line and an Urgent item.
   if (text.includes('unsure-reply')) return { ...base, parts: ["I'm not sure about that one"] };
   // Selling: a recommendation with the product link, or the close.
-  if (text.includes('shop-ready')) return { ...base, parts: [`this is the one you can grab it here ${MOCK_PRODUCT.link}`] };
-  if (text.includes('shop-interested')) return { ...base, parts: [`the ${MOCK_PRODUCT.title} fits best for that ${MOCK_PRODUCT.link}`] };
-  if (text.includes('shop-browse')) return { ...base, parts: ['nice what bike are you fitting it to'] };
+  if (text.includes('shop-ready')) return { ...base, parts: [`This is the one, you can grab it here ${MOCK_PRODUCT.link}`] };
+  if (text.includes('shop-interested')) return { ...base, parts: [`The ${MOCK_PRODUCT.title} fits best for that ${MOCK_PRODUCT.link}`] };
+  if (text.includes('shop-browse')) return { ...base, parts: ['Nice, what bike are you fitting it to?'] };
   if (text.includes('ignore-me')) return { ...base, action: 'ignore', note: 'mock ignore' };
-  if (text.includes('two-parts')) return { ...base, parts: ['hey', 'mock second part'] };
+  if (text.includes('two-parts')) return { ...base, parts: ['Hey', 'Mock second part'] };
   if (text.includes('dashes')) return { ...base, parts: ['Sure \u2014 delivery is 2-4 days, and it is free - no worries!'] };
-  return { ...base, parts: [`mock reply to: ${(last?.body ?? '').slice(0, 60)}`] };
+  return { ...base, parts: [`Mock reply to: ${(last?.body ?? '').slice(0, 60)}`] };
 }
 
 export function mockPolish(input: PolishInput): PolishResult {
   return {
-    parts: [`polished: ${input.owner_answer}`],
+    parts: [`Polished: ${input.owner_answer}`],
     learned: { title: input.question.slice(0, 80), content: `Q: ${input.question}\nA: ${input.owner_answer}` },
     usage: null,
   };

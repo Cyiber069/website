@@ -8,8 +8,10 @@ import {
   looksLikeOptOut, numbersIn, ownerRules, renderConversation, unsupportedNumbers, validateDecision, type PromptKnowledge, type RawDecision,
 } from '../../src/brain/prompt';
 import { normalizePlaceholders, sanitizeTemplate } from '../../src/brain/recovery';
-import { botLines, enforceDecision, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, protectedCodes, seriousTopic } from '../../src/brain/rules';
-import { violations } from '../../src/brain/style';
+import { botLines, confidentHoldingLine, enforceDecision, holdingLine, knowledgeQuery, mediaHoldingLine, pendingInbound, promptToneNotes, protectedCodes, seriousTopic } from '../../src/brain/rules';
+import { fallbackFollowUp } from '../../src/brain/followup';
+import { finalizeParts, violations } from '../../src/brain/style';
+import { HOLDING_CODE_LINE } from '../../src/discounts/rules';
 import { analyzeTone, mirrorPlan } from '../../src/brain/tone';
 import type { DecideInput, Env, HistoryMessage, PolishInput, Settings } from '../../src/types';
 
@@ -63,7 +65,7 @@ describe('decide prompt', () => {
     const tone = JSON.parse(/<tone>(.*)<\/tone>/.exec(a.user)![1]!);
     expect(tone).toMatchObject({ greeting: 'yo', address_terms: ['bro'], lowercase: true });
     const plan = JSON.parse(/<mirror_plan>(.*)<\/mirror_plan>/.exec(a.user)![1]!);
-    expect(plan).toMatchObject({ address: 'bro', lowercase: true, serious: false });
+    expect(plan).toMatchObject({ address: 'bro', lowercase: false, serious: false }); // the customer writes lower case, the reply never does
     expect(b.user).toContain('<channel>gmail</channel>');
     expect(b.user).toContain('<limits max_chars="600" max_sentences="6" max_parts="1"/>');
     expect(b.user).toContain('email subject: Returns');
@@ -90,6 +92,8 @@ describe('decide prompt', () => {
   it('turns the voice settings into owner rules in the second block', () => {
     expect(ownerRules(settings())).toBe('');
     expect(ownerRules(settings({ commas: 'none' }))).toContain('Do not use commas at all');
+    expect(ownerRules(settings({ commas: 'normal' }))).toBe('');   // normal is what the fixed instructions already ask for
+    expect(ownerRules(settings({ mirror_level: 'light' }))).not.toMatch(/lower case/i);
     expect(ownerRules(settings({ emojis: 'never' }))).toContain('Never use emoji');
     expect(ownerRules(settings({ mirror_level: 'off' }))).toContain('Mirroring is switched off');
     expect(ownerRules(settings({ banned_phrases: ['no worries', 'awesome'] }))).toContain('Never use these phrases: no worries | awesome');
@@ -112,6 +116,27 @@ describe('decide prompt', () => {
     expect(text).toMatch(/win over store text/);
     // 7 voice examples, 6 selling examples and 1 photo example.
     expect((text.match(/<example>/g) ?? []).length).toBe(14);
+  });
+
+  it('asks for proper writing and shows it in every example', () => {
+    const text = decideInstructions(settings());
+    expect(text).toMatch(/Every message and every sentence starts with a capital letter, I is always a capital/);
+    expect(text).toMatch(/Use commas where a careful writer would/);
+    expect(text).toMatch(/What you never mirror: writing all in lower case or with no punctuation/);
+    expect(text).not.toMatch(/lower case when the plan says/);
+    // No plan in an example tells the model to write lower case, whatever the customer's tone line says.
+    expect(text.match(/^mirror_plan: .*$/gm)!.length).toBe(14);
+    for (const line of text.match(/^mirror_plan: .*$/gm)!) expect(line).toContain('lowercase false');
+    // Every message in every example reply starts with a capital, and so does each sentence in it.
+    const outputs = [...text.matchAll(/<output>\n(\{.*\})\n<\/output>/g)].map((m) => JSON.parse(m[1]!) as { parts: string[] });
+    expect(outputs).toHaveLength(14);
+    for (const part of outputs.flatMap((o) => o.parts)) {
+      expect(part, part).toMatch(/^[\p{Lu}\d]/u);
+      for (const sentence of part.split(/(?<=[.!?])\s+/)) expect(sentence, part).toMatch(/^[\p{Lu}\d]/u);
+      expect(part, part).not.toMatch(/(?<![\p{L}'])i(?![\p{L}])/u);
+    }
+    // Lines the shop is quoted as having sent earlier are written properly too.
+    for (const quoted of text.match(/shop "[^"]+"/g)!) expect(quoted).toMatch(/^shop "\p{Lu}/u);
   });
 
   it('follows its own style rules: no dashes and no markdown anywhere in the instructions', () => {
@@ -275,10 +300,10 @@ describe('enforceDecision', () => {
     const lied = enforce(raw({ parts: ["haha no I'm a real person", 'what do you need'], flags: { opt_out: false, asked_if_bot: true, needs_human: false } }), asked);
     expect(lied.parts.join(' ')).not.toMatch(/real person/i);
     // What was left did not answer the question honestly, so the fixed honest lines go out instead.
-    expect(lied.parts).toEqual(['this is the ACX AI assistant', 'the team can jump in whenever you want a person']);
+    expect(lied.parts).toEqual(['This is the ACX AI assistant', 'The team can jump in whenever you want a person']);
     const onlyLie = enforce(raw({ parts: ['I am not a bot mate'], flags: { opt_out: false, asked_if_bot: true, needs_human: false } }), asked);
     expect(onlyLie.action).toBe('reply');
-    expect(onlyLie.parts).toEqual(['this is the ACX AI assistant', 'the team can jump in whenever you want a person']);
+    expect(onlyLie.parts).toEqual(['This is the ACX AI assistant', 'The team can jump in whenever you want a person']);
     const unprompted = enforce(raw({ parts: ["I'm a human and delivery is 2 to 4 days"] }), ask);
     expect(unprompted.action).toBe('escalate');
     expect(unprompted.flags.needs_human).toBe(true);
@@ -297,7 +322,7 @@ describe('enforceDecision', () => {
     expect(missed.parts.join(' ')).toMatch(/AI assistant/);
     // An honest answer in the model's own words is left alone.
     const honest = enforce(raw({ parts: ['yeah this is the ACX AI assistant', 'the team can jump in any time if you want a person. what did you need?'] }), [inMsg('wait is this a bot lol')]);
-    expect(honest.parts).toEqual(['yeah this is the ACX AI assistant', 'the team can jump in any time if you want a person. what did you need?']);
+    expect(honest.parts).toEqual(['Yeah this is the ACX AI assistant', 'The team can jump in any time if you want a person. What did you need?']); // only the capitals are added
     expect(honest.action).toBe('reply');
 
     const s = settings();
@@ -307,7 +332,7 @@ describe('enforceDecision', () => {
     const angry = enforce(raw({ parts: ['sorry about that'] }), [inMsg('IS THIS A BOT?? this is a joke, absolute scam, get me a human')]);
     expect(angry.action).toBe('escalate');
     expect(angry.escalate!.category).toBe('human_request');
-    expect(angry.parts).toEqual(["Yes this is ACX's AI assistant. I've asked the team to take over this chat now"]);
+    expect(angry.parts).toEqual(["Yes, this is ACX's AI assistant. I've asked the team to take over this chat now"]);
   });
 
   it('asks for one rewrite on the first pass instead of patching, and patches on the final pass', () => {
@@ -317,7 +342,7 @@ describe('enforceDecision', () => {
     const dodge = raw({ parts: ['haha what do you need'] });
     const first = enforceDecision(dodge, { ...ctx, final: false });
     expect(first.retry.join(' ')).toMatch(/asked if this is a bot/);
-    expect(first.parts).toEqual(['haha what do you need']); // untouched, waiting for the rewrite
+    expect(first.parts).toEqual(['Haha what do you need']); // untouched, waiting for the rewrite
     expect(enforceDecision(dodge, ctx).retry).toEqual([]);
 
     const ask = [inMsg('hi is the 72v in stock')];
@@ -343,8 +368,8 @@ describe('enforceDecision', () => {
   it('keeps hyphenated part numbers that appear in the knowledge', () => {
     expect(protectedCodes('Mid drive kit bbs02-750 and ACX-72V. Fits 26-inch wheels, 2-4 days, plug-and-play.', ['you want the bbs02-750 for a 26-inch wheel'])).toEqual(['bbs02-750']);
     const d = enforce(raw({ parts: ['you want the bbs02-750 kit'] }), [inMsg('which mid drive')], settings(), {}, 'Mid drive kit bbs02-750');
-    expect(d.parts).toEqual(['you want the bbs02-750 kit']);
-    expect(enforce(raw({ parts: ['its a 26-inch plug-and-play kit'] }), [inMsg('which one')], settings(), {}, 'a 26-inch plug-and-play kit').parts).toEqual(['its a 26 inch plug and play kit']);
+    expect(d.parts).toEqual(['You want the bbs02-750 kit']);
+    expect(enforce(raw({ parts: ['its a 26-inch plug-and-play kit'] }), [inMsg('which one')], settings(), {}, 'a 26-inch plug-and-play kit').parts).toEqual(['Its a 26 inch plug and play kit']);
   });
 
   it('hands the bot question to the owner when the policy says so', () => {
@@ -367,7 +392,7 @@ describe('enforceDecision', () => {
   it('keeps holding lines short, factless and optional', () => {
     const esc = { question: 'q', reason: 'r', category: 'unknown' };
     const fine = enforce(raw({ action: 'escalate', escalate: esc, parts: ['good question let me check that for you'] }), ask);
-    expect(fine.parts).toEqual(['let me check that for you']); // "good question" is a stock phrase and goes
+    expect(fine.parts).toEqual(['Let me check that for you']); // "good question" is a stock phrase and goes
     const sneaky = enforce(raw({ action: 'escalate', escalate: esc, parts: ['i think it is about 12 days but let me check'] }), ask);
     expect(sneaky.parts).toEqual([holdingLine('en')]);
     const off = enforce(raw({ action: 'escalate', escalate: esc, parts: ['let me check'] }), ask, settings({ holding_reply: false }));
@@ -696,6 +721,51 @@ describe('callJson with Workers AI', () => {
     const { result, calls } = await run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', [new Error("JSON Mode couldn't be met"), { response: '{"ok":true}' }]);
     expect((await result).data).toEqual({ ok: true });
     expect(calls[1]!.body.response_format).toBeUndefined();
+  });
+});
+
+describe('lines written in code', () => {
+  const casual = analyzeTone([inMsg('yo bro u there')]).profile;
+  const neutral = analyzeTone([inMsg('Hello, is anyone there?')]).profile;
+  const formal = analyzeTone([inMsg('Good morning. May I ask whether I am speaking with a person or an automated system? Kind regards, David')]).profile;
+  const angry = analyzeTone([inMsg('this is a joke, absolute scam, refund me now')]).profile;
+
+  it('all start with a capital and pass the style rules unchanged', () => {
+    const lines: string[] = [HOLDING_CODE_LINE];
+    for (const lang of ['en', 'es', 'fr', 'de', 'it', 'nl', 'pt', 'pl']) lines.push(holdingLine(lang));
+    lines.push(mediaHoldingLine(['voice'], 'en'), mediaHoldingLine(['image'], 'en'));
+    for (const tone of [casual, neutral, formal, angry]) {
+      for (const seed of ['a', 'b', 'c', 'd', 'e', 'f']) lines.push(confidentHoldingLine(tone, seed));
+      lines.push(...botLines(tone, settings()));
+    }
+    for (const line of lines) {
+      expect(line, line).toMatch(/^\p{Lu}/u);
+      for (const sentence of line.split(/(?<=[.!?])\s+/)) expect(sentence, line).toMatch(/^\p{Lu}/u);
+      expect(violations(line), line).toEqual([]);
+      // The sanitizer has nothing to add, apart from the final full stop of a chat message.
+      if (line === holdingLine('pl')) continue;   // checked with its own language below
+      expect(finalizeParts([line], { voice: DEFAULT_SETTINGS.voice, tone: casual, channel: 'whatsapp', asked_if_bot: true }), line).toEqual([line.replace(/\.$/, '')]);
+    }
+    expect(mediaHoldingLine(['voice'], 'en')).toBe("Sorry, I can't play voice notes on here. Can you type it out for me?");
+    expect(botLines(casual, settings())).toEqual(['This is the ACX AI assistant', 'The team can jump in whenever you want a person']);
+  });
+
+  it('keeps the Polish holding line as it is: i is a word there', () => {
+    const polish = { ...casual, language: 'pl' };
+    expect(finalizeParts([holdingLine('pl')], { voice: DEFAULT_SETTINGS.voice, tone: polish, channel: 'whatsapp' })).toEqual(['Sprawdzę to i dam znać']);
+  });
+
+  it('writes the follow up fallback properly', () => {
+    const link = 'https://acxebikes.com/products/acx-2000w-bundle';
+    expect(fallbackFollowUp({ product: 'ACX 2000w bundle', link, tone: casual })).toBe(`Hey, just checking in on the ACX 2000w bundle. Any questions about it, just ask ${link}`);
+    expect(fallbackFollowUp({ product: null, link, tone: formal })).toBe(`Hi, just checking in on that one. Any questions about it, just ask ${link}`);
+  });
+
+  it('the mock brain writes properly too', () => {
+    const tone = analyzeTone([]).profile;
+    for (const text of ['yo how long is delivery', 'warranty on the moon', 'stop', 'are you a bot', 'lowconf', 'shop-ready', 'shop-interested', 'shop-browse', 'two-parts', 'dashes']) {
+      for (const part of mockDecide(input([inMsg(text)]), tone).parts) expect(part, text).toMatch(/^\p{Lu}/u);
+    }
   });
 });
 

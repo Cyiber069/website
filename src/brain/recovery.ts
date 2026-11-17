@@ -102,7 +102,7 @@ export async function draftRecoveryTemplate(env: Env, roughIn: string | { rough:
     // Deterministic stand in for tests: the owner's words with the usual variables around them.
     mock: () => {
       let t = normalizePlaceholders(rough).replace(/\s+/g, ' ').trim();
-      if (!t.includes('{first_name}')) t = `hey {first_name} ${t}`;
+      if (!t.includes('{first_name}')) t = `Hey {first_name} ${t}`;
       if (!t.includes('{checkout_link}')) t = `${t} {checkout_link}`;
       return { template: t };
     },
@@ -125,15 +125,16 @@ function fill(template: string, person: RecoveryPerson): string {
   });
 }
 
-const GREETINGS = ['hey', 'hi', 'hello', 'hiya'];
+const GREETINGS = ['Hey', 'Hi', 'Hello', 'Hiya'];
 
 /** Deterministic variation used in mock mode: rotate the greeting word. */
 function mockVariant(text: string, i: number): string {
   if (i === 0) return text;
   const m = /^(hey|hi|hello|hiya)\b/i.exec(text);
   if (!m) return `${GREETINGS[i % GREETINGS.length]} ${text}`;
-  const next = GREETINGS[(GREETINGS.indexOf(m[1]!.toLowerCase()) + i) % GREETINGS.length]!;
-  return (m[1]![0] === m[1]![0]!.toUpperCase() ? next[0]!.toUpperCase() + next.slice(1) : next) + text.slice(m[1]!.length);
+  const word = m[1]!;
+  const next = GREETINGS[(GREETINGS.findIndex((g) => g.toLowerCase() === word.toLowerCase()) + i) % GREETINGS.length]!;
+  return (word[0] === word[0]!.toUpperCase() ? next : next.toLowerCase()) + text.slice(word.length);
 }
 
 const VARIANTS_SCHEMA = {
@@ -228,9 +229,10 @@ export async function testBrain(env: Env): Promise<BrainTestResult> {
       user: 'A customer just wrote: "yo is anyone there". Reply with one short friendly line that says you are here and asks what they need. State no facts about products or delivery.',
       schema: { type: 'object', additionalProperties: false, properties: { reply: { type: 'string' } }, required: ['reply'] },
       maxTokens: 1500,
-      mock: () => ({ reply: 'yo yeah we are here what do you need' }),
+      mock: () => ({ reply: 'Yo, yeah we are here. What do you need?' }),
     });
-    const tone: ToneProfile = { ...FIRST_CONTACT, lowercase: true, punctuation: 'none', greeting: 'yo', emoji_rate: 0 };
+    // The pretend customer greets with yo and uses no emoji. The sample still starts with a capital, like every reply.
+    const tone: ToneProfile = { ...FIRST_CONTACT, punctuation: 'none', greeting: 'yo', emoji_rate: 0 };
     const sample = sanitizeReply(typeof res.data?.reply === 'string' ? res.data.reply : '', { voice: settings.voice, tone, channel: 'whatsapp' });
     if (!sample) return { ok: false, provider, model: res.usage?.model ?? model, ms: Date.now() - started, sample: '', error: 'The model answered but the reply was empty.' };
     return { ok: true, provider, model: res.usage?.model ?? model, ms: Date.now() - started, sample };

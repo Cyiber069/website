@@ -57,6 +57,15 @@
    "address_terms": [
     "bro"
    ]
+  },
+  "polish": {
+   "register": "casual",
+   "mood": "neutral",
+   "lowercase": true,
+   "elongation": 0,
+   "emoji_rate": 0,
+   "punctuation": "none",
+   "language": "pl"
   }
  },
  "cases": [
@@ -67,6 +76,20 @@
    ],
    "tone": "neutral",
    "opts": {},
+   "expected": [
+    "Sure, delivery is 2 to 4 days, and it is free. No worries!"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S01n em dash, range, Oxford comma, spaced hyphen (commas none)",
+   "input": [
+    "Sure \u2014 delivery is 2-4 days, and it is free - no worries!"
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
    "expected": [
     "Sure delivery is 2 to 4 days and it is free. No worries!"
    ],
@@ -288,7 +311,7 @@
     ]
    },
    "expected": [
-    "you want the acx-bbs-72 kit"
+    "You want the acx-bbs-72 kit"
    ],
    "flags": {}
   },
@@ -300,7 +323,7 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "you want the bbs02 750 kit"
+    "You want the bbs02 750 kit"
    ],
    "flags": {}
   },
@@ -312,17 +335,31 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "sound"
+    "Sound"
    ],
    "flags": {}
   },
   {
-   "name": "S22 thousands and decimals survive, comma before and goes",
+   "name": "S22 thousands and decimals survive, comma before and stays",
    "input": [
     "The 5000W bundle is \u00a31,299.00, and the battery is \u00a3649."
    ],
    "tone": "neutral",
    "opts": {},
+   "expected": [
+    "The 5000W bundle is \u00a31,299.00, and the battery is \u00a3649"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S22n thousands and decimals survive, comma before and goes (commas none)",
+   "input": [
+    "The 5000W bundle is \u00a31,299.00, and the battery is \u00a3649."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
    "expected": [
     "The 5000W bundle is \u00a31,299.00 and the battery is \u00a3649"
    ],
@@ -341,84 +378,196 @@
    "flags": {}
   },
   {
-   "name": "S24 greeting comma and comma splice",
+   "name": "S23n a real list loses its commas too (commas none)",
+   "input": [
+    "The kit comes with the motor, controller, display and throttle."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
+    "The kit comes with the motor controller display and throttle"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S24 greeting comma and comma splice stay as written",
    "input": [
     "Hey bro, yeah we do, it ships tomorrow."
    ],
    "tone": "casual",
    "opts": {},
    "expected": [
-    "hey bro yeah we do. it ships tomorrow"
+    "Hey bro, yeah we do, it ships tomorrow"
    ],
    "flags": {}
   },
   {
-   "name": "S25 trailing address term",
+   "name": "S24n greeting comma and comma splice (commas none)",
+   "input": [
+    "Hey bro, yeah we do, it ships tomorrow."
+   ],
+   "tone": "casual",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
+    "Hey bro yeah we do. It ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S25 comma before a trailing address term stays",
    "input": [
     "no worries, mate"
    ],
    "tone": "casual",
    "opts": {},
    "expected": [
-    "no worries mate"
+    "No worries, mate"
    ],
    "flags": {}
   },
   {
-   "name": "S26 dependent clause comma",
+   "name": "S25n trailing address term (commas none)",
+   "input": [
+    "no worries, mate"
+   ],
+   "tone": "casual",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
+    "No worries mate"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S26 dependent clause comma stays",
    "input": [
     "If it is in stock, it ships the same day."
    ],
    "tone": "neutral",
    "opts": {},
    "expected": [
+    "If it is in stock, it ships the same day"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S26n dependent clause comma (commas none)",
+   "input": [
+    "If it is in stock, it ships the same day."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
     "If it is in stock it ships the same day"
    ],
    "flags": {}
   },
   {
-   "name": "S27 opener plus two clauses",
+   "name": "S27 opener plus two clauses stay as written",
    "input": [
     "Sorry about that, I will chase it now, you should hear back today."
    ],
    "tone": "neutral",
    "opts": {},
    "expected": [
+    "Sorry about that, I will chase it now, you should hear back today"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S27n opener plus two clauses (commas none)",
+   "input": [
+    "Sorry about that, I will chase it now, you should hear back today."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
     "Sorry about that I will chase it now. You should hear back today"
    ],
    "flags": {}
   },
   {
-   "name": "S28 which clause",
+   "name": "S28 which clause keeps its commas",
    "input": [
     "The 72v, which is the big one, is in stock."
    ],
    "tone": "neutral",
    "opts": {},
    "expected": [
+    "The 72v, which is the big one, is in stock"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S28n which clause (commas none)",
+   "input": [
+    "The 72v, which is the big one, is in stock."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
     "The 72v which is the big one is in stock"
    ],
    "flags": {}
   },
   {
-   "name": "S29 yes comma",
+   "name": "S29 yes comma stays",
    "input": [
     "Yes, we do."
    ],
    "tone": "neutral",
    "opts": {},
    "expected": [
+    "Yes, we do"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S29n yes comma (commas none)",
+   "input": [
+    "Yes, we do."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
     "Yes we do"
    ],
    "flags": {}
   },
   {
-   "name": "S30 name after thanks",
+   "name": "S30 comma after thanks and a name stays",
    "input": [
     "Thanks Sam, it went out today."
    ],
    "tone": "neutral",
    "opts": {},
+   "expected": [
+    "Thanks Sam, it went out today"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S30n name after thanks (commas none)",
+   "input": [
+    "Thanks Sam, it went out today."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
    "expected": [
     "Thanks Sam it went out today"
    ],
@@ -434,7 +583,7 @@
     "commas": "none"
    },
    "expected": [
-    "yeah we have 48v 52v 60v and 72v all in stock"
+    "Yeah we have 48v 52v 60v and 72v all in stock"
    ],
    "flags": {}
   },
@@ -447,6 +596,20 @@
    "opts": {},
    "expected": [
     "It is \u00a31,299, free delivery and a 2 year warranty"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S32n price then short list (commas none)",
+   "input": [
+    "It is \u00a31,299, free delivery and a 2 year warranty."
+   ],
+   "tone": "neutral",
+   "opts": {
+    "commas": "none"
+   },
+   "expected": [
+    "It is \u00a31,299 free delivery and a 2 year warranty"
    ],
    "flags": {}
   },
@@ -470,7 +633,7 @@
    "tone": "formal",
    "opts": {},
    "expected": [
-    "Good afternoon, thank you for your message. The 250W kit is road legal in the UK and it is limited to 15.5mph."
+    "Good afternoon, thank you for your message. The 250W kit is road legal in the UK, and it is limited to 15.5mph."
    ],
    "flags": {}
   },
@@ -554,7 +717,7 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "it's \"plug and play\"... pretty much"
+    "It's \"plug and play\"... pretty much"
    ],
    "flags": {}
   },
@@ -668,7 +831,7 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "haha no i'm a real person mate"
+    "Haha no I'm a real person mate"
    ],
    "flags": {
     "blocked": "claims_human"
@@ -682,7 +845,7 @@
    "tone": "neutral",
    "opts": {},
    "expected": [
-    "It's not just a kit. It's a whole new ride"
+    "It's not just a kit, it's a whole new ride"
    ],
    "flags": {
     "regen": [
@@ -707,30 +870,30 @@
    }
   },
   {
-   "name": "S53 lower case mirror",
+   "name": "S53 capitals are kept for a lower case customer",
    "input": [
     "Hey bro! Yeah the 72V does about 50mph. Its \u00a31,299 with the battery."
    ],
    "tone": "casual",
    "opts": {},
    "expected": [
-    "hey bro! yeah the 72v does about 50mph. its \u00a31,299 with the battery"
+    "Hey bro! Yeah the 72V does about 50mph. Its \u00a31,299 with the battery"
    ],
    "flags": {}
   },
   {
    "name": "S54 stretch is toned down to one extra letter on one word",
    "input": [
-    "Yooooo brooo!!! Sooo the 5000W kit is insaneee 🔥🔥🔥"
+    "Yooooo brooo!!! Sooo the 5000W kit is insaneee \ud83d\udd25\ud83d\udd25\ud83d\udd25"
    ],
    "tone": "hype",
    "opts": {
     "customer_emojis": [
-     "🔥"
+     "\ud83d\udd25"
     ]
    },
    "expected": [
-    "yo broo! so the 5000w kit is insane 🔥"
+    "Yo broo! So the 5000W kit is insane \ud83d\udd25"
    ],
    "flags": {}
   },
@@ -742,7 +905,7 @@
    "tone": "hype",
    "opts": {},
    "expected": [
-    "hey broo"
+    "Hey broo"
    ],
    "flags": {}
   },
@@ -754,14 +917,14 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "hey bro yeah so good"
+    "Hey bro yeah so good"
    ],
    "flags": {}
   },
   {
    "name": "S57 marketing emoji removed",
    "input": [
-    "Great news! 🎉 Your order has shipped 🚀\u2705"
+    "Great news! \ud83c\udf89 Your order has shipped \ud83d\ude80\u2705"
    ],
    "tone": "neutral",
    "opts": {},
@@ -773,7 +936,7 @@
   {
    "name": "S58 upset customer: no exclamation, no emoji",
    "input": [
-    "So sorry about that!! We will sort it today 😊"
+    "So sorry about that!! We will sort it today \ud83d\ude0a"
    ],
    "tone": "angry",
    "opts": {},
@@ -783,14 +946,14 @@
    "flags": {}
   },
   {
-   "name": "S59 upset casual customer: no lower case mirror",
+   "name": "S59 upset casual customer: capitals and the greeting comma stay",
    "input": [
     "Hey bro, really sorry about that! I have chased DPD for you."
    ],
    "tone": "upsetCasual",
    "opts": {},
    "expected": [
-    "Hey bro really sorry about that. I have chased DPD for you"
+    "Hey bro, really sorry about that. I have chased DPD for you"
    ],
    "flags": {}
   },
@@ -835,7 +998,7 @@
    }
   },
   {
-   "name": "S63 four parts merge to three",
+   "name": "S63 four parts merge to three and every sentence gets a capital",
    "input": [
     "hey",
     "yeah we do",
@@ -845,9 +1008,9 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "hey",
-    "yeah we do",
-    "its \u00a3499. ships tomorrow"
+    "Hey",
+    "Yeah we do",
+    "Its \u00a3499. Ships tomorrow"
    ],
    "flags": {}
   },
@@ -943,7 +1106,7 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "you what?"
+    "You what?"
    ],
    "flags": {}
   },
@@ -971,7 +1134,7 @@
    "tone": "casual",
    "opts": {},
    "expected": [
-    "wagwan bro the ting is in stock innit"
+    "Wagwan bro the ting is in stock innit"
    ],
    "flags": {
     "regen": [
@@ -999,7 +1162,7 @@
    "tone": "angry",
    "opts": {},
    "expected": [
-    "haha sorry about that"
+    "Haha sorry about that"
    ],
    "flags": {
     "regen": [
@@ -1031,7 +1194,7 @@
     "asked_if_bot": true
    },
    "expected": [
-    "yeah this is the ACX AI assistant"
+    "Yeah this is the ACX AI assistant"
    ],
    "flags": {}
   },
@@ -1044,6 +1207,115 @@
    "opts": {},
    "expected": [
     "The battery is in stock. But the charger is on back order"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S78 a lower case reply gets a capital on every sentence and on I",
+   "input": [
+    "yeah it fits. i'll check the stock and i can hold one for you. you want the 72v?"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "Yeah it fits. I'll check the stock and I can hold one for you. You want the 72v?"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S79 a message that starts with a link stays as written",
+   "input": [
+    "https://acxebikes.com/products/acx-2000w-bundle is the one. grab it there"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "https://acxebikes.com/products/acx-2000w-bundle is the one. Grab it there"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S80 a protected lower case code at the start keeps its case",
+   "input": [
+    "acx-bbs-72 is in stock. it ships tomorrow"
+   ],
+   "tone": "casual",
+   "opts": {
+    "protect": [
+     "acx-bbs-72"
+    ]
+   },
+   "expected": [
+    "acx-bbs-72 is in stock. It ships tomorrow"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S81 capital after a leading emoji",
+   "input": [
+    "\ud83d\udd25 nice one bro. \ud83d\udd25 you want the link?"
+   ],
+   "tone": "hype",
+   "opts": {
+    "customer_emojis": [
+     "\ud83d\udd25"
+    ]
+   },
+   "expected": [
+    "\ud83d\udd25 Nice one bro. You want the link?"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S82 names with a capital inside are left alone",
+   "input": [
+    "iPhone holders fit the bars. eBay kits are not ours"
+   ],
+   "tone": "casual",
+   "opts": {},
+   "expected": [
+    "iPhone holders fit the bars. eBay kits aren't ours"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S83 email keeps its lines and each one starts with a capital",
+   "input": [
+    "hi Margaret\n\nyes, the 250W kit fits a 700c wheel.\n\nkind regards\nACX Ebikes"
+   ],
+   "tone": "formal",
+   "opts": {
+    "channel": "gmail",
+    "max_chars": 600
+   },
+   "expected": [
+    "Hi Margaret\n\nYes, the 250W kit fits a 700c wheel.\n\nKind regards\nACX Ebikes"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S84 the word i is left alone in other languages",
+   "input": [
+    "sprawdz\u0119 to i dam zna\u0107. kit pasuje"
+   ],
+   "tone": "polish",
+   "opts": {},
+   "expected": [
+    "Sprawdz\u0119 to i dam zna\u0107. Kit pasuje"
+   ],
+   "flags": {}
+  },
+  {
+   "name": "S85 an old light comma setting reads as normal",
+   "input": [
+    "Hey bro, yeah we do, it ships tomorrow."
+   ],
+   "tone": "casual",
+   "opts": {
+    "commas": "light"
+   },
+   "expected": [
+    "Hey bro, yeah we do, it ships tomorrow"
    ],
    "flags": {}
   }

@@ -97,8 +97,9 @@ describe('mirrorPlan', () => {
 
   it('mirrors a notch calmer for a hyped customer', () => {
     const plan = mirrorPlan(hype, { mirror_level: 'match', emojis: 'mirror', max_chars: 260 });
-    // "yo" is answered with "hey": one notch calmer.
-    expect(plan).toMatchObject({ greeting: 'hey', address: 'bro', stretch_words: 1, lowercase: true, emoji_max: 1, exclamations_max: 2, end_with_full_stop: false, serious: false });
+    // "yo" is answered with "hey": one notch calmer. Lower case is never mirrored, however the customer writes.
+    expect(hype.lowercase).toBe(true);
+    expect(plan).toMatchObject({ greeting: 'hey', address: 'bro', stretch_words: 1, lowercase: false, emoji_max: 1, exclamations_max: 2, end_with_full_stop: false, serious: false });
   });
 
   it('follows the owner settings', () => {
@@ -125,7 +126,7 @@ describe('serious topics', () => {
 
   it('switch mirroring off even for a relaxed customer', () => {
     const casual = t('yoooo brooo', 'can i leave the 72v charging overnight');
-    expect(mirrorPlan(casual, {}, false)).toMatchObject({ address: 'bro', lowercase: true });
+    expect(mirrorPlan(casual, {}, false)).toMatchObject({ address: 'bro', lowercase: false });
     expect(mirrorPlan(casual, {}, true)).toMatchObject({ address: '', lowercase: false, stretch_words: 0, emoji_max: 0, exclamations_max: 0, serious: true });
     expect(mirrorPlan(casual, {}, true).char_budget).toBeGreaterThanOrEqual(160);
   });

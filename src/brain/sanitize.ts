@@ -1,11 +1,12 @@
 // The reply sanitizer: deterministic clean up applied to every message before it can be sent.
 // The model is asked to follow the same rules, but nothing leaves without passing through here, so
-// the owner's rules hold even when the model slips: no dashes, few commas, no markdown, no stock
-// assistant phrases, short.
+// the owner's rules hold even when the model slips: no dashes, no markdown, no stock assistant
+// phrases, short, and properly written (a capital at the start of every message and sentence).
 //
 // Ported from the reference in the voice research (research/voice.md section E, voice_ref/sanitize.mjs).
-// Rule ids in the comments (S0..S14, B1..B3, C1..C8) match that spec, and the vectors in
-// test/unit/vectors/sanitize.vectors.json were generated from the reference: keep the two in step.
+// Rule ids in the comments (S0..S14, B1..B3, C1..C7) match that spec. Two owner rules were added later
+// and differ from it: capitals are never mirrored away (properCase, S13b) and commas stay as written
+// unless the owner switches them off. test/unit/vectors/sanitize.vectors.json holds the expected output.
 // Every non ASCII character is written as \u{...} on purpose so the source stays reviewable.
 // The rest of the brain uses this through style.ts.
 import type { Channel, ToneProfile, VoiceSettings } from '../types';
@@ -49,7 +50,7 @@ export interface SanitizeResult {
   violations: string[];
 }
 
-type CommaMode = 'none' | 'light' | 'normal' | 'formal';
+type CommaMode = 'none' | 'normal' | 'formal';
 type Filter = ((m: string, rest: unknown[]) => boolean) | null;
 interface Vault {
   hide(text: string, re: RegExp, filter?: Filter, type?: string): string;
@@ -67,12 +68,12 @@ export const DEFAULT_OPTS: SanitizeOptions = {
   channel: 'whatsapp',          // 'whatsapp' | 'tiktok' | 'gmail'
   max_chars: 260,
   max_sentences: 3,
-  commas: 'light',              // 'none' | 'light' | 'normal'
+  commas: 'normal',             // 'none' | 'normal'
   emojis: 'mirror',             // 'mirror' | 'never' | 'sometimes'
   mirror_level: 'match',        // 'match' | 'light' | 'off'
   banned_phrases: [],
   protect: [],                  // literal strings that must survive untouched (SKUs, order names, links from the KB)
-  asked_if_bot: false,          // keeps the honest "this is the ACX assistant" line from being stripped or lower cased
+  asked_if_bot: false,          // keeps the honest "this is the ACX assistant" line from being stripped
   serious: false,               // topic is a complaint, refund, safety or legality question (isSeriousTopic in tone.mjs)
   tone: null,                   // ToneProfile or null
   customer_emojis: [],          // emojis the customer used in the profiled window
@@ -187,6 +188,35 @@ const words = (s: string): string[] => (s.trim().match(/\S+/g) || []);
 const firstWord = (s: string): string => ((s.trim().match(/^[\p{L}']+/u) || [''])[0] ?? '').toLowerCase();
 const hasFact = (s: string): boolean => /\d/.test(s) || PH_ANY.test(s);
 const matchCase = (src: string, to: string): string => (/^\p{Lu}/u.test(src) && !/^\p{Lu}{2,}/u.test(src) ? to.charAt(0).toUpperCase() + to.slice(1) : to);
+// Abbreviations whose full stop does not end a sentence.
+const PC_ABBR = /^(?:eg|ie|etc|vs|approx|incl|mr|mrs|ms|dr|(?:\p{L}\.)+\p{L})$/iu;
+const PC_TOKEN = /^((?:["'(\[\u{201C}\u{2018}]|\p{Extended_Pictographic}|[\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}])*)(.*?)([.,!?:;"')\]\u{201D}\u{2019}]*)$/su;
+/**
+ * Proper writing whatever the customer does: a capital at the start of every message, line and
+ * sentence, and for the word I (English only, since "i" is a word in Polish and Italian).
+ * Only plain words are touched. Anything with a digit, dot, slash, @ or a hidden span in it (links,
+ * emails, product codes, prices) is left alone, and so is a word with a capital inside it (iPhone).
+ * A sentence that starts with one of those stays as written. An ellipsis or an abbreviation
+ * ("e.g.", "etc.") does not start a new sentence. A leading emoji, quote or bracket is skipped.
+ */
+export function properCase(text: string, english = true): string {
+  let start = true;
+  return text.split(/(\s+)/).map((tok) => {
+    if (!tok) return tok;
+    if (/^\s+$/.test(tok)) { if (tok.includes('\n')) start = true; return tok; }
+    const m = PC_TOKEN.exec(tok);
+    if (!m) { start = false; return tok; }
+    const pre = m[1] ?? '', post = m[3] ?? '';
+    let core = m[2] ?? '';
+    const ends = /[.!?]/.test(post) && !/\.{2,}/.test(post);
+    if (!/[\p{L}\p{N}\u{E000}]/u.test(core)) { if (ends) start = true; return tok; }   // an emoji or punctuation on its own
+    const plain = /^\p{L}[\p{L}'\u{2019}-]*$/u.test(core);
+    if (plain && english && /^i(?:['\u{2019}](?:m|ll|ve|d))?$/u.test(core)) core = 'I' + core.slice(1);
+    else if (plain && start && /^\p{Ll}/u.test(core) && !/\p{Lu}/u.test(core)) core = core.charAt(0).toUpperCase() + core.slice(1);
+    start = ends && !(post.startsWith('.') && PC_ABBR.test(core));
+    return pre + core + post;
+  }).join('');
+}
 const lowerFirst = (s: string): string => (/^[A-Z][a-z]/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
 function splitSentences(text: string): string[] {
   // numbers, links and abbreviations are already hidden, so . ! ? followed by a space is real punctuation.
@@ -216,9 +246,9 @@ export function sanitizeParts(partsIn: string | string[], optsIn: Partial<Saniti
   const upset = tone.mood === 'angry' || tone.mood === 'frustrated';
   const formal = tone.register === 'formal';
   const mirror = o.mirror_level === 'match';
-  const calm = upset || !!o.serious;                              // complaints, refunds, safety, legality: no mirroring of case, stretch, emoji
-  const lower = mirror && !!tone.lowercase && !formal && !calm && !o.asked_if_bot && (tone.register === 'hype' || tone.register === 'casual');
-  const commas: CommaMode = o.commas === 'normal' ? 'normal' : formal ? 'formal' : o.commas;
+  const calm = upset || !!o.serious;                              // complaints, refunds, safety, legality: no mirroring of stretch, emoji
+  // The owner wants proper writing: commas stay as written unless switched off. Capitals are never mirrored away (S13b).
+  const commas: CommaMode = o.commas === 'none' ? (formal ? 'formal' : 'none') : 'normal';
   const flags: SanitizeFlags = { blocked: null, regen: [], overflow: false, empty: false, dropped: [] };
   const vault = makeVault();
 
@@ -356,8 +386,8 @@ export function sanitizeParts(partsIn: string | string[], optsIn: Partial<Saniti
     });
   });
 
-  // S11 case and tidy
-  parts = parts.map((p) => tidy(lower ? p.toLowerCase() : p, chat)).filter(Boolean);
+  // S11 tidy
+  parts = parts.map((p) => tidy(p, chat)).filter(Boolean);
 
   // S12 length: sentence cap, character cap, part cap
   const units: { part: number; para: number; line: number; s: string }[] = [];
@@ -398,7 +428,7 @@ export function sanitizeParts(partsIn: string | string[], optsIn: Partial<Saniti
   const masked = parts.map((p) => {
     p = p.replace(new RegExp(`(\\u{E000}([\\u{E100}-\\u{E8FF}])\\u{E001})[.,;:!?]+$`, 'u'), (m: string, ph: string, c: string) => (vault.isLink(c) ? ph : m));   // a link at the end of a message stays the last character
     if (chat && !formal) p = p.replace(/(?<![.])\.$/, '');
-    return p.trim();
+    return properCase(p.trim(), (tone.language ?? 'en') === 'en');   // S13b capitals, while links and codes are still hidden
   }).filter(Boolean);
   parts = masked.map((p) => vault.show(p));
   if (!parts.length) flags.empty = true;
@@ -449,7 +479,7 @@ function fixCommas(p: string, mode: CommaMode): string {
     const segs = sent.split(',');
     const starter = (s: string): boolean => SPLICE.has(firstWord(s)) || CONJ.has(firstWord(s));
     const listMany = segs.length >= 3 && segs.slice(1, -1).every((s) => words(s).length <= 4 && !starter(s));
-    let out = segs[0], graceUsed = false, clauseStart = 0;
+    let out = segs[0], clauseStart = 0;
     for (let i = 1; i < segs.length; i++) {
       const after = segs[i], fw = firstWord(after);
       const before = out.slice(clauseStart).replace(/^[\s.!?]+/, '').trim();
@@ -464,7 +494,6 @@ function fixCommas(p: string, mode: CommaMode): string {
       else if (SUBORD.test(before)) action = 'drop';                                     // C5 after a dependent clause
       else if (listMany || listOne) action = mode === 'none' ? 'drop' : 'keep';          // C6 real list
       else if (SPLICE.has(fw)) action = 'stop';                                          // C7 two full clauses
-      else if (mode === 'light' && !graceUsed) { action = 'keep'; graceUsed = true; }    // C8 one comma of grace per sentence
       else action = 'drop';
       const tail = after.replace(/^\s+/, '');
       if (action === 'keep') out += ',' + after;
@@ -477,14 +506,12 @@ function fixCommas(p: string, mode: CommaMode): string {
 }
 
 function tidy(p: string, chat: boolean): string {
-  p = p.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(chat ? /\n{2,}/g : /\n{3,}/g, chat ? '\n' : '\n\n')
+  return p.replace(/[ \t]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(chat ? /\n{2,}/g : /\n{3,}/g, chat ? '\n' : '\n\n')
     .replace(/`+|\*+/g, ' ').replace(/#{2,}/g, ' ').replace(/(^|\s)#(?=\s|$)/g, '$1').replace(/(?<![\p{L}\d])_+|_+(?![\p{L}\d])/gu, ' ').replace(/[ \t]+/g, ' ')   // markdown leftovers
     .replace(/[ \t]+([,.!?:)])(?!\d)/g, '$1').replace(/\([ \t]+/g, '(').replace(/\(\)/g, '').replace(/([!?]),/g, '$1')
     .replace(/([,.!?])\1+/g, (m: string, c: string) => (c === '.' && m.length >= 3 ? '...' : c))
     .replace(/,\s*([.!?])/g, '$1').replace(/\.\s*([!?])/g, '$1').replace(/([!?])\./g, '$1')
-    .replace(/(^|\n)[ \t,.;:]+/g, '$1').replace(/[,;:]+\s*$/g, '').replace(/[ \t]+/g, ' ').trim();
-  if (/^[^\p{L}\u{E000}]*\p{Lu}/u.test(p)) p = p.replace(/([.!?]\s+)(\p{Ll})/gu, (_, a, b) => a + b.toUpperCase());   // only when the message already uses capitals
-  return p;
+    .replace(/(^|\n)[ \t,.;:]+/g, '$1').replace(/[,;:]+\s*$/g, '').replace(/[ \t]+/g, ' ').trim();   // capitals are set once, at the very end (properCase)
 }
 
 function hardCut(s: string, max: number, vault: Vault): string {
