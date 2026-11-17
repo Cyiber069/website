@@ -870,6 +870,27 @@ async function trustedType(tabId, text) {
   }
 }
 
+/**
+ * The owner pressed Show in the popup: bring the channel's tab to the front, in whatever window it
+ * is in. A missing tab is opened, and a TikTok tab that wandered off the messages page goes back.
+ */
+async function showTab(channel) {
+  let tab = await findTab(channel);
+  const opened = await store.sessionGet('opened_tabs', {});
+  if (!tab && opened[channel]) { try { tab = await chrome.tabs.get(opened[channel]); } catch { tab = null; } }
+  if (!tab) {
+    tab = await chrome.tabs.create({ url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : ''), active: true, pinned: true });
+    opened[channel] = tab.id;
+    await store.sessionSet('opened_tabs', opened);
+    await store.sessionSet(`tab:${channel}`, tab.id);
+  } else if (channel === 'tiktok' && !onChannelPage(channel, tab.url || tab.pendingUrl)) {
+    await chrome.tabs.update(tab.id, { url: homeUrl(channel, '') });
+  }
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await chrome.tabs.update(tab.id, { active: true });
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   if (!msg || msg.acx !== true || !msg.type) return false;
   switch (msg.type) {
@@ -918,6 +939,10 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       tick();
       respond({ ok: true });
       return false;
+    case 'show_tab':
+      if (!NAMES.includes(msg.channel)) { respond({ ok: false }); return false; }
+      showTab(msg.channel).then(respond, (err) => respond({ ok: false, error: String(err?.message || err) }));
+      return true;
     case 'selftest':
       Promise.all(NAMES.map(async (channel) => [channel, await tabOp(channel, 'selftest', {}, 60_000)]))
         .then((rows) => respond({ ok: true, results: Object.fromEntries(rows) }), () => respond({ ok: false }));

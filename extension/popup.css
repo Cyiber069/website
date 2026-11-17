@@ -53,6 +53,7 @@ button:disabled { opacity: .55; cursor: default; }
 .channels .name { font-weight: 600; width: 78px; }
 .channels .detail { color: var(--muted); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .channels .count { font-variant-numeric: tabular-nums; color: var(--text); }
+.channels .show { flex: none; padding: 3px 10px; font-size: 11px; border-radius: 999px; min-height: 0; width: auto; }
 details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .check { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }

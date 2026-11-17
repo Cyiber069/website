@@ -71,6 +71,13 @@ async function render() {
     detail.className = 'detail';
     detail.textContent = mode === 'off' ? 'Switched off' : ch.state === 'ready' ? `${mode === 'review' ? 'Working, asks you first' : 'Working'}${name === 'gmail' && (ch.detail || '').includes('@') ? ` (${ch.detail})` : ''}` : (ch.detail || STATE_TEXT[ch.state] || ch.state);
     li.append(dot, nm, detail);
+    const show = document.createElement('button');
+    show.className = 'show';
+    show.type = 'button';
+    show.textContent = 'Show';
+    show.title = `Go to the ${LABEL[name]} tab the agent uses`;
+    show.addEventListener('click', () => send({ type: 'show_tab', channel: name }));
+    li.append(show);
     if (ch.unread) {
       const count = document.createElement('span');
       count.className = 'count';
