@@ -15,6 +15,7 @@ import { currentDevice, pairingCodeRow, selectorPack } from './agent';
 import { checkDiscountPatch } from '../discounts/rules';
 import { monitorRows } from '../pipeline/monitor';
 import { usageToday } from '../lib/usage';
+import { replyTimes } from '../pipeline/replytime';
 
 const count = async (db: D1Database, sql: string, ...p: (string | number)[]) => (await one<{ n: number }>(db, sql, ...p))?.n ?? 0;
 
@@ -101,7 +102,7 @@ export function register(r: Router): void {
     const now = c.now;
     const settings = await getSettings(db);
     const day = startOfLondonDay(now);
-    const [devices, hints, mon] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db)]);
+    const [devices, hints, mon, replies] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db), replyTimes(db, day)]);
     const device = devices[0] ?? null;
     const [urgentOpen, reviewPending, inboundToday, sentToday, queued, convToday, kbDocs, kbTokens, autoToday, escalatedToday] = await Promise.all([
       count(db, `SELECT COUNT(*) AS n FROM urgent WHERE status = 'open'`),
@@ -129,6 +130,8 @@ export function register(r: Router): void {
       // Channel problems, chats waiting with no reply and AI failures found by the every minute check.
       monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
       usage: usageToday(mon.usage, now),
+      // How fast the agent answered today: average and slowest, from the customer's message to sent.
+      reply_time: replies,
       counts: {
         urgent_open: urgentOpen, review_pending: reviewPending, inbound_today: inboundToday, sent_today: sentToday,
         queued, conversations_today: convToday, auto_today: autoToday, escalated_today: escalatedToday,
@@ -235,7 +238,7 @@ export function register(r: Router): void {
     if (!parts.length) throw bad('empty_message', 'Nothing to send');
     // Like a message typed on the dashboard: if the laptop cannot send it within a day it is dropped, not sent late.
     await run(c.db, `UPDATE outbox SET status = 'pending', source = 'review', parts = ?, not_before = ?, pacing = ?, expires_at = ? WHERE id = ? AND status = 'review'`,
-      JSON.stringify(parts), c.now, JSON.stringify({ delay_ms: 1500 }), c.now + DAY, row.id);
+      JSON.stringify(parts), c.now, JSON.stringify({ delay_ms: 0, typing_cps: 0 }), c.now + DAY, row.id);
     await logEvent(c.db, { level: 'good', type: 'approved', channel: row.channel, conversation_id: row.conversation_id, message: `You approved a reply: ${clip(parts.join(' '), 160)}` });
     return json({ ok: true });
   });
@@ -345,7 +348,7 @@ export function register(r: Router): void {
     const id = await enqueue(c.db, {
       channel: conv.channel, kind: 'reply', conversation_id: conv.id, source: 'manual',
       target: emptyTarget({ thread_external_id: conv.external_thread_id, title: conv.title || contact.display_name, phone: contact.phone, email: contact.email, handle: contact.handle, subject: conv.subject }),
-      parts: [text], expires_at: c.now + DAY, pacing: { delay_ms: 500, typing_cps: 30 },
+      parts: [text], expires_at: c.now + DAY, pacing: { delay_ms: 0, typing_cps: 0 },
     });
     return json({ ok: true, outbox_id: id });
   });
@@ -393,7 +396,7 @@ export function register(r: Router): void {
   // ---- Health -------------------------------------------------------------------------------------------
   r.get('/api/health', 'owner', async (c) => {
     const since = c.now - DAY;
-    const [devices, misses, failed, errors, usage, sel, mon] = await Promise.all([
+    const [devices, misses, failed, errors, usage, sel, mon, replies] = await Promise.all([
       currentDevice(c.db, c.now),
       all(c.db, `SELECT id, ts, channel, kind, data FROM diagnostics WHERE ts > ? ORDER BY id DESC LIMIT 60`, since),
       all<OutboxRow>(c.db, `SELECT * FROM outbox WHERE status = 'failed' AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
@@ -401,6 +404,7 @@ export function register(r: Router): void {
       all(c.db, `SELECT provider, model, COUNT(*) AS calls, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, AVG(ms) AS avg_ms, SUM(ok) AS ok FROM llm_usage WHERE ts > ? GROUP BY provider, model`, since),
       selectorPack(c.db),
       monitorRows(c.db),
+      replyTimes(c.db, startOfLondonDay(c.now)),
     ]);
     return json({
       now: c.now,
@@ -408,6 +412,8 @@ export function register(r: Router): void {
       monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
       // Rows this Worker used today, counted in the Worker itself. An estimate: see src/lib/usage.ts.
       d1_usage: usageToday(mon.usage, c.now),
+      // Agent replies sent today (London day): average and slowest time from the customer's message to sent.
+      reply_time: replies,
       diagnostics: misses.map((m) => ({ ...(m as object), data: parseJson((m as { data: string }).data, {}) })),
       failed_jobs: failed.map((f) => ({ id: f.id, channel: f.channel, source: f.source, error: f.last_error, created_at: f.created_at, target: parseJson<JobTarget>(f.target, emptyTarget()).title })),
       errors,

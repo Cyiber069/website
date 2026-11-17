@@ -172,13 +172,13 @@ export default {
       const p = settings.pacing || {};
       const n = (label, name, min, max, hint) => field({ label, name, type: 'number', value: p[name], attrs: `min="${min}" max="${max}" inputmode="numeric" required`, hint });
       setHTML(box, html`
-        ${head('pacing', 'i-live', 'Pacing', 'How fast the agent replies. Slower looks more human.')}
+        ${head('pacing', 'i-live', 'Pacing', 'How fast the agent replies. It answers as soon as it can.')}
         <form class="stack form" id="pacing-form" novalidate>
           <div class="grid grid--2">
-            ${n('Wait for the customer to finish (seconds)', 'settle_seconds', 0, 120, 'People send a few messages in a row. The agent waits for a pause.')}
-            ${n('Typing speed (letters a second)', 'typing_cps', 2, 40, 'About 11 is a fast human.')}
-            ${n('Shortest wait before replying (seconds)', 'min_reply_delay_s', 0, 300)}
-            ${n('Longest wait before replying (seconds)', 'max_reply_delay_s', 0, 600)}
+            ${n('Wait for the customer to finish (seconds)', 'settle_seconds', 1, 30, 'People send a few short messages in a row. The agent waits this long after the last one, then reads the whole chat. Keep it short. 4 is good.')}
+            ${n('Shortest extra wait before replying (seconds)', 'min_reply_delay_s', 0, 60, 'Leave at 0 to reply as fast as possible.')}
+            ${n('Longest extra wait before replying (seconds)', 'max_reply_delay_s', 0, 120, 'Leave at 0 to reply as fast as possible.')}
+            ${n('Typing speed for checkout reminders (letters a second)', 'typing_cps', 2, 40, 'Replies go in at once. Only the checkout reminders are typed at this speed.')}
             ${n('Most replies to one person in an hour', 'max_auto_replies_per_thread_per_hour', 1, 60, 'Stops the agent going round in circles.')}
             ${n('Stay out after I reply myself (minutes)', 'human_takeover_minutes', 0, 1440, 'When you type in a chat on the laptop, the agent leaves it alone for this long.')}
             ${n('Ignore messages older than (hours)', 'ignore_older_than_hours', 1, 720, 'Old unread messages are kept but never answered.')}

@@ -11,7 +11,7 @@ import { HttpError, json, ndjsonStream, oneOf, str, type Ctx, type Router } from
 import { getSettings, getState, setState } from '../lib/settings';
 import { MIN } from '../lib/time';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
-import { completeJob, leaseDue, type JobResult } from '../pipeline/outbox';
+import { completeJob, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
 
 const POLL_SECONDS = 20;
 export const ONLINE_WINDOW_MS = 100_000;
@@ -21,7 +21,10 @@ export interface ChannelStatus {
   state: string;
   detail: string;
   unread: number;
+  /** Reading or sending (older extensions), or reading only (newer ones, which report `sending` apart). */
   busy: boolean;
+  /** Newer extensions: true only while a message is being typed and sent. null when the extension does not say. */
+  sending: boolean | null;
   checked_at: number;
   /** Health reported by the extension (0 or '' when an older extension does not send them). */
   last_ok_at: number;    // ms of the last scan that read the page fine
@@ -98,6 +101,7 @@ export function parseStatus(raw: unknown, now: number): DeviceStatus {
       detail: typeof o.detail === 'string' ? o.detail.slice(0, 200) : '',
       unread: typeof o.unread === 'number' && Number.isFinite(o.unread) ? Math.min(9999, Math.max(0, Math.round(o.unread))) : 0,
       busy: o.busy === true,
+      sending: typeof o.sending === 'boolean' ? o.sending : null,
       checked_at: now,
       last_ok_at: msTime(o.last_ok_at, now),
       last_scan_at: msTime(o.last_scan_at, now),
@@ -170,7 +174,12 @@ export function register(r: Router): void {
     }
 
     const settings = await getSettings(c.db);
-    const ready = CHANNELS.filter((ch) => status.channels[ch]?.state === 'ready' && !status.channels[ch]?.busy);
+    // A newer extension (it reports `sending`) queues jobs per tab, so it gets them while it reads.
+    // An older one types the jobs of a sync straight away, so a channel it says is busy is left alone.
+    const ready = CHANNELS.filter((ch) => {
+      const st = status.channels[ch];
+      return st?.state === 'ready' && (st.sending !== null || !st.busy);
+    });
     const jobs = status.paused_locally ? [] : await leaseDue(c.db, device, settings, ready);
     const sel = await selectorPack(c.db);
     return json({
@@ -186,9 +195,14 @@ export function register(r: Router): void {
     const device = requireDevice(c);
     // Room for up to 3 photos of 260 KB of base64 each next to the messages.
     const payload = parseInbound(await c.body(1_200_000));
-    return ndjsonStream(c.exec, async (send) => {
-      const outcome = await handleInbound(c.env, device, payload, (o) => send({ type: 'accepted', ...o }));
-      send({ type: 'decision', ...outcome });
+    return ndjsonStream(c.exec, async (send, isOpen) => {
+      // Jobs are only handed over while the extension is still listening; otherwise they wait for its next sync.
+      const live = () => isOpen() && !c.req.signal?.aborted;
+      const outcome = await handleInbound(c.env, device, payload, (o) => { void send({ type: 'accepted', ...o }); }, { live, startedAt: c.now });
+      const delivered = await Promise.race([send({ type: 'decision', ...outcome }), new Promise<boolean>((r) => setTimeout(() => r(true), 10_000))]);
+      // The answer could not be written: the extension hung up just now. Its jobs go back to the queue
+      // so the next sync hands them over, without counting a try.
+      if (!delivered && outcome.jobs.length) await releaseLeases(c.db, device, outcome.jobs.map((j) => j.id));
     });
   });
 

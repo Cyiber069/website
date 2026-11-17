@@ -148,7 +148,7 @@ const KIND_LABEL: Record<string, string> = {
 export function renderConversation(history: HistoryMessage[], now: number): string {
   const lines: string[] = [];
   for (const m of history) {
-    const who = m.direction === 'in' ? 'customer' : m.author === 'owner' ? 'shop (owner)' : 'shop';
+    const who = m.direction === 'in' ? 'customer' : `${m.author === 'owner' ? 'shop (owner)' : 'shop'}${m.pending ? ' (queued, about to be sent)' : ''}`;
     const body = wordsOf(m).replace(/\s*\n\s*/g, ' / ').trim().slice(0, 1500);
     const media = m.kind !== 'text' ? `[${KIND_LABEL[m.kind] ?? 'attachment'}]` : '';
     const text = [media, body].filter(Boolean).join(' ') || '[empty message]';
@@ -177,6 +177,8 @@ export function conversationLines(history: HistoryMessage[], media: DecideMedia[
     const from = m.direction === 'in' ? 'customer' : m.author === 'owner' ? 'owner' : 'shop';
     const text = wordsOf(m).slice(0, 1500);
     const line: Record<string, string> = m.kind === 'text' ? { from, text } : { from, kind: m.kind, text };
+    // Written and queued, not sent yet: the customer gets it in a moment, so it must not be said again.
+    if (m.pending) line.status = 'queued';
     // Which of the attached pictures came with this message.
     if (names.has(i)) line.attached = names.get(i)!;
     return JSON.stringify(line);
