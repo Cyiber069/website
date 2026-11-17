@@ -4,8 +4,9 @@ import m0001 from '../../migrations/0001_init.sql';
 import m0002 from '../../migrations/0002_kb_fts.sql';
 import m0003 from '../../migrations/0003_discounts.sql';
 import m0004 from '../../migrations/0004_agent_discounts.sql';
+import m0005 from '../../migrations/0005_read_indexes.sql';
 
-const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003], ['0004_agent_discounts', m0004]];
+const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003], ['0004_agent_discounts', m0004], ['0005_read_indexes', m0005]];
 
 let ready: Promise<void> | null = null;
 

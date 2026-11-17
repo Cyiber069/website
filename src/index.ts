@@ -12,14 +12,34 @@ const router = buildRouter();
  * x-acx-d1-queries header so tests can hold request paths under the free plan's 50 queries.
  * A batch is one round trip and counts once.
  */
-function countingDb(db: D1Database, counter: { n: number }): D1Database {
+function countingDb(db: D1Database, counter: { n: number; rows: number }): D1Database {
   const real = new WeakMap<object, D1PreparedStatement>();
-  const wrap = (st: D1PreparedStatement): D1PreparedStatement => {
+  const note = (sql: string, rows: number) => {
+    counter.rows += rows;
+    // Show the queries that read a lot, so the free plan's daily rows cap can be protected.
+    if (rows > 150) console.log(`HEAVY_QUERY ${rows} ${sql.replace(/\s+/g, ' ').slice(0, 180)}`);
+  };
+  const wrap = (st: D1PreparedStatement, sql: string): D1PreparedStatement => {
     const proxy = new Proxy(st, {
       get(target, key) {
-        if (key === 'bind') return (...args: unknown[]) => wrap(target.bind(...args));
-        if (key === 'first' || key === 'all' || key === 'run' || key === 'raw') {
-          return (...args: unknown[]) => { counter.n++; return (target[key] as (...a: unknown[]) => unknown).apply(target, args); };
+        if (key === 'bind') return (...args: unknown[]) => wrap(target.bind(...args), sql);
+        if (key === 'first') {
+          // first() hides rows_read, so run all() and hand back its first row.
+          return async (col?: string) => {
+            counter.n++;
+            const r = await target.all<Record<string, unknown>>();
+            note(sql, r.meta?.rows_read ?? 0);
+            const row = r.results?.[0] ?? null;
+            return col ? (row ? row[col] : null) : row;
+          };
+        }
+        if (key === 'all' || key === 'run' || key === 'raw') {
+          return (...args: unknown[]) => {
+            counter.n++;
+            const out = (target[key] as (...a: unknown[]) => unknown).apply(target, args);
+            if (out instanceof Promise) out.then((r) => note(sql, (r as { meta?: { rows_read?: number } })?.meta?.rows_read ?? 0)).catch(() => {});
+            return out;
+          };
         }
         const v = Reflect.get(target, key, target);
         return typeof v === 'function' ? v.bind(target) : v;
@@ -30,8 +50,13 @@ function countingDb(db: D1Database, counter: { n: number }): D1Database {
   };
   return new Proxy(db, {
     get(target, key) {
-      if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql));
-      if (key === 'batch') return (list: D1PreparedStatement[]) => { counter.n++; return target.batch(list.map((s) => real.get(s) ?? s)); };
+      if (key === 'prepare') return (sql: string) => wrap(target.prepare(sql), sql);
+      if (key === 'batch') return (list: D1PreparedStatement[]) => {
+        counter.n++;
+        const p = target.batch(list.map((s) => real.get(s) ?? s));
+        p.then((rs) => { for (const r of rs) note('batch', r.meta?.rows_read ?? 0); }).catch(() => {});
+        return p;
+      };
       const v = Reflect.get(target, key, target);
       return typeof v === 'function' ? v.bind(target) : v;
     },
@@ -72,7 +97,7 @@ export default {
     const url = new URL(req.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     let res: Response;
-    const queries = { n: 0 };
+    const queries = { n: 0, rows: 0 };
     try {
       await ensureSchema(env.DB);
       const e = env.ACX_TEST_MODE === '1' ? { ...env, DB: countingDb(env.DB, queries) } : env;
@@ -89,6 +114,7 @@ export default {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
     if (env.ACX_TEST_MODE === '1') {
       headers.set('x-acx-d1-queries', String(queries.n));
+      headers.set('x-acx-d1-rows', String(queries.rows));
       // A streamed answer is still working when the headers go: its count is the stream's last line.
       if (res.body && (res.headers.get('content-type') ?? '').includes('ndjson')) {
         const tail = new TransformStream<Uint8Array, Uint8Array>({

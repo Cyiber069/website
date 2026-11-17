@@ -20,7 +20,10 @@ const NAV = [
 ];
 const TABS = [['live', 'Live', 'i-live'], ['inbox', 'Inbox', 'i-inbox'], ['urgent', 'Urgent', 'i-urgent'], ['recovery', 'Recovery', 'i-recovery'], ['more', 'More', 'i-more']];
 const UNDER_MORE = ['knowledge', 'voice', 'discounts', 'connections', 'health', 'more'];
-const POLL_MS = 5000;
+// Refresh every 15 seconds while someone is using the page. Each refresh reads the database, and the
+// free plan allows 5 million rows a day, so an open but idle page stops refreshing after 10 minutes.
+const POLL_MS = 15000;
+const IDLE_MS = 10 * 60 * 1000;
 
 const root = $('#root');
 const state = { overview: null, overviewError: null, signedIn: false, current: null, route: '', timer: null, shell: false };
@@ -247,16 +250,25 @@ function markNav(name) {
 
 window.addEventListener('hashchange', route);
 
-// ---- Polling: every 5 seconds, only while the tab is visible -----------------------------------------------
+// ---- Polling: every 15 seconds, only while the tab is visible and in use -----------------------------------
+let lastActive = Date.now();
+let idlePaused = false;
+for (const ev of ['pointerdown', 'keydown', 'scroll', 'touchstart', 'focus']) {
+  window.addEventListener(ev, () => {
+    lastActive = Date.now();
+    if (idlePaused && !document.hidden && state.signedIn) { idlePaused = false; tick(); }
+  }, { passive: true, capture: true });
+}
 async function tick() {
   if (document.hidden || !state.signedIn) return;
+  if (Date.now() - lastActive > IDLE_MS) { idlePaused = true; return; }
   refreshOverview();
   try { await state.current?.tick?.(); } catch (err) { if (err?.name !== 'AuthError') console.warn('refresh failed', err?.message); }
   refreshTimes();
 }
 function startPolling() { stopPolling(); state.timer = setInterval(tick, POLL_MS); }
 function stopPolling() { if (state.timer) clearInterval(state.timer); state.timer = null; }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && state.signedIn) tick(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && state.signedIn) { lastActive = Date.now(); idlePaused = false; tick(); } });
 
 // Keyboard height, so sticky bars sit above the phone keyboard.
 if (window.visualViewport) {
