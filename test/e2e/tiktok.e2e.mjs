@@ -235,7 +235,8 @@ async function main() {
   await until('two part reply', async () => (await sent()).length === 5);
   out = await sent();
   assert.deepEqual(out.slice(3).map((s) => [s.convId, s.text]), [[jakeId, 'Hey'], [jakeId, 'Mock second part']]);
-  assert.ok(out[4].at - out[3].at >= 1900, `parts are spaced out (${out[4].at - out[3].at} ms)`);
+  // TikTok gets at least 1.2 s between two parts of one reply (contract item 8; it was 2 to 4 s of human pause).
+  assert.ok(out[4].at - out[3].at >= 1150, `parts are spaced out (${out[4].at - out[3].at} ms)`);
   pass('two part reply sent in order with a pause between the parts');
 
   await mock(() => window.mock.receive('mia_b', 'ok')); // third time, chat closed again, same preview as the first

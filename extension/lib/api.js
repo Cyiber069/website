@@ -95,12 +95,30 @@ export function trimMedia(messages) {
   return out;
 }
 
-export async function inbound(payload, { timeoutMs = 150_000 } = {}) {
+/**
+ * The decision for a report. A stream that ends without a decision line, stops sending anything for
+ * `stallMs` (the server pings every 4 s) or runs past `timeoutMs` comes back as a decision with
+ * `cut: true`, which the worker treats as final=false: it reads the chat again and posts once more.
+ * `accepted` is the server's first line when it came (the conversation id), else null.
+ * Throws ApiError for a refused request (status 4xx/5xx), an error line (500) or no connection (0).
+ */
+export async function inbound(payload, { timeoutMs = 90_000, stallMs = 15_000 } = {}) {
   payload = { ...payload, messages: trimMedia(payload.messages) };
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let why = '';
+  const stop = (reason) => { if (!why) { why = reason; ctl.abort(); } };
+  const timer = setTimeout(() => stop('timeout'), timeoutMs);
+  let stall = setTimeout(() => stop('stall'), stallMs + 15_000); // the first line waits for the messages to be stored
+  const cut = (reason, accepted) => ({ type: 'decision', action: 'none', reason, jobs: [], cut: true, final: false, accepted: accepted || null });
+  let accepted = null;
   try {
-    const res = await request('/api/agent/inbound', { body: payload, signal: ctl.signal });
+    let res;
+    try {
+      res = await request('/api/agent/inbound', { body: payload, signal: ctl.signal });
+    } catch (err) {
+      if (why) return cut(why === 'stall' ? 'stream_stalled' : 'timeout', null);
+      throw err;
+    }
     if (!res.ok) {
       let data = null;
       try { data = await res.json(); } catch { /* ignore */ }
@@ -111,8 +129,18 @@ export async function inbound(payload, { timeoutMs = 150_000 } = {}) {
     let buf = '';
     let decision = null;
     for (;;) {
-      const { value, done } = await reader.read();
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        if (why) break; // stopped by the stall or time limit
+        if (decision) break;
+        return cut('stream_cut', accepted); // connection dropped half way
+      }
+      const { value, done } = chunk;
       if (done) break;
+      clearTimeout(stall);
+      stall = setTimeout(() => stop('stall'), stallMs);
       buf += dec.decode(value, { stream: true });
       let nl;
       while ((nl = buf.indexOf('\n')) >= 0) {
@@ -121,16 +149,17 @@ export async function inbound(payload, { timeoutMs = 150_000 } = {}) {
         if (!line) continue;
         let obj;
         try { obj = JSON.parse(line); } catch { continue; }
+        if (obj.type === 'accepted') accepted = obj;
         if (obj.type === 'decision') decision = obj;
         if (obj.type === 'error') throw new ApiError(500, obj.code || 'server_error', obj.message || 'Server error');
       }
+      if (decision) { reader.cancel().catch(() => {}); break; } // the decision is the last line that matters
     }
-    // No decision line means the stream was cut: the server still finishes and queues the reply.
-    return decision ?? { type: 'decision', action: 'none', reason: 'stream_cut', jobs: [] };
-  } catch (err) {
-    if (err?.name === 'AbortError') throw new ApiError(0, 'timeout', 'The server took too long to decide');
-    throw err;
+    if (decision) return { ...decision, accepted };
+    // No decision line: the request may or may not have finished on the server. Treated as not final.
+    return cut(why === 'stall' ? 'stream_stalled' : why === 'timeout' ? 'timeout' : 'stream_cut', accepted);
   } finally {
     clearTimeout(timer);
+    clearTimeout(stall);
   }
 }

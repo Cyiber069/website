@@ -19,9 +19,14 @@
 //                         message is from the customer, whatever their unread badge says. Run every
 //                         10 minutes as a safety net for messages the normal scan missed.
 //
+//   read() may also return `tail` (ACX.tailRef(messages)): the service worker hands it back to send()
+//   as `newer_than`, and send() refuses with newer_message when the customer wrote again meanwhile.
+//   send() args: { job, navigated, newer_than?, budget_ms? }. typing_cps 0 in job.pacing means no
+//   typing pauses at all (each part goes in whole).
+//
 // Throw new ACX.Fail(code, message, retryable) for expected failures. Codes the server understands:
 // thread_not_found, composer_missing, composer_busy, send_not_confirmed, not_on_whatsapp, invalid_number,
-// logged_out, blocked, timeout, unknown.
+// logged_out, blocked, timeout, newer_message, unknown.
 //
 // Everything site specific (selectors, text patterns) comes from the selector pack: ACX.q('group.name').
 (() => {
@@ -363,18 +368,136 @@
     await sleep(120);
   }
 
+  // ---- pacing of a send ----------------------------------------------------------------------------
+  // The server sends typing_cps 0 for "as fast as possible": each part goes in whole, no pauses.
+  // Older servers send a typing speed (11): then the old human pauses stay, shrunk to short floor
+  // pauses when the service worker says other customers are waiting (`budget_ms`).
+
+  /** True for typing_cps 0 or a speed nobody types at. A missing value is the old default (11), not instant. */
+  const instant = (cps) => typeof cps === 'number' && Number.isFinite(cps) && (cps <= 0 || cps >= 200);
+  /** The typing speed to use for the old human pacing: the job's, else 11. */
+  const cpsOf = (cps) => (typeof cps === 'number' && Number.isFinite(cps) && cps > 0 ? cps : 11);
+  /** Factor for the human pauses of one send: 1 normally, down to 0.15 when the budget is tight. */
+  function pauseScale(budgetMs, nominalMs) {
+    if (!(budgetMs > 0) || !(nominalMs > 0)) return 1;
+    return Math.min(1, Math.max(0.15, budgetMs / nominalMs));
+  }
+  /** One human pause, scaled, never below the 0.3 s floor (so "typing..." still shows). */
+  const humanPause = (ms, scale = 1) => sleep(Math.max(300, ms * scale));
+
   /**
    * Type like a person: a pause that scales with length (so the other side sees "typing..."),
-   * then the text. `cps` is characters per second from the job's pacing.
+   * then the text. `cps` is characters per second from the job's pacing; 0 puts the text in at once.
    */
-  async function humanType(el, text, cps = 11) {
-    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, cps)) * 1000));
+  async function humanType(el, text, cps = 11, { scale = 1 } = {}) {
     el.focus();
-    await sleep(total * rand(0.25, 0.4));
+    if (instant(cps)) return insertText(el, text);
+    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, cpsOf(cps))) * 1000));
+    await humanPause(total * rand(0.25, 0.4), scale);
     const how = await insertText(el, text);
-    await sleep(total * rand(0.2, 0.35));
+    await humanPause(total * rand(0.2, 0.35), scale);
     return how;
   }
+
+  // ---- what the end of a thread looked like when it was read ------------------------------------------
+  // A reply is decided on the messages a read saw. If the customer writes again before it is sent,
+  // the reply is out of date: send() refuses it (newer_message) and the worker reads the chat again,
+  // so one fresh decision covers everything.
+  const normBody = (s) => squash(s).toLowerCase().slice(0, 200);
+  const usableMsgs = (messages) => (Array.isArray(messages) ? messages : []).filter((m) => m && (m.direction === 'in' || m.direction === 'out'));
+
+  /** { last_in_id, last_in_body, same }: the last customer message and how many with the same words. */
+  function tailRef(messages) {
+    const list = usableMsgs(messages);
+    let at = -1;
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].direction === 'in') { at = i; break; }
+    if (at < 0) return { last_in_id: null, last_in_body: null, same: 0 };
+    const body = normBody(list[at].body);
+    return {
+      last_in_id: list[at].external_id ? String(list[at].external_id) : null,
+      last_in_body: body,
+      same: list.filter((m) => m.direction === 'in' && normBody(m.body) === body).length,
+    };
+  }
+
+  /**
+   * True when `messages` (collected right before sending) hold a customer message newer than the one
+   * `ref` describes. Found by message id, else by its words (a repeat of the same words counts as new).
+   * When the reference cannot be found at all the answer is false: nothing is refused on a guess.
+   */
+  function newerInbound(messages, ref) {
+    if (!ref || (ref.last_in_id == null && ref.last_in_body == null)) return false;
+    const list = usableMsgs(messages);
+    let at = -1;
+    if (ref.last_in_id) {
+      for (let i = list.length - 1; i >= 0; i--) if (String(list[i].external_id || '') === ref.last_in_id) { at = i; break; }
+    }
+    if (at < 0) {
+      if (ref.last_in_body == null) return false;
+      const hits = [];
+      list.forEach((m, i) => { if (m.direction === 'in' && normBody(m.body) === ref.last_in_body) hits.push(i); });
+      if (!hits.length) return false;
+      if (hits.length > Math.max(1, ref.same || 1)) return true; // the same words came again
+      at = hits[hits.length - 1];
+    }
+    return list.slice(at + 1).some((m) => m.direction === 'in');
+  }
+
+  // ---- time labels in chat lists ("20:14", "Yesterday", "5m", "just now") -----------------------------------
+  const CLOCK = /^(\d{1,2})[:.](\d{2})(?:\s*([ap])\.?\s*m\.?)?$/i;
+  const RELATIVE = /^(\d{1,3})\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)\b(?:\s*ago)?$/i;
+  const UNIT = { s: 1000, m: 60_000, h: 3600_000, d: 86_400_000, w: 7 * 86_400_000 };
+
+  /** True for a clock time label: the list shows those for today's messages. */
+  const isClock = (label) => CLOCK.test(String(label || '').trim());
+
+  /** Age a relative label says ("5m" = 5 minutes, "just now" = 0), else null. */
+  function labelAge(label) {
+    const t = String(label || '').trim().toLowerCase();
+    if (/^(now|just now)$/.test(t)) return 0;
+    const m = RELATIVE.exec(t);
+    if (!m) return null;
+    const unit = m[2].startsWith('mi') || m[2] === 'm' ? 'm' : m[2][0];
+    return Number(m[1]) * (UNIT[unit] || 0);
+  }
+
+  /**
+   * The latest time (ms) the last message of a list row can have been written, from its label, or
+   * null when the label does not say. A clock label has minute steps, so a minute is added.
+   */
+  function labelTimeMax(label, now = Date.now()) {
+    const t = String(label || '').trim();
+    const age = labelAge(t);
+    if (age !== null) return age > 0 ? now - age : null;
+    const m = CLOCK.exec(t);
+    if (!m) return null;
+    let hour = Number(m[1]);
+    if (m[3]) hour = (hour % 12) + (m[3].toLowerCase() === 'p' ? 12 : 0);
+    const d = new Date(now);
+    const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hour, Number(m[2])).getTime() + 60_000;
+    return at <= now + 60_000 ? Math.min(at, now) : null; // a clock time later than now is yesterday's
+  }
+
+  /**
+   * Did a row's time label move because of a new message? A clock label that changed, or a relative
+   * age that went down ("3m" to "now"), or a relative label replacing a clock or date. Labels only
+   * ageing ("1m" to "2m", "23:50" to "Yesterday") are not new messages.
+   */
+  function timeMoved(prev, cur) {
+    const a = String(prev || '').trim();
+    const b = String(cur || '').trim();
+    if (!b || a === b) return false;
+    const ageB = labelAge(b);
+    if (ageB !== null) {
+      const ageA = labelAge(a);
+      return ageA === null ? true : ageB < ageA; // a fresh relative label after a clock or date is new
+    }
+    if (isClock(b)) return labelAge(a) === null; // clock to another clock, or a date to today's clock
+    return false;
+  }
+
+  /** A time key for a row signature that never churns while the label only ages. */
+  const stableTime = (prevKey, label) => (isClock(label) ? String(label).trim() : prevKey || (label ? 'd' : ''));
 
   // ---- photos and video frames ------------------------------------------------------------------------------
   // The newest customer messages of a thread may hold a photo or a video. captureMedia copies each one
@@ -609,12 +732,23 @@
   }
 
   // ---- activity nudges --------------------------------------------------------------------------------------
+  // At most one nudge every 2.5 s, and a change inside that window is never dropped: it sends one more
+  // nudge at the end of the window, so the last message of a burst is always announced.
   let nudgeAt = 0;
+  let nudgeTimer = null;
   function nudge() {
-    const now = Date.now();
-    if (now - nudgeAt < 2500) return;
-    nudgeAt = now;
-    toWorker({ type: 'activity' });
+    const wait = nudgeAt + 2500 - Date.now();
+    if (wait <= 0) {
+      nudgeAt = Date.now();
+      toWorker({ type: 'activity' });
+      return;
+    }
+    if (nudgeTimer) return; // one trailing nudge is already planned
+    nudgeTimer = setTimeout(() => {
+      nudgeTimer = null;
+      nudgeAt = Date.now();
+      toWorker({ type: 'activity' });
+    }, wait);
   }
 
   /** Tell the service worker when something changes under the element returned by `getRoot`. */
@@ -722,8 +856,10 @@
     visible, textOf, click, key, squash, placeCaretAtEnd, selectAllIn,
     // time
     sleep, rand, waitFor,
-    // typing
-    insertText, humanType, clearComposer,
+    // typing and pacing
+    insertText, humanType, clearComposer, instant, cpsOf, pauseScale, humanPause,
+    // the end of a thread, and list time labels
+    tailRef, newerInbound, isClock, labelAge, labelTimeMax, timeMoved, stableTime,
     // diagnostics + activity
     diag, snapshot, skeleton, watch, nudge, toWorker,
     // photos

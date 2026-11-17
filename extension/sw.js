@@ -1,52 +1,111 @@
-// ACX Agent service worker: pairs with the dashboard server, keeps the three tabs alive, asks each
+// ACX Agent service worker: pairs with the dashboard server, keeps the agent's tabs alive, asks each
 // tab what is new, sends new customer messages to the server and types the replies it gets back.
 //
+// How the work is organised: one LANE per (channel, tab role).
+//  * LANE_DEFS below is the registry. Today: whatsapp:inbox, gmail:inbox, tiktok:inbox. A new role
+//    (tiktok:comments, tiktok:outreach) is one more entry bound to its own pinned tab by URL path; the
+//    lane engine does not change.
+//  * Each lane runs on its own. It scans its tab, reads every chat that is due, posts each read to the
+//    server WITHOUT waiting for the decision, and sends replies from its own queue as soon as they
+//    arrive. A lane never waits for another lane, and a chat never waits for another chat's decision.
+//  * syncTick runs every poll_seconds: it probes every tab, syncs with the server (jobs, config),
+//    runs the watchdog and hands jobs to the lanes. It never waits for lane work.
+//
 // Reliability rules (the laptop runs unattended all day):
-//  * every call into a tab and to the server has a time limit, and a whole cycle has one too
-//  * a watchdog per channel notices a tab that stopped giving good reads and heals it step by step:
-//    ask again, reload, then replace the tab, with a gap and an hourly cap, never during a send
-//  * waking from sleep (idle state or a long gap between alarms) runs a cycle at once and reloads
-//    tabs that do not answer
+//  * every call into a tab and to the server has a time limit. A lane as a whole has none: a busy,
+//    healthy lane is never abandoned by a timer
+//  * one conversation has at most one inbound call or queued reply at a time. A reply that would go
+//    out after the customer wrote again is refused (newer_message) and the chat is read again
+//  * a watchdog per lane notices a tab that stopped giving good reads and heals it step by step: ask
+//    again, reload, then replace the tab, with a gap and an hourly cap, and never while the lane has
+//    work in hand (an operation, a queued reply or an inbound call)
+//  * waking from sleep syncs at once, resets the server backoff and reloads tabs that do not answer
+//  * while the server is unreachable the lanes keep scanning and reading; the server is retried after
+//    5, 10, 20, 40 then 60 s
 //  * a sweep every 10 minutes reports recent chats that end with a customer message, badge or not
-//  * state that must survive the worker stopping lives in chrome.storage.session, not in memory
+//  * state that must survive the worker stopping lives in chrome.storage.session: seen threads (with
+//    in flight flags that expire), queued replies and job results not yet delivered
 import * as api from './lib/api.js';
+import * as core from './lib/lane-core.js';
 import { fetchMedia } from './lib/media.js';
 import * as store from './lib/store.js';
 
 const VERSION = chrome.runtime.getManifest().version;
 
-const CHANNELS = {
-  whatsapp: { label: 'WhatsApp', match: ['https://web.whatsapp.com/*'], home: 'https://web.whatsapp.com/' },
-  gmail: { label: 'Gmail', match: ['https://mail.google.com/*'], home: 'https://mail.google.com/mail/u/0/#inbox' },
-  // A logged out TikTok redirects /messages to /login: treat that tab as ours so no new tab is opened each cycle.
-  tiktok: { label: 'TikTok', match: ['https://www.tiktok.com/messages*', 'https://www.tiktok.com/login*'], home: 'https://www.tiktok.com/messages?lang=en' },
-};
-const NAMES = Object.keys(CHANNELS);
+const parseUrl = (url) => { try { return new URL(url || ''); } catch { return null; } };
+const TIKTOK_INBOX = 'https://www.tiktok.com/messages?lang=en';
+const TIKTOK_INBOX_BUSINESS = 'https://www.tiktok.com/messages?allow_label=true&lang=en&scene=business';
+
+/**
+ * The lane registry. Per lane:
+ *   match       tab URL patterns for chrome.tabs.query
+ *   page(u)     true for a page of this role (the tab is this lane's)
+ *   site(u)     true for any page of the site that is not a sign in page
+ *   away(u)     a page of this role's tab that the lane sends back home (it cannot work there)
+ *   home(ctx)   the address the lane opens; ctx = { account, business, pack }
+ *   idleScanMs  how often an idle lane looks again without a nudge
+ *   minScanGapMs the least time between two scans asked for by nudges
+ *   crossChatGapMs the least time between sends to two different chats (TikTok rate limits)
+ */
+const LANE_DEFS = [
+  {
+    channel: 'whatsapp', role: 'inbox', label: 'WhatsApp',
+    match: ['https://web.whatsapp.com/*'],
+    page: (u) => u.hostname === 'web.whatsapp.com',
+    site: (u) => u.hostname === 'web.whatsapp.com',
+    away: () => false,
+    home: () => 'https://web.whatsapp.com/',
+    idleScanMs: 15_000, minScanGapMs: 1500, crossChatGapMs: 0,
+  },
+  {
+    channel: 'gmail', role: 'inbox', label: 'Gmail',
+    match: ['https://mail.google.com/*'],
+    page: (u) => u.hostname === 'mail.google.com',
+    site: (u) => u.hostname === 'mail.google.com',
+    away: () => false,
+    // Gmail picks the signed-in account from ?authuser=<address> (a /u/<address>/ path gives a 404).
+    home: ({ account }) => (account ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#inbox` : 'https://mail.google.com/mail/u/0/#inbox'),
+    // Every Gmail scan fetches the unread feed from the owner's Google session: look gently.
+    idleScanMs: 25_000, minScanGapMs: 5000, crossChatGapMs: 0,
+  },
+  {
+    channel: 'tiktok', role: 'inbox', label: 'TikTok',
+    // A logged out TikTok redirects /messages to /login: treat that tab as ours so no new tab is opened
+    // each time. Business accounts land in /business-suite/, a separate app with the chat in a frame
+    // where the agent cannot work: that tab is sent back to the business view of /messages.
+    match: ['https://www.tiktok.com/messages*', 'https://www.tiktok.com/login*', 'https://www.tiktok.com/business-suite/*'],
+    page: (u) => u.hostname === 'www.tiktok.com' && /^\/(messages|login|business-suite\/)/.test(u.pathname),
+    site: (u) => u.hostname === 'www.tiktok.com' && !/^\/(login|signup)/.test(u.pathname),
+    away: (u) => /^\/business-suite\//.test(u.pathname),
+    home: ({ business, pack }) => (business ? String(pack?.urls?.inbox_business || TIKTOK_INBOX_BUSINESS) : String(pack?.urls?.inbox || TIKTOK_INBOX)),
+    // TikTok is strict about automation: at least 3 s between sends to different chats.
+    idleScanMs: 12_000, minScanGapMs: 2000, crossChatGapMs: 3000,
+  },
+];
+const NAMES = [...new Set(LANE_DEFS.map((d) => d.channel))]; // channels the server knows
 
 const TICK_ALARM = 'acx-tick';
-const MAX_THREADS_PER_CYCLE = 2;
 const PROBE_MS = 8000;
 // Probe states that prove the page and its script are alive (the owner may need to act, a reload would not help).
 const ALIVE_STATES = ['ready', 'logged_out', 'blocked'];
 // An operation that holds a tab's queue this long means the page stopped running its timers.
 const STUCK_OP_MS = 5 * 60_000;
-// The server is unreachable: wait this long before the next try, step by step.
-const BACKOFF_MS = [30_000, 60_000, 120_000, 300_000];
 
-/** Timers of the watchdog, sweep and cycle. Tests may shorten them through storage key `timing`. */
+/** Timers of the watchdog and sweep. Tests may shorten them through storage key `timing`. */
 const TIMING = {
   stall_ms: 3 * 60_000, // no good read for this long: start healing the tab
   replace_after_ms: 5 * 60_000, // still dead this long after a reload: replace the tab
-  recovery_gap_ms: 5 * 60_000, // at most one reload or replace per channel in this time
+  recovery_gap_ms: 5 * 60_000, // at most one reload or replace per lane in this time
   max_recoveries_per_hour: 6,
   loading_ms: 10 * 60_000, // a page that says it is loading gets this long before it counts as stuck
   sweep_ms: 10 * 60_000,
-  cycle_timeout_ms: 4 * 60_000,
   wake_gap_ms: 150_000, // alarms fire every 30 s: a longer gap means the laptop slept
   wake_probe_ms: 10_000,
 };
 
+let timingCache = { at: 0, t: TIMING };
 async function timing() {
+  if (Date.now() - timingCache.at < 2000) return timingCache.t;
   const t = { ...TIMING };
   try {
     const o = await store.get('timing');
@@ -57,6 +116,7 @@ async function timing() {
       }
     }
   } catch { /* defaults */ }
+  timingCache = { at: Date.now(), t };
   return t;
 }
 
@@ -64,21 +124,614 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** "40 s" or "3 min": how long something has lasted, in plain words. */
 const howLong = (ms) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`);
 
-// ---- per channel health (chrome.storage.session, one key per channel so channels never clobber each other)
+// ---- lanes ----------------------------------------------------------------------------------------
 
-const healthKey = (ch) => `health:${ch}`;
-async function getHealth(ch) {
+function makeLane(def) {
+  const id = `${def.channel}:${def.role}`;
+  // The inbox lane keeps the channel's own storage names (health:whatsapp, seen:whatsapp).
+  const name = def.role === 'inbox' ? def.channel : id;
+  return {
+    def, id, channel: def.channel, role: def.role, name,
+    loaded: null, // promise: seen threads and queued jobs read back from session storage
+    seen: {}, // thread key -> what the scans saw (lane-core noteThread)
+    live: new Set(), // keys the last scan listed
+    queue: [], // jobs waiting to be sent: { job, seq, arrived, readAt, sendAt, thread, key, tail, source, requeued }
+    seq: 0,
+    probe: { state: 'unknown', at: 0, st: null, info: {} },
+    tabId: null,
+    running: false, again: false, gen: 0,
+    timer: null, timerAt: 0, nudgeTimer: null,
+    op: null, // the tab operation in progress: { op, since }
+    job: null, // the queued job being sent
+    lastScanAt: 0, scanWanted: 0, opOkAt: 0, timeouts: 0,
+    readsSinceSend: 0, lastSendAt: 0, lastSendThread: null,
+    inflight: new Map(), // key -> { since } of reads whose inbound call has not answered yet
+    threadCalls: new Map(), // conversation -> inbound calls in flight
+    reads: new Map(), // conversation -> { tail, at, key } of the latest read, for newer_message
+    saveChain: Promise.resolve(),
+  };
+}
+const lanes = LANE_DEFS.map(makeLane);
+const primaryLane = (channel) => lanes.find((l) => l.channel === channel && l.role === 'inbox') || null;
+const laneForJob = (job) => lanes.find((l) => l.channel === job.channel && l.role === (job.role || 'inbox')) || primaryLane(job.channel);
+
+const seenKey = (lane) => `seen:${lane.name}`;
+const queueKey = (lane) => `queue:${lane.name}`;
+
+function laneLoaded(lane) {
+  if (!lane.loaded) {
+    lane.loaded = (async () => {
+      const seen = await store.sessionGet(seenKey(lane), {}).catch(() => ({}));
+      lane.seen = seen && typeof seen === 'object' ? seen : {};
+      const q = await store.sessionGet(queueKey(lane), []).catch(() => []);
+      for (const it of Array.isArray(q) ? q : []) {
+        if (it && it.job && it.job.id && !lane.queue.some((x) => x.job.id === it.job.id)) lane.queue.push(it);
+      }
+      lane.seq = lane.queue.reduce((n, it) => Math.max(n, it.seq || 0), 0);
+    })();
+  }
+  return lane.loaded;
+}
+
+function saveSeen(lane) {
+  lane.saveChain = lane.saveChain.then(() => store.sessionSet(seenKey(lane), lane.seen)).catch(() => {});
+  return lane.saveChain;
+}
+function saveQueue(lane) {
+  lane.saveChain = lane.saveChain.then(() => store.sessionSet(queueKey(lane), lane.queue)).catch(() => {});
+  return lane.saveChain;
+}
+
+// What the worker knows from the last sync and from storage.
+let config = null;
+let paired = false;
+let paused = false;
+let business = false; // the TikTok account is a business account (seen in Business Suite or said by the page)
+
+const settleMs = () => Math.max(0, Number(config?.pacing?.settle_seconds ?? 12) * 1000);
+
+/** True when the lane may scan, read and send right now. */
+function laneActive(lane) {
+  if (!paired || paused || !config || config.enabled === false) return false;
+  if (config.channels?.[lane.channel]?.mode === 'off') return false;
+  return lane.probe.state === 'ready' && lane.tabId != null;
+}
+/** Stopped by the owner or the server (not by the page): queued replies must not go out later. */
+const laneStopped = (lane) => paused || config?.enabled === false || config?.channels?.[lane.channel]?.mode === 'off';
+
+/** One conversation gets one decision at a time: an inbound call or a queued or typing reply. */
+function threadBusy(lane, thread, now = Date.now(), exceptKey = null) {
+  if (!thread) return false;
+  if ((lane.threadCalls.get(thread) || 0) > 0) return true;
+  if (lane.job && lane.job.thread === thread) return true;
+  if (lane.queue.some((it) => it.thread === thread)) return true;
+  // A call that was in flight when the worker restarted still counts until its flag expires.
+  for (const [k, e] of Object.entries(lane.seen)) {
+    if (k !== exceptKey && e && e.thread === thread && (e.inflight_until || 0) > now) return true;
+  }
+  return false;
+}
+
+/** Threads that may be read now: listed by the last scan first, then the longest waiting. */
+function dueReads(lane, now) {
+  const settle = settleMs();
+  const out = [];
+  for (const [k, e] of Object.entries(lane.seen)) {
+    if (lane.inflight.has(k)) continue;
+    if (!core.isDue(e, now, settle, (t) => threadBusy(lane, t, now, k))) continue;
+    if (!lane.live.has(k) && now - (e.since || 0) > 2 * 3600_000) continue; // not listed for hours: let it go
+    out.push({ k, e, live: lane.live.has(k) });
+  }
+  return out.sort(core.readOrder);
+}
+
+/** Ask the lane to run now (or once more right after the step it is doing). */
+function kick(lane) {
+  if (lane.running) { lane.again = true; return; }
+  runLane(lane);
+}
+
+/** Wake the lane at `at` (ms), unless an earlier wake is already planned. */
+function wakeAt(lane, at) {
+  if (!Number.isFinite(at)) return;
+  if (lane.timer && lane.timerAt <= at) return;
+  if (lane.timer) clearTimeout(lane.timer);
+  lane.timerAt = at;
+  lane.timer = setTimeout(() => { lane.timer = null; lane.timerAt = 0; kick(lane); }, Math.min(60_000, Math.max(0, at - Date.now())));
+}
+
+async function runLane(lane) {
+  lane.running = true;
+  const gen = ++lane.gen;
   try {
-    const h = await store.sessionGet(healthKey(ch), null);
+    await laneLoaded(lane);
+    for (let steps = 0; steps < 400; steps++) {
+      if (lane.gen !== gen) return;
+      lane.again = false;
+      if (!laneActive(lane)) {
+        if (laneStopped(lane) && lane.queue.length) {
+          // Paused, switched off, or the agent was stopped: these replies must not go out later.
+          lane.queue = [];
+          saveQueue(lane);
+        }
+        return; // the next probe or sync starts the lane again
+      }
+      const step = await laneStep(lane);
+      if (step.idle && !lane.again) { wakeAt(lane, step.at); return; }
+    }
+    wakeAt(lane, Date.now() + 1000);
+  } catch (err) {
+    console.warn('[acx] lane failed', lane.id, err?.message || err);
+    wakeAt(lane, Date.now() + 3000);
+  } finally {
+    if (lane.gen === gen) {
+      lane.running = false;
+      if (lane.again) setTimeout(() => kick(lane), 0);
+    }
+  }
+}
+
+/** One step: a scan, a read (its inbound call runs on its own) or a send. Or nothing, and when to look again. */
+async function laneStep(lane) {
+  const now = Date.now();
+  // A job whose lease is over may have been handed back or cancelled by the server: it is not ours.
+  const before = lane.queue.length;
+  lane.queue = lane.queue.filter((it) => !core.leaseOver(it, now));
+  if (lane.queue.length !== before) saveQueue(lane);
+
+  const due = dueReads(lane, now);
+  const holdNewChat = due.length > 0 || lane.inflight.size > 0 || lane.queue.some((it) => it.job.kind !== 'new_chat');
+  const next = core.nextJob(lane.queue, { now, lastSendAt: lane.lastSendAt, lastSendThread: lane.lastSendThread, crossChatGapMs: lane.def.crossChatGapMs, holdNewChat });
+
+  const sinceScan = now - lane.lastScanAt;
+  const scanDue = sinceScan >= lane.def.idleScanMs
+    || (lane.scanWanted > 0 && sinceScan >= lane.def.minScanGapMs)
+    // A thread became due since the last look: look once more first, the customer may still be writing.
+    || (due.length > 0 && lane.lastScanAt < core.dueTime(due[0].e, settleMs()) && sinceScan >= 1000);
+
+  const allInflight = lanes.reduce((n, l) => n + l.inflight.size, 0);
+  const step = core.chooseStep({
+    scanDue, readyJob: Boolean(next.item), jobUrgent: Boolean(next.item && core.leaseUrgent(next.item, now)),
+    dueRead: due.length > 0, readsSinceSend: lane.readsSinceSend,
+    inflight: allInflight >= core.INBOUND_CAP_ALL ? Infinity : lane.inflight.size,
+  });
+  if (step === 'send') { await sendJob(lane, next.item, due.length); return {}; }
+  if (step === 'scan') { await scanLane(lane); return {}; }
+  if (step === 'read') { await readThread(lane, due[0].k); return {}; }
+
+  // Idle: wake for the next scan, the next due thread or the next job, whichever comes first.
+  let at = lane.lastScanAt + lane.def.idleScanMs;
+  if (lane.scanWanted > 0) at = Math.min(at, lane.lastScanAt + lane.def.minScanGapMs);
+  at = Math.min(at, next.at);
+  const settle = settleMs();
+  for (const e of Object.values(lane.seen)) {
+    if (!e || !e.t || e.reported === e.sig) continue;
+    const d = core.dueTime(e, settle);
+    if (d > now) at = Math.min(at, d);
+  }
+  return { idle: true, at: Math.max(at, now + 250) };
+}
+
+/** A tab operation of this lane. Keeps the lane's view of its tab up to date. */
+async function laneOp(lane, op, args, timeoutMs) {
+  lane.op = { op, since: Date.now() };
+  try {
+    const res = await tabOp(lane, op, args, timeoutMs, lane.tabId);
+    if (res.ok) { lane.opOkAt = Date.now(); lane.timeouts = 0; }
+    else if (res.error_code === 'timeout') lane.timeouts++;
+    if (!res.ok && (res.error_code === 'tab_missing' || res.error_code === 'no_content_script')) {
+      // The tab went away or is loading again: wait for the next probe to say it is ready.
+      lane.probe = { ...lane.probe, state: 'unknown' };
+      syncSoon(1500);
+    }
+    return res;
+  } finally {
+    lane.op = null;
+  }
+}
+
+// ---- scanning and reading -------------------------------------------------------------------------
+
+async function scanLane(lane) {
+  const T = await timing();
+  lane.scanWanted = 0;
+  await patchHealth(lane, { last_scan_at: Date.now() });
+  const scan = await laneOp(lane, 'scan', {}, 25_000);
+  lane.lastScanAt = Date.now();
+  if (!scan.ok || !Array.isArray(scan.data?.threads)) {
+    await patchHealth(lane, { last_error: plainError(scan) });
+    return;
+  }
+  await patchHealth(lane, { last_ok_at: Date.now(), last_error: '' });
+
+  const now = Date.now();
+  const live = new Set();
+  scan.data.threads.forEach((t, pos) => {
+    if (!t || !t.key || t.is_group) return;
+    live.add(t.key);
+    lane.seen[t.key] = core.noteThread(lane.seen[t.key], { ...t, pos }, now, 'scan');
+  });
+
+  // Safety sweep: recent chats that end with a customer message, whatever the badge says.
+  const h = await getHealth(lane);
+  if (!h.sweep_at) await patchHealth(lane, { sweep_at: now }); // the first one comes a full period after start
+  else if (now - h.sweep_at >= T.sweep_ms) {
+    await patchHealth(lane, { sweep_at: now });
+    const sw = await laneOp(lane, 'sweep', {}, 40_000);
+    if (sw.ok && Array.isArray(sw.data?.threads)) {
+      for (const t of sw.data.threads) {
+        if (!t || !t.key || t.is_group || live.has(t.key)) continue; // the scan already covers it
+        live.add(t.key);
+        if (lane.seen[t.key]?.reported === String(t.sig ?? '')) continue; // reported this session: cheap, skip
+        lane.seen[t.key] = core.noteThread(lane.seen[t.key], t, Date.now(), 'sweep');
+      }
+    }
+  }
+  lane.live = live;
+  for (const k of Object.keys(lane.seen)) {
+    if (!live.has(k) && !lane.inflight.has(k) && now - (lane.seen[k]?.since || 0) > 6 * 3600_000) delete lane.seen[k];
+  }
+  for (const [conv, r] of lane.reads) if (now - r.at > 30 * 60_000) lane.reads.delete(conv);
+  saveSeen(lane);
+}
+
+function readFailed(lane, k, res) {
+  const e = lane.seen[k];
+  if (e) { e.tries = (e.tries || 0) + 1; e.failed_at = Date.now(); }
+  if (res && !res.ok) patchHealth(lane, { last_error: plainError(res) });
+}
+
+/** Read one thread, then post it to the server without waiting for the decision. */
+async function readThread(lane, k) {
+  const e = lane.seen[k];
+  if (!e) return;
+  const readAt = Date.now();
+  const readSig = e.sig;
+  e.inflight_until = readAt + core.INFLIGHT_TTL_MS;
+  lane.inflight.set(k, { since: readAt });
+  lane.readsSinceSend++;
+  saveSeen(lane);
+  let posted = false;
+  try {
+    const read = await laneOp(lane, 'read', { key: k }, 45_000);
+    const cur = lane.seen[k];
+    if (!read.ok || !read.data) { readFailed(lane, k, read); return; }
+    if (read.data.skipped) { if (cur) cur.reported = readSig; return; } // automated mail, found when opened
+    if (!read.data.thread) { readFailed(lane, k, read); return; }
+    const thread = read.data.thread;
+    const conv = thread.external_id ? String(thread.external_id) : null;
+    if (cur) cur.thread = conv;
+    // The same conversation is being decided or answered already (another key led to it): read it
+    // again once that is finished, so the second decision sees the first reply.
+    if (conv && threadBusy(lane, conv, Date.now(), k)) return;
+    const tail = read.data.tail || null;
+    if (conv) lane.reads.set(conv, { tail, at: readAt, key: k });
+    postInbound(lane, k, readSig, {
+      channel: lane.channel,
+      thread: cur?.t?.accepted ? { ...thread, just_accepted: true } : thread,
+      messages: read.data.messages || [],
+    }, { readAt, conv, tail });
+    posted = true;
+  } finally {
+    if (!posted) {
+      const cur = lane.seen[k];
+      if (cur) cur.inflight_until = 0;
+      lane.inflight.delete(k);
+      saveSeen(lane);
+    }
+  }
+}
+
+// The first inbound after a quiet spell goes alone for a moment, so the parallel ones find the
+// server's prompt cache warm instead of each paying to write it.
+let lastDecisionAt = 0;
+let coldFirst = null;
+async function coldGate() {
+  if (Date.now() - lastDecisionAt < 5 * 60_000) return null;
+  if (coldFirst) { await Promise.race([coldFirst.promise, sleep(3000)]); return null; }
+  let resolve;
+  coldFirst = { promise: new Promise((r) => { resolve = r; }) };
+  coldFirst.resolve = resolve;
+  return coldFirst;
+}
+
+/** Post a read to the server. Runs on its own; the lane goes on with other chats meanwhile. */
+function postInbound(lane, k, readSig, payload, meta) {
+  const conv = meta.conv;
+  if (conv) lane.threadCalls.set(conv, (lane.threadCalls.get(conv) || 0) + 1);
+  (async () => {
+    const mine = await coldGate();
+    let decision = null;
+    let error = null;
+    try {
+      decision = await api.inbound(payload);
+      lastDecisionAt = Date.now();
+    } catch (err) {
+      error = err;
+    } finally {
+      if (mine) { mine.resolve(); if (coldFirst === mine) coldFirst = null; }
+    }
+    const e = lane.seen[k];
+    const now = Date.now();
+    if (error) {
+      const status = error.status || 0;
+      if (!e) return;
+      if (status === 0) {
+        // No connection: the server never got it. Try again soon, without using up the chat's tries.
+        e.net_fails = (e.net_fails || 0) + 1;
+        e.retry_at = now + core.backoffMs(e.net_fails);
+      } else if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+        e.tries = (e.tries || 0) + 1; // the server refused this report: three tries, then a pause
+        e.failed_at = now;
+      } else {
+        // A server error: like a decision that is not final.
+        e.fails = (e.fails || 0) + 1;
+        if (e.fails > core.MAX_NONFINAL_RETRIES) { e.reported = readSig; e.fails = 0; } // the server sweeper owns it now
+        else e.retry_at = now + core.STREAM_CUT_RETRY_MS + Math.round(Math.random() * 3000);
+      }
+      console.warn('[acx] inbound failed', lane.id, error?.message || error);
+      return;
+    }
+    const d = core.readDecision(decision);
+    for (const job of d.jobs) enqueue(lane, job, { readAt: meta.readAt, conv: conv || job.target?.thread_external_id || null, key: k, tail: meta.tail, source: 'inline' });
+    // Jobs were queued that did not come back in this answer, or the answer was cut: sync for them.
+    if (d.jobsPending) syncSoon(0);
+    else if (d.cut) syncSoon(core.STREAM_CUT_RETRY_MS);
+    if (!e) return;
+    e.net_fails = 0;
+    if (d.final) {
+      e.reported = readSig;
+      e.fails = 0;
+      e.retry_at = 0;
+    } else {
+      e.fails = (e.fails || 0) + 1;
+      if (e.fails > core.MAX_NONFINAL_RETRIES) { e.reported = readSig; e.fails = 0; } // leave it to the server sweeper
+      else e.retry_at = now + d.retryAfterMs + Math.round(Math.random() * 1000);
+    }
+  })().catch((err) => console.warn('[acx] inbound handling failed', err?.message || err)).finally(() => {
+    if (conv) {
+      const n = (lane.threadCalls.get(conv) || 1) - 1;
+      if (n > 0) lane.threadCalls.set(conv, n); else lane.threadCalls.delete(conv);
+    }
+    const e = lane.seen[k];
+    if (e) e.inflight_until = 0;
+    lane.inflight.delete(k);
+    saveSeen(lane);
+    kick(lane);
+    // Another lane may be waiting for a free slot under the laptop wide cap.
+    for (const other of lanes) if (other !== lane && !other.running) kick(other);
+  });
+}
+
+// ---- the send queue -------------------------------------------------------------------------------
+
+/** Put a job in its lane's queue, once (jobs are deduped by id). */
+function enqueue(lane, job, meta) {
+  if (!job || !job.id) return;
+  const existing = lane.queue.find((it) => it.job.id === job.id);
+  if (existing) {
+    // The same job again (a sync after an inline answer): keep the newer lease.
+    if ((job.lease_until || 0) > (existing.job.lease_until || 0)) existing.job = { ...existing.job, lease_until: job.lease_until };
+    return;
+  }
+  if (lane.job && lane.job.job.id === job.id) return; // being typed right now
+  const now = Date.now();
+  const conv = meta.conv ?? job.target?.thread_external_id ?? null;
+  let tail = meta.tail ?? null;
+  if (!tail && conv && ['auto', 'holding', 'discount'].includes(job.source)) {
+    // A reply the agent wrote by itself that came through the sync: check it against the latest read.
+    const r = lane.reads.get(conv);
+    if (r && now - r.at < 15 * 60_000) tail = r.tail;
+  }
+  lane.queue.push({
+    job, seq: ++lane.seq, arrived: now, readAt: meta.readAt ?? null,
+    sendAt: core.sendAtFor(job, meta.readAt ?? null, now), thread: conv, key: meta.key ?? null, tail, source: meta.source, requeued: 0,
+  });
+  saveQueue(lane);
+  kick(lane);
+}
+
+// Jobs refused because the customer wrote again: never sent later, even if offered once more.
+const NEWER_KEY = 'newer_jobs';
+async function newerJobs() { const l = await store.sessionGet(NEWER_KEY, []).catch(() => []); return Array.isArray(l) ? l : []; }
+async function rememberNewer(id) { const l = await newerJobs(); if (!l.includes(id)) { l.push(id); await store.sessionSet(NEWER_KEY, l.slice(-200)).catch(() => {}); } }
+
+// ---- send in progress (memory for speed, session storage so a restarted worker still knows) -----------
+
+const jobBusyKey = (lane) => `job_busy:${lane.name}`;
+async function setJobBusy(lane, on) {
+  try { await store.sessionSet(jobBusyKey(lane), on ? Date.now() + 6 * 60_000 : 0); } catch { /* ignore */ }
+}
+async function jobBusy(lane) {
+  if (lane.job || lane.op) return true;
+  try { return (await store.sessionGet(jobBusyKey(lane), 0)) > Date.now(); } catch { return false; }
+}
+
+async function waitForReady(lane, timeoutMs, tabId) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    await sleep(1500);
+    const tab = await tabById(lane, tabId);
+    if (!tab || tab.status !== 'complete') continue;
+    const res = await tabOp(lane, 'probe', {}, 6000, tabId);
+    if (res.ok && res.data?.state === 'ready') return true;
+    if (res.ok && (res.data?.state === 'logged_out' || res.data?.state === 'blocked')) return false;
+  }
+  return false;
+}
+
+/** Send one queued job in the lane's tab and report how it went. */
+async function sendJob(lane, item, dueCount = 0) {
+  lane.queue = lane.queue.filter((it) => it !== item);
+  lane.job = item;
+  lane.readsSinceSend = 0;
+  const job = item.job;
+  await setJobBusy(lane, true);
+  try {
+    if (await store.isDone(job.id)) {
+      // Already typed and sent, but the confirmation was lost. Confirm again, never send twice.
+      await deliverResult(job.id, { status: 'sent' });
+      return;
+    }
+    if ((await newerJobs()).includes(job.id)) {
+      await deliverResult(job.id, { status: 'failed', error_code: 'newer_message', error: 'The customer wrote again before this reply went out', retryable: false });
+      return;
+    }
+    const tabId = lane.tabId;
+    if (tabId == null) { await requeueOrFail(lane, item, { ok: false, error_code: 'tab_missing', error: 'Tab closed', retryable: true }); return; }
+
+    let prepared = { ready: true };
+    if (job.kind === 'new_chat') {
+      const prep = await laneOp(lane, 'prepare', { job }, 20_000);
+      if (!prep.ok) { await finishJob(lane, item, prep); return; }
+      prepared = prep.data || { ready: true };
+      if (prepared.navigate) {
+        try { await chrome.tabs.update(tabId, { url: prepared.navigate }); } catch {
+          await finishJob(lane, item, { ok: false, error_code: 'tab_missing', error: 'Tab closed', retryable: true });
+          return;
+        }
+        if (!(await waitForReady(lane, 75_000, tabId))) {
+          await finishJob(lane, item, { ok: false, error_code: 'timeout', error: 'Page did not load after opening the chat', retryable: true });
+          return;
+        }
+        lane.probe = { ...lane.probe, state: 'ready', at: Date.now() };
+      }
+    }
+    // Other customers waiting in this lane: the old human pauses (typing_cps 1 to 199) shrink to floors.
+    const other = lane.queue.length + lane.inflight.size + dueCount;
+    const res = await laneOp(lane, 'send', {
+      job, navigated: Boolean(prepared.navigate), newer_than: item.tail || null, budget_ms: core.sendBudget(other),
+    }, 150_000);
+    await finishJob(lane, item, res);
+  } finally {
+    lane.job = null;
+    lane.lastSendAt = Date.now();
+    lane.lastSendThread = item.thread || `job:${job.id}`;
+    await setJobBusy(lane, false);
+    saveQueue(lane);
+  }
+}
+
+/** The tab went away or reloaded before anything was typed: keep the job for when it is ready again. */
+async function requeueOrFail(lane, item, res) {
+  if ((item.requeued || 0) < 3) {
+    lane.queue.push({ ...item, requeued: (item.requeued || 0) + 1 });
+    saveQueue(lane);
+    return;
+  }
+  await deliverResult(item.job.id, { status: 'failed', error_code: res.error_code || 'tab_missing', error: res.error || '', retryable: true });
+}
+
+async function finishJob(lane, item, res) {
+  const job = item.job;
+  if (res.ok) {
+    await store.rememberDone(job.id);
+    await deliverResult(job.id, { status: 'sent', sent_external_ids: res.data?.sent_external_ids || [] });
+    if (item.source === 'sync') syncSoon(1500); // the server may hold more for this channel
+    return;
+  }
+  if (res.error_code === 'newer_message') {
+    // The reply is out of date. The server drops it (cancelled; older servers mark it failed), and
+    // the chat is read again so one fresh decision covers every message.
+    await rememberNewer(job.id);
+    await deliverResult(job.id, { status: 'failed', error_code: 'newer_message', error: res.error || 'The customer wrote again', retryable: false });
+    for (const [k, e] of Object.entries(lane.seen)) {
+      if (e && (k === item.key || (item.thread && e.thread === item.thread))) { e.reported = null; e.fails = 0; e.retry_at = 0; }
+    }
+    saveSeen(lane);
+    return;
+  }
+  if (res.error_code === 'no_content_script' || res.error_code === 'tab_missing') {
+    // Nothing reached the page: safe to try again once the tab is back.
+    await requeueOrFail(lane, item, res);
+    return;
+  }
+  await deliverResult(job.id, { status: 'failed', error_code: res.error_code || 'unknown', error: res.error || '', retryable: res.retryable !== false });
+  if (res.error_code === 'blocked' || res.error_code === 'logged_out') {
+    // A captcha, a "too fast" notice or a sign out stops the whole lane until a probe says it is ready.
+    lane.probe = { ...lane.probe, state: res.error_code === 'blocked' ? 'blocked' : 'logged_out' };
+    syncSoon(1000);
+  }
+}
+
+// ---- job results (kept until the server has them) -------------------------------------------------------
+
+const RESULTS_KEY = 'results_pending';
+let resultsChain = Promise.resolve();
+const resultsBusy = new Set();
+function withResults(fn) {
+  resultsChain = resultsChain.then(async () => {
+    const list = await store.sessionGet(RESULTS_KEY, []).catch(() => []);
+    const out = await fn(Array.isArray(list) ? list : []);
+    if (out) await store.sessionSet(RESULTS_KEY, out).catch(() => {});
+  }).catch(() => {});
+  return resultsChain;
+}
+
+/**
+ * Report a job's outcome. It is kept in session storage first, then posted without holding the lane;
+ * a failed post is tried again after 2, 5 and 10 s, then on every sync, until the server has it.
+ */
+async function deliverResult(jobId, result) {
+  await withResults((list) => [...list.filter((r) => r.id !== jobId), { id: jobId, result, tries: 0, at: Date.now() }]);
+  postResult(jobId).catch(() => {});
+}
+
+async function postResult(jobId) {
+  if (resultsBusy.has(jobId)) return;
+  let entry = null;
+  await withResults((list) => { entry = list.find((r) => r.id === jobId) || null; return null; });
+  if (!entry) return;
+  resultsBusy.add(jobId);
+  let done = false;
+  try {
+    await api.jobResult(jobId, entry.result);
+    done = true;
+  } catch (err) {
+    const s = err?.status || 0;
+    if (s >= 400 && s < 500 && s !== 408 && s !== 429) done = true; // the server will never take it (unknown job)
+  } finally {
+    resultsBusy.delete(jobId);
+  }
+  if (done) { await withResults((list) => list.filter((r) => r.id !== jobId)); return; }
+  let tries = 0;
+  await withResults((list) => list.map((r) => (r.id === jobId ? { ...r, tries: (tries = (r.tries || 0) + 1) } : r)));
+  if (tries <= core.RESULT_RETRY_MS.length) setTimeout(() => { postResult(jobId); }, core.RESULT_RETRY_MS[tries - 1]);
+}
+
+/** Results still waiting from earlier (the server was away): try them again. Dropped after a day. */
+async function flushResults() {
+  let ids = [];
+  await withResults((list) => {
+    const keep = list.filter((r) => Date.now() - (r.at || 0) < 24 * 3600_000);
+    ids = keep.map((r) => r.id);
+    return keep.length !== list.length ? keep : null;
+  });
+  for (const id of ids) postResult(id);
+}
+
+// ---- per lane health (chrome.storage.session, one key per lane so lanes never clobber each other)
+
+const healthKey = (lane) => `health:${lane.name}`;
+async function getHealth(lane) {
+  try {
+    const h = await store.sessionGet(healthKey(lane), null);
     return h && typeof h === 'object' ? h : {};
   } catch { return {}; }
 }
-const saveHealth = (ch, h) => store.sessionSet(healthKey(ch), h).catch(() => {});
-async function patchHealth(ch, patch) {
-  const h = await getHealth(ch);
-  Object.assign(h, patch);
-  await saveHealth(ch, h);
-  return h;
+const saveHealth = (lane, h) => store.sessionSet(healthKey(lane), h).catch(() => {});
+const healthChains = new Map();
+function patchHealth(lane, patch) {
+  // Serialised per lane: a scan, a read and the watchdog may all write at once.
+  const prev = healthChains.get(lane.id) || Promise.resolve();
+  const next = prev.then(async () => {
+    const h = await getHealth(lane);
+    Object.assign(h, patch);
+    await saveHealth(lane, h);
+    return h;
+  }).catch(() => ({}));
+  healthChains.set(lane.id, next);
+  return next;
 }
 const today = () => new Date().toDateString();
 const recoveriesToday = (h) => (h.rec_day === today() ? h.rec_today || 0 : 0);
@@ -106,17 +759,6 @@ function plainError(res) {
   }
 }
 
-// ---- send in progress (memory for speed, session storage so a restarted worker still knows) -----------
-
-const busy = Object.fromEntries(NAMES.map((n) => [n, false]));
-async function setJobBusy(ch, on) {
-  try { await store.sessionSet(`job_busy:${ch}`, on ? Date.now() + 6 * 60_000 : 0); } catch { /* ignore */ }
-}
-async function jobBusy(ch) {
-  if (busy[ch]) return true;
-  try { return (await store.sessionGet(`job_busy:${ch}`, 0)) > Date.now(); } catch { return false; }
-}
-
 // ---- tabs -------------------------------------------------------------------------------------------
 
 /** The Gmail address the owner chose in the dashboard, or '' for Chrome's first account. */
@@ -125,92 +767,87 @@ async function gmailAccount() {
   return String(cfg?.gmail_account || '').trim().toLowerCase();
 }
 
-function homeUrl(channel, account) {
-  // Gmail picks the signed-in account from ?authuser=<address> (a /u/<address>/ path gives a 404).
-  if (channel === 'gmail' && account) return `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#inbox`;
-  return CHANNELS[channel].home;
+async function homeUrl(lane) {
+  const sel = await store.get('selectors').catch(() => null);
+  return lane.def.home({
+    account: lane.channel === 'gmail' ? await gmailAccount() : '',
+    business,
+    pack: sel?.pack?.[lane.channel] || null,
+  });
 }
 
-/** True for a page of the channel's own site that is not a sign in page. */
-function isOwnSitePage(channel, url) {
-  let u;
-  try { u = new URL(url || ''); } catch { return false; }
-  if (channel === 'tiktok') return u.hostname === 'www.tiktok.com' && !/^\/(login|signup)/.test(u.pathname);
-  if (channel === 'whatsapp') return u.hostname === 'web.whatsapp.com';
-  if (channel === 'gmail') return u.hostname === 'mail.google.com';
-  return false;
-}
-
-/** True when `url` is one of the pages the channel works on (same patterns as CHANNELS[].match). */
-function onChannelPage(channel, url) {
-  let u;
-  try { u = new URL(url || ''); } catch { return false; }
-  if (channel === 'tiktok') return u.hostname === 'www.tiktok.com' && /^\/(messages|login)/.test(u.pathname);
-  if (channel === 'whatsapp') return u.hostname === 'web.whatsapp.com';
-  if (channel === 'gmail') return u.hostname === 'mail.google.com';
-  return false;
-}
+const onLanePage = (lane, url) => { const u = parseUrl(url); return Boolean(u && lane.def.page(u)); };
+const onAwayPage = (lane, url) => { const u = parseUrl(url); return Boolean(u && lane.def.page(u) && lane.def.away(u)); };
+const onOwnSite = (lane, url) => { const u = parseUrl(url); return Boolean(u && lane.def.site(u)); };
 
 /**
- * The one tab the agent works in for a channel. When the site is open more than once it keeps the
- * tab it used before, else the chosen Gmail account, else the pinned one, else the oldest. The others
- * are never read or typed into. `acxCount` says how many tabs of the site are open.
+ * The one tab the lane works in. When the page is open more than once it keeps the tab it used
+ * before, else the chosen Gmail account, else the pinned one, else the oldest; a tab on a page the
+ * lane can work in beats one it would have to send home. A tab another lane holds is never taken.
+ * The others are never read or typed into. `acxCount` says how many tabs of the page are open.
  */
-async function findTab(channel) {
+async function findTab(lane) {
   let tabs = [];
-  try { tabs = await chrome.tabs.query({ url: CHANNELS[channel].match }); } catch { tabs = []; }
+  try { tabs = await chrome.tabs.query({ url: lane.def.match }); } catch { tabs = []; }
+  const taken = new Set(lanes.filter((l) => l !== lane && l.tabId != null).map((l) => l.tabId));
+  tabs = tabs.filter((t) => onLanePage(lane, t.url || t.pendingUrl) && !taken.has(t.id));
   if (!tabs.length) return null;
+  const working = tabs.filter((t) => !onAwayPage(lane, t.url || t.pendingUrl));
+  const pool = working.length ? working : tabs;
   let pick = null;
-  if (channel === 'gmail') {
+  if (lane.channel === 'gmail') {
     // Gmail puts the account address in the tab title: prefer the tab showing the chosen inbox.
     const account = await gmailAccount();
-    pick = account ? tabs.find((t) => (t.title || '').toLowerCase().includes(account)) || null : null;
+    pick = account ? pool.find((t) => (t.title || '').toLowerCase().includes(account)) || null : null;
   }
-  const sticky = await store.sessionGet(`tab:${channel}`, 0).catch(() => 0);
-  if (!pick && sticky) pick = tabs.find((t) => t.id === sticky) || null;
-  if (!pick) pick = [...tabs].sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.id - b.id)[0];
-  if (pick.id !== sticky) await store.sessionSet(`tab:${channel}`, pick.id).catch(() => {});
+  const sticky = await store.sessionGet(`tab:${lane.id}`, 0).catch(() => 0);
+  if (!pick && sticky) pick = pool.find((t) => t.id === sticky) || null;
+  if (!pick) pick = [...pool].sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.id - b.id)[0];
+  if (pick.id !== sticky) await store.sessionSet(`tab:${lane.id}`, pick.id).catch(() => {});
   return Object.assign(pick, { acxCount: tabs.length });
 }
 
-/** The tab with this id, when it still shows the channel's page. */
-async function tabById(channel, tabId) {
+/** The tab with this id, when it still shows the lane's page. */
+async function tabById(lane, tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    return tab && onChannelPage(channel, tab.url || tab.pendingUrl) ? tab : null;
+    return tab && onLanePage(lane, tab.url || tab.pendingUrl) ? tab : null;
   } catch { return null; }
 }
 
-async function ensureTab(channel, autoOpen) {
-  let tab = await findTab(channel);
+/**
+ * Send a tab back to the lane's home page, at most once every 10 minutes per lane: if the site keeps
+ * moving it away, stop and say where it went instead of reloading it forever.
+ */
+async function sendHome(lane, tabId) {
+  const tries = await store.sessionGet('return_tries', {}).catch(() => ({}));
+  if (Date.now() - (tries[lane.id] || 0) <= 10 * 60_000) return false;
+  tries[lane.id] = Date.now();
+  await store.sessionSet('return_tries', tries).catch(() => {});
+  try { await chrome.tabs.update(tabId, { url: await homeUrl(lane) }); return true; } catch { return false; }
+}
+
+async function ensureTab(lane, autoOpen) {
+  let tab = await findTab(lane);
   if (!tab) {
     // A tab we opened may have been redirected to a sign in page on another address. Do not open
-    // another one every cycle: keep it, and report it as logged out.
-    const opened = await store.sessionGet('opened_tabs', {});
-    if (opened[channel]) {
+    // another one every time: keep it, and report it as logged out.
+    const opened = await store.sessionGet('opened_tabs', {}).catch(() => ({}));
+    if (opened[lane.id]) {
       try {
-        const away = await chrome.tabs.get(opened[channel]);
+        const away = await chrome.tabs.get(opened[lane.id]);
         // Signed in, but the site moved the tab to another of its own pages (TikTok goes to the
         // home feed after logging in): bring it back to the page the agent works on.
-        // Only once every 10 minutes: if the site keeps moving it away, stop and say where it went
-        // instead of reloading it forever.
-        const tries = await store.sessionGet('return_tries', {});
-        const last = tries[channel] || 0;
-        if (isOwnSitePage(channel, away.url) && Date.now() - last > 10 * 60_000) {
-          tries[channel] = Date.now();
-          await store.sessionSet('return_tries', tries);
-          await chrome.tabs.update(away.id, { url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : '') });
-          return { ...away, status: 'loading', acxCount: 1 };
-        }
-        return { ...away, acxAway: true, acxOwnSite: isOwnSitePage(channel, away.url), acxCount: 1 };
-      } catch { delete opened[channel]; await store.sessionSet('opened_tabs', opened); }
+        if (onOwnSite(lane, away.url) && (await sendHome(lane, away.id))) return { ...away, status: 'loading', acxCount: 1 };
+        return { ...away, acxAway: true, acxOwnSite: onOwnSite(lane, away.url), acxCount: 1 };
+      } catch { delete opened[lane.id]; await store.sessionSet('opened_tabs', opened).catch(() => {}); }
     }
     if (autoOpen) {
       try {
-        tab = await chrome.tabs.create({ url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : ''), active: false, pinned: true });
-        opened[channel] = tab.id;
+        tab = await chrome.tabs.create({ url: await homeUrl(lane), active: false, pinned: true });
+        opened[lane.id] = tab.id;
         await store.sessionSet('opened_tabs', opened);
-        await store.sessionSet(`tab:${channel}`, tab.id);
+        await store.sessionSet(`tab:${lane.id}`, tab.id);
         tab.acxCount = 1;
       } catch { tab = null; }
     }
@@ -227,9 +864,9 @@ async function ensureTab(channel, autoOpen) {
  * With `tabId` the call goes to that tab only (or fails with tab_missing): a job or a read never moves
  * to another tab halfway through.
  */
-async function tabOp(channel, op, args, timeoutMs = 30_000, tabId = null) {
-  const tab = tabId != null ? await tabById(channel, tabId) : await findTab(channel);
-  if (!tab) return { ok: false, error_code: 'tab_missing', error: `No ${channel} tab is open`, retryable: true };
+async function tabOp(lane, op, args, timeoutMs = 30_000, tabId = null) {
+  const tab = tabId != null ? await tabById(lane, tabId) : await findTab(lane);
+  if (!tab) return { ok: false, error_code: 'tab_missing', error: `No ${lane.def.label} tab is open`, retryable: true };
   const call = new Promise((resolve) => {
     try {
       chrome.tabs.sendMessage(tab.id, { acx: true, op, args }, (res) => {
@@ -254,13 +891,17 @@ async function tabOp(channel, op, args, timeoutMs = 30_000, tabId = null) {
 // ---- healing tabs -------------------------------------------------------------------------------------
 
 /**
- * Reload or replace a channel's tab, within the limits: never while a message is being sent, at most
- * one action per `recovery_gap_ms` and `max_recoveries_per_hour` per channel. Mutates `h` (the
- * channel's health record); the caller saves it. Returns true when something was done.
+ * Reload or replace a lane's tab, within the limits: never while the lane has work in hand (a tab
+ * operation, a reply being sent, a queued reply or an inbound call), at most one action per
+ * `recovery_gap_ms` and `max_recoveries_per_hour` per lane. `force` is only for a tab that cannot
+ * run anything at all (Chrome unloaded it, or it has no agent script): its queued replies wait in
+ * the lane and go out once it is ready. Mutates `h` (the lane's health record); the caller saves it.
+ * Returns true when something was done.
  */
-async function recover(channel, tabId, kind, why, h, T) {
+async function recover(lane, tabId, kind, why, h, T, { force = false } = {}) {
   const now = Date.now();
-  if (await jobBusy(channel)) return false;
+  if (await jobBusy(lane)) return false;
+  if (!force && (lane.queue.length || lane.inflight.size || lane.threadCalls.size)) return false;
   h.rec_times = (Array.isArray(h.rec_times) ? h.rec_times : []).filter((t) => now - t < 3600_000);
   if (h.rec_times.length >= T.max_recoveries_per_hour) {
     h.last_error = `${why}. Stopped fixing it for now after ${h.rec_times.length} tries this hour`;
@@ -276,13 +917,12 @@ async function recover(channel, tabId, kind, why, h, T) {
       // Open the fresh tab first (in the same window), so closing the old one never closes the window.
       let windowId;
       try { windowId = (await chrome.tabs.get(tabId)).windowId; } catch { windowId = undefined; }
-      const url = homeUrl(channel, channel === 'gmail' ? await gmailAccount() : '');
-      const fresh = await chrome.tabs.create({ url, active: false, pinned: true, ...(windowId != null ? { windowId } : {}) });
+      const fresh = await chrome.tabs.create({ url: await homeUrl(lane), active: false, pinned: true, ...(windowId != null ? { windowId } : {}) });
       try { await chrome.tabs.update(fresh.id, { autoDiscardable: false }); } catch { /* ignore */ }
       try { await chrome.tabs.remove(tabId); } catch { /* already gone */ }
-      await store.sessionSet(`tab:${channel}`, fresh.id);
+      await store.sessionSet(`tab:${lane.id}`, fresh.id);
       const opened = await store.sessionGet('opened_tabs', {});
-      opened[channel] = fresh.id;
+      opened[lane.id] = fresh.id;
       await store.sessionSet('opened_tabs', opened);
       h.tab_id = fresh.id; // the same healing goes on in the new tab
       done = 'Opened a fresh tab';
@@ -291,6 +931,7 @@ async function recover(channel, tabId, kind, why, h, T) {
     h.last_error = `${why}. Could not fix the tab (${String(err?.message || err).slice(0, 80)})`;
     return false;
   }
+  lane.probe = { ...lane.probe, state: 'loading' };
   h.rec_times.push(now);
   h.rec_at = now;
   if (h.rec_day !== today()) { h.rec_day = today(); h.rec_today = 0; }
@@ -298,22 +939,23 @@ async function recover(channel, tabId, kind, why, h, T) {
   h.last_recovery = `${done}: ${why}`;
   h.last_recovery_at = now;
   h.last_error = why;
-  console.warn('[acx] self heal', channel, done, why);
-  api.diagnostics(channel, 'note', { where: 'watchdog', action: kind, why, recoveries_today: h.rec_today }).catch(() => {});
+  console.warn('[acx] self heal', lane.id, done, why);
+  api.diagnostics(lane.channel, 'note', { where: 'watchdog', lane: lane.id, action: kind, why, recoveries_today: h.rec_today }).catch(() => {});
   return true;
 }
 
 /**
- * Called once per cycle per channel with what the cycle saw. `info.alive` is true when the tab
- * proved it works: a good scan when one was due, else a probe that answered with a settled state.
+ * Called on each sync per lane. A lane that is working is alive when any tab operation (scan, read
+ * or send) worked in the last minute; one that is not working (switched off, page not ready) is
+ * alive when its probe answered with a settled state.
  */
-async function watchdog(channel, info, T) {
+async function watchdog(lane, info, T) {
   const now = Date.now();
-  const h = await getHealth(channel);
+  const h = await getHealth(lane);
   if (!info.tabId || info.away) {
     // No tab, or a tab the loop guards already handle (redirected, logged out): nothing to heal.
     h.stage = 0; h.tab_id = info.tabId || null; h.watch_from = now; h.loading_since = 0;
-    await saveHealth(channel, h);
+    await saveHealth(lane, h);
     return;
   }
   if (h.tab_id !== info.tabId) { h.tab_id = info.tabId; h.watch_from = now; h.stage = 0; } // a new tab gets a fresh start
@@ -321,76 +963,91 @@ async function watchdog(channel, info, T) {
   // A page that answers "loading" is given longer: WhatsApp can take minutes to sync after a night off.
   if (info.answeredLoading) h.loading_since = h.loading_since || now;
   else h.loading_since = 0;
-  const alive = info.alive || (info.answeredLoading && now - h.loading_since < T.loading_ms);
+  const scanExpected = laneActive(lane);
+  const lastGood = Math.max(lane.opOkAt || 0, h.last_ok_at || 0);
+  const aliveNow = scanExpected ? now - lastGood < Math.max(60_000, 3 * lane.def.idleScanMs) : Boolean(info.probeOk);
+  const alive = aliveNow || (info.answeredLoading && now - h.loading_since < T.loading_ms);
   if (alive) {
     h.alive_at = now;
     h.stage = 0;
-    await saveHealth(channel, h);
+    await saveHealth(lane, h);
     return;
   }
   const since = Math.max(h.alive_at || 0, h.watch_from || 0);
   const deadFor = now - since;
-  if (deadFor < T.stall_ms || (await jobBusy(channel))) { await saveHealth(channel, h); return; }
+  // Reads keep timing out while chats wait: start healing sooner (still inside the gap and the cap).
+  const stall = lane.timeouts >= 2 && dueReads(lane, now).length ? Math.min(T.stall_ms, 45_000) : T.stall_ms;
+  if (deadFor < stall || (await jobBusy(lane))) { await saveHealth(lane, h); return; }
 
-  const why = info.scanExpected ? `No good read for ${howLong(deadFor)}` : `The page has not answered for ${howLong(deadFor)}`;
+  const why = scanExpected ? `No good read for ${howLong(deadFor)}` : `The page has not answered for ${howLong(deadFor)}`;
   if (!h.stage) {
     // Step 1: ask once more, with more patience. Enough when only the probe was missing.
-    const again = await tabOp(channel, 'probe', {}, T.wake_probe_ms, info.tabId);
+    const again = await tabOp(lane, 'probe', {}, T.wake_probe_ms, info.tabId);
     const answered = again.ok && again.data && ALIVE_STATES.includes(again.data.state) && !((again.data.busy_ms || 0) > STUCK_OP_MS);
-    if (answered && !info.scanExpected) { h.alive_at = Date.now(); await saveHealth(channel, h); return; }
+    if (answered && !scanExpected) { h.alive_at = Date.now(); await saveHealth(lane, h); return; }
     // Step 2: reload.
-    if (await recover(channel, info.tabId, 'reload', why, h, T)) { h.stage = 1; h.stage_at = Date.now(); }
+    if (await recover(lane, info.tabId, 'reload', why, h, T)) { h.stage = 1; h.stage_at = Date.now(); }
   } else if (now - (h.stage_at || 0) >= T.replace_after_ms) {
     // Step 3: still dead after the reload: replace the tab. After that, reload and replace take turns
     // (always inside the gap and the hourly cap).
     const kind = h.stage === 1 ? 'replace' : 'reload';
-    if (await recover(channel, info.tabId, kind, `${why} after a reload`, h, T)) { h.stage = kind === 'replace' ? 2 : 1; h.stage_at = Date.now(); }
+    if (await recover(lane, info.tabId, kind, `${why} after a reload`, h, T)) { h.stage = kind === 'replace' ? 2 : 1; h.stage_at = Date.now(); }
   }
-  await saveHealth(channel, h);
+  await saveHealth(lane, h);
 }
 
-// ---- status -----------------------------------------------------------------------------------------
+// ---- probes and status -------------------------------------------------------------------------------
 
-function duplicateNote(channel, tab) {
+function duplicateNote(lane, tab) {
   if (!tab || !(tab.acxCount > 1)) return '';
-  return `${tab.acxCount} ${CHANNELS[channel].label} tabs are open. The agent only uses the ${tab.pinned ? 'pinned' : 'first'} one`;
+  return `${tab.acxCount} ${lane.def.label} tabs are open. The agent only uses the ${tab.pinned ? 'pinned' : 'first'} one`;
 }
 const joinDetail = (...parts) => parts.filter(Boolean).join('. ');
 
-/** Probe one channel. Returns { st: status for the server, info: what the watchdog needs }. */
-async function probeChannel(channel, autoOpen, probeMs) {
-  const tab = await ensureTab(channel, autoOpen);
+/** Probe one lane's tab. Returns { st: status for the server, info: what the watchdog needs }. */
+async function probeLane(lane, autoOpen, probeMs) {
+  const busyNow = Boolean(lane.job);
+  const tab = await ensureTab(lane, autoOpen);
   if (!tab) return { st: { state: 'no_tab', detail: 'Tab is not open', unread: 0, busy: false }, info: { tabId: null } };
   const tabs = tab.acxCount || 1;
   if (tab.acxAway) {
-    let where = '';
-    try { where = new URL(tab.url).pathname; } catch { /* no url */ }
+    const where = parseUrl(tab.url)?.pathname || '';
     const st = tab.acxOwnSite
       ? { state: 'error', detail: `The tab is on ${where}, not the messages page. Open the messages page in that tab`, unread: 0, busy: false }
       : { state: 'logged_out', detail: 'Log in on that tab', unread: 0, busy: false };
     return { st: { ...st, tabs }, info: { tabId: tab.id, away: true } };
   }
-  let path = '';
-  try { path = new URL(tab.url || 'https://x/').pathname; } catch { /* no url */ }
-  if (channel === 'tiktok' && /\/login/.test(path)) {
+  const url = tab.url || tab.pendingUrl || '';
+  const path = parseUrl(url || 'https://x/')?.pathname || '';
+  if (lane.channel === 'tiktok' && /\/login/.test(path)) {
     return { st: { state: 'logged_out', detail: 'Log in to TikTok on that tab', unread: 0, busy: false, tabs }, info: { tabId: tab.id, away: true } };
   }
-  const dup = duplicateNote(channel, tab);
+  if (onAwayPage(lane, url)) {
+    // TikTok Business Suite: the chat there sits in a frame the agent cannot work in. Being there
+    // proves a business account, so the business view of the messages page is the way back.
+    if (lane.channel === 'tiktok' && !business) { business = true; await store.set({ tiktok_business: true }).catch(() => {}); }
+    if (!(await jobBusy(lane)) && (await sendHome(lane, tab.id))) {
+      return { st: { state: 'loading', detail: 'Bringing the tab back to the messages page', unread: 0, busy: false, tabs }, info: { tabId: tab.id, answeredLoading: true } };
+    }
+    return { st: { state: 'error', detail: `The tab is on ${path}, not the messages page. Open the messages page in that tab`, unread: 0, busy: false, tabs }, info: { tabId: tab.id, away: true } };
+  }
+  const dup = duplicateNote(lane, tab);
   if (tab.discarded || tab.status === 'unloaded') {
     // Chrome unloaded the tab to save memory: bring it back now.
     const T = await timing();
-    const h = await getHealth(channel);
-    if (await recover(channel, tab.id, 'reload', 'Chrome had unloaded the tab', h, T)) await saveHealth(channel, h);
-    return { st: { state: 'loading', detail: joinDetail('Page is loading', dup), unread: 0, busy: busy[channel], tabs }, info: { tabId: tab.id } };
+    const h = await getHealth(lane);
+    if (await recover(lane, tab.id, 'reload', 'Chrome had unloaded the tab', h, T, { force: true })) await saveHealth(lane, h);
+    return { st: { state: 'loading', detail: joinDetail('Page is loading', dup), unread: 0, busy: busyNow, tabs }, info: { tabId: tab.id } };
   }
-  if (tab.status !== 'complete') return { st: { state: 'loading', detail: joinDetail('Page is loading', dup), unread: 0, busy: busy[channel], tabs }, info: { tabId: tab.id } };
-  const res = await tabOp(channel, 'probe', {}, probeMs, tab.id);
+  if (tab.status !== 'complete') return { st: { state: 'loading', detail: joinDetail('Page is loading', dup), unread: 0, busy: busyNow, tabs }, info: { tabId: tab.id } };
+  const res = await tabOp(lane, 'probe', {}, probeMs, tab.id);
   if (res.ok && res.data) {
     const d = res.data;
     const state = d.state || 'error';
     const stuck = (d.busy_ms || 0) > STUCK_OP_MS;
+    if (lane.channel === 'tiktok' && d.business === true && !business) { business = true; await store.set({ tiktok_business: true }).catch(() => {}); }
     return {
-      st: { state, detail: joinDetail(stuck ? 'The page is stuck' : d.detail || '', dup), unread: d.unread || 0, busy: busy[channel], tabs },
+      st: { state, detail: joinDetail(stuck ? 'The page is stuck' : d.detail || '', dup), unread: d.unread || 0, busy: busyNow, tabs },
       info: { tabId: tab.id, answered: !stuck, probeOk: ALIVE_STATES.includes(state) && !stuck, answeredLoading: state === 'loading' && !stuck },
     };
   }
@@ -398,35 +1055,41 @@ async function probeChannel(channel, autoOpen, probeMs) {
     // The tab was open before the extension was installed or updated: reload it so our script loads.
     // Inside the same limits as the watchdog (gap and hourly cap in session storage).
     const T = await timing();
-    const h = await getHealth(channel);
-    if (await recover(channel, tab.id, 'reload', 'The page had no agent script', h, T)) await saveHealth(channel, h);
+    const h = await getHealth(lane);
+    if (await recover(lane, tab.id, 'reload', 'The page had no agent script', h, T, { force: true })) await saveHealth(lane, h);
   }
   return {
-    st: { state: res.error_code === 'no_content_script' ? 'loading' : 'error', detail: joinDetail(plainError(res), dup), unread: 0, busy: busy[channel], tabs },
+    st: { state: res.error_code === 'no_content_script' ? 'loading' : 'error', detail: joinDetail(plainError(res), dup), unread: 0, busy: busyNow, tabs },
     info: { tabId: tab.id, answered: false },
   };
 }
 
 async function probeAll(autoOpen, probeMs = PROBE_MS) {
-  const channels = {};
-  const info = {};
-  await Promise.all(NAMES.map(async (channel) => {
+  const out = {};
+  await Promise.all(lanes.map(async (lane) => {
     try {
-      const r = await probeChannel(channel, autoOpen, probeMs);
-      channels[channel] = r.st;
-      info[channel] = r.info;
+      out[lane.id] = await probeLane(lane, autoOpen, probeMs);
     } catch (err) {
-      channels[channel] = { state: 'error', detail: String(err?.message || err).slice(0, 140), unread: 0, busy: busy[channel] };
-      info[channel] = { tabId: null };
+      out[lane.id] = { st: { state: 'error', detail: String(err?.message || err).slice(0, 140), unread: 0, busy: false }, info: { tabId: null } };
     }
+    const r = out[lane.id];
+    lane.probe = { state: r.st.state, at: Date.now(), st: r.st, info: r.info };
+    lane.tabId = r.info.tabId ?? null;
   }));
-  return { channels, info };
+  return out;
 }
 
-/** Status per channel with the health fields added (what the server and the popup show). */
-async function withHealth(channels) {
+/** Status per channel (its inbox lane) with the health fields added: what the server and the popup show. */
+async function channelStatus() {
   const out = {};
-  for (const ch of NAMES) out[ch] = { ...(channels[ch] || { state: 'no_tab', detail: '', unread: 0, busy: false }), ...healthFields(await getHealth(ch)) };
+  for (const ch of NAMES) {
+    const lane = primaryLane(ch);
+    const st = lane?.probe?.st || { state: 'no_tab', detail: '', unread: 0, busy: false };
+    // `busy` and `sending` are true only while a reply is being typed (older servers lease nothing
+    // to a busy channel; reads no longer hold the channel).
+    const sending = Boolean(lane?.job);
+    out[ch] = { ...st, busy: sending, sending, queued: lane ? lane.queue.length : 0, inbound: lane ? lane.inflight.size : 0, ...healthFields(lane ? await getHealth(lane) : {}) };
+  }
   return out;
 }
 
@@ -437,192 +1100,19 @@ async function setBadge(text, color) {
   } catch { /* action API unavailable */ }
 }
 
-// ---- jobs -------------------------------------------------------------------------------------------
+// ---- the sync tick -----------------------------------------------------------------------------------
 
-async function waitForReady(channel, timeoutMs, tabId) {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    await sleep(1500);
-    const tab = await tabById(channel, tabId);
-    if (!tab || tab.status !== 'complete') continue;
-    const res = await tabOp(channel, 'probe', {}, 6000, tabId);
-    if (res.ok && res.data?.state === 'ready') return true;
-    if (res.ok && (res.data?.state === 'logged_out' || res.data?.state === 'blocked')) return false;
-  }
-  return false;
-}
-
-async function runJob(channel, job, tabId) {
-  if (await store.isDone(job.id)) {
-    // Already typed and sent, but the confirmation was lost. Confirm again, never send twice.
-    await api.jobResult(job.id, { status: 'sent' }).catch(() => {});
-    return;
-  }
-  busy[channel] = true;
-  await setJobBusy(channel, true);
-  try {
-    // The whole job happens in one tab: the one chosen now.
-    if (tabId == null) tabId = (await findTab(channel))?.id ?? null;
-    if (tabId == null) { await report(job, { ok: false, error_code: 'tab_missing', error: 'Tab closed', retryable: true }); return; }
-    const delay = Math.min(Math.max(0, job.pacing?.delay_ms ?? 0), 25_000);
-    if (delay) await sleep(delay);
-
-    let prepared = { ready: true };
-    if (job.kind === 'new_chat') {
-      const prep = await tabOp(channel, 'prepare', { job }, 20_000, tabId);
-      if (!prep.ok) { await report(job, prep); return; }
-      prepared = prep.data || { ready: true };
-      if (prepared.navigate) {
-        try { await chrome.tabs.update(tabId, { url: prepared.navigate }); } catch {
-          await report(job, { ok: false, error_code: 'tab_missing', error: 'Tab closed', retryable: true });
-          return;
-        }
-        if (!(await waitForReady(channel, 75_000, tabId))) {
-          await report(job, { ok: false, error_code: 'timeout', error: 'Page did not load after opening the chat', retryable: true });
-          return;
-        }
-      }
-    }
-    const res = await tabOp(channel, 'send', { job, navigated: Boolean(prepared.navigate) }, 150_000, tabId);
-    await report(job, res);
-  } finally {
-    busy[channel] = false;
-    await setJobBusy(channel, false);
-  }
-}
-
-async function report(job, res) {
-  if (res.ok) {
-    await store.rememberDone(job.id);
-    await api.jobResult(job.id, { status: 'sent', sent_external_ids: res.data?.sent_external_ids || [] }).catch(() => {});
-  } else {
-    await api.jobResult(job.id, { status: 'failed', error_code: res.error_code || 'unknown', error: res.error || '', retryable: res.retryable !== false }).catch(() => {});
-  }
-}
-
-// ---- reading threads --------------------------------------------------------------------------------
-
-/**
- * Work for one channel in one cycle: send what the server handed us, then look for threads with new
- * customer messages. A thread is only read once it has been quiet for `settle_seconds`, because
- * people often send three short messages in a row.
- *
- * A thread the adapter reported is remembered (session storage) until it was read and sent to the
- * server, so a failed read or an unreachable server never loses it, even when the next scan no longer
- * lists it (the badge went away). Returns true when the scan worked, false when it failed, null when
- * no scan was due (channel switched off, cycle abandoned).
- */
-async function channelWork(channel, jobs, config, ctx) {
-  for (const job of jobs) {
-    if (ctx.stale()) return null;
-    await runJob(channel, job, ctx.tabId);
-  }
-  if (config.channels?.[channel]?.mode === 'off' || ctx.stale()) return null;
-
-  await patchHealth(channel, { last_scan_at: Date.now() });
-  const scan = await tabOp(channel, 'scan', {}, 25_000, ctx.tabId);
-  if (!scan.ok || !Array.isArray(scan.data?.threads)) {
-    await patchHealth(channel, { last_error: plainError(scan) });
-    return false;
-  }
-  await patchHealth(channel, { last_ok_at: Date.now(), last_error: '' });
-
-  const seenKey = `seen:${channel}`;
-  const seen = await store.sessionGet(seenKey, {});
-  const now = Date.now();
-  const settleMs = (config.pacing?.settle_seconds ?? 12) * 1000;
-  const live = new Set();
-
-  const note = (t, src) => {
-    const sig = String(t.sig ?? `${t.unread}|${t.preview}`);
-    const prev = seen[t.key];
-    const lite = { key: t.key, title: t.title || '', accepted: Boolean(t.accepted) };
-    if (!prev || prev.sig !== sig) seen[t.key] = { sig, since: now, reported: prev?.reported ?? null, t: lite, tries: 0, src };
-    else if (!prev.t || lite.accepted) prev.t = { ...lite, accepted: lite.accepted || Boolean(prev.t?.accepted) };
-  };
-  for (const t of scan.data.threads) {
-    if (!t || !t.key || t.is_group) continue;
-    live.add(t.key);
-    note(t, 'scan');
-  }
-
-  // Safety sweep: recent chats that end with a customer message, whatever the badge says.
-  const h = await getHealth(channel);
-  if (!h.sweep_at) await patchHealth(channel, { sweep_at: now }); // the first one comes a full period after start
-  else if (now - h.sweep_at >= ctx.T.sweep_ms && !ctx.stale()) {
-    await patchHealth(channel, { sweep_at: now });
-    const sw = await tabOp(channel, 'sweep', {}, 40_000, ctx.tabId);
-    if (sw.ok && Array.isArray(sw.data?.threads)) {
-      for (const t of sw.data.threads) {
-        if (!t || !t.key || t.is_group || live.has(t.key)) continue; // the scan already covers it
-        live.add(t.key);
-        const sig = String(t.sig ?? '');
-        if (seen[t.key]?.reported === sig) continue; // reported this session: cheap, skip
-        note(t, 'sweep');
-      }
-    }
-  }
-
-  for (const k of Object.keys(seen)) if (!live.has(k) && now - (seen[k]?.since || 0) > 6 * 3600_000) delete seen[k];
-  await store.sessionSet(seenKey, seen);
-
-  const due = [];
-  for (const [k, e] of Object.entries(seen)) {
-    if (!e || !e.t || e.reported === e.sig) continue;
-    if (now - e.since < settleMs || (e.tries || 0) >= 3) continue;
-    if (!live.has(k) && now - e.since > 2 * 3600_000) continue; // not listed for hours: let it go
-    due.push({ k, e });
-  }
-  // What this scan listed first (in its order), then what is still waiting from earlier.
-  due.sort((a, b) => Number(live.has(b.k)) - Number(live.has(a.k)) || a.e.since - b.e.since);
-
-  let handled = 0;
-  for (const { k, e } of due) {
-    if (handled >= MAX_THREADS_PER_CYCLE || ctx.stale() || Date.now() > ctx.deadline) break;
-    handled++;
-    busy[channel] = true;
-    try {
-      const read = await tabOp(channel, 'read', { key: k }, 45_000, ctx.tabId);
-      if (!read.ok || !read.data?.thread) {
-        seen[k].tries = (seen[k].tries || 0) + 1;
-        await store.sessionSet(seenKey, seen);
-        if (!read.ok) await patchHealth(channel, { last_error: plainError(read) });
-        continue;
-      }
-      if (ctx.stale()) break;
-      const thread = e.t.accepted ? { ...read.data.thread, just_accepted: true } : read.data.thread;
-      const decision = await api.inbound({ channel, thread, messages: read.data.messages || [] });
-      seen[k].reported = e.sig;
-      await store.sessionSet(seenKey, seen);
-      busy[channel] = false;
-      for (const job of decision.jobs || []) {
-        if (ctx.stale()) break;
-        await runJob(channel, job, ctx.tabId);
-      }
-    } catch (err) {
-      if (seen[k]) seen[k].tries = (seen[k].tries || 0) + 1;
-      await store.sessionSet(seenKey, seen).catch(() => {});
-      console.warn('[acx] thread failed', channel, err?.message || err);
-    } finally {
-      busy[channel] = false;
-    }
-  }
-  return true;
-}
-
-// ---- the cycle ----------------------------------------------------------------------------------------
-
-let running = false;
-let runningSince = 0;
-let again = false;
-let gen = 0; // bumped when a cycle is abandoned, so its leftovers stop at the next step
 let keepAlive = null;
-
-async function serverBackoff() {
-  return store.sessionGet('server_backoff', { fails: 0, next_at: 0 }).catch(() => ({ fails: 0, next_at: 0 }));
+/** Extension API calls keep the worker awake, so the lanes' timers keep running between alarms. */
+function startKeepAlive() {
+  if (!keepAlive) keepAlive = setInterval(() => { chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError); }, 20_000);
+}
+function stopKeepAlive() {
+  if (keepAlive) clearInterval(keepAlive);
+  keepAlive = null;
 }
 
-/** Keep the laptop awake while paired and not paused. Cheap, so it is repeated every cycle. */
+/** Keep the laptop awake while paired and not paused. Cheap, so it is repeated every sync. */
 function keepAwake(on) {
   try {
     if (on) chrome.power.requestKeepAwake('system');
@@ -630,178 +1120,129 @@ function keepAwake(on) {
   } catch { /* power API unavailable */ }
 }
 
-async function cycle(myGen) {
-  const T = await timing();
-  const started = Date.now();
-  const ctxBase = { T, stale: () => gen !== myGen, deadline: started + T.cycle_timeout_ms * 0.6 };
-  const st = await store.get(['auth', 'paused', 'selectors', 'auto_open_tabs']);
-  if (!st.auth?.token) { await setBadge('SET', '#8a8f98'); return; }
-  keepAwake(!st.paused);
-
-  // Woke up from sleep: probe with more patience and reload tabs that do not answer.
-  const wake = await store.sessionGet('wake_pending', null).catch(() => null);
-  if (wake) await store.sessionSet('wake_pending', null).catch(() => {});
-
-  const probed = await probeAll(st.auto_open_tabs && !st.paused, wake ? T.wake_probe_ms : PROBE_MS);
-  const { info } = probed;
-  if (wake) {
-    for (const ch of NAMES) {
-      const i = info[ch];
-      if (i?.tabId && !i.away && !i.answered && !i.answeredLoading && probed.channels[ch]?.state !== 'loading') {
-        const h = await getHealth(ch);
-        if (await recover(ch, i.tabId, 'reload', 'No answer after the laptop woke up', h, T)) await saveHealth(ch, h);
-      }
-      await patchHealth(ch, { sweep_at: 1 }); // look over recent chats once now (1, not 0: 0 means "never")
-    }
-  }
-  const finish = async (scanOk) => {
-    for (const ch of NAMES) {
-      const i = info[ch] || {};
-      const scanExpected = scanOk[ch] !== undefined && scanOk[ch] !== null;
-      await watchdog(ch, { ...i, scanExpected, alive: scanExpected ? scanOk[ch] : Boolean(i.probeOk) }, T).catch((err) => console.warn('[acx] watchdog failed', ch, err?.message || err));
-    }
-  };
-
-  const channels = await withHealth(probed.channels);
-  const bo = await serverBackoff();
-  if (Date.now() < bo.next_at) {
-    // The server failed a moment ago: keep the tabs healthy, try the server again later.
-    await finish({});
-    const wait = Math.ceil((bo.next_at - Date.now()) / 1000);
-    await store.set({ status: { channels: await withHealth(probed.channels), last_sync_at: Date.now(), last_error: `Cannot reach the server. Trying again in ${wait} s`, server_ok: false } });
-    await setBadge('!', '#e5484d');
-    return;
-  }
-
-  let res;
-  try {
-    res = await api.sync({ channels, paused_locally: st.paused, version: VERSION }, st.selectors?.version ?? null, VERSION);
-    if (!res || typeof res !== 'object') throw new api.ApiError(0, 'bad_response', 'The server sent an empty answer');
-  } catch (err) {
-    if (err.status === 401) {
-      // The owner removed this laptop in the dashboard: forget the token so the popup asks to pair again.
-      await store.set({ auth: null, status: { channels, last_sync_at: Date.now(), last_error: 'Not paired any more', server_ok: false } });
-      await setBadge('SET', '#8a8f98');
-      keepAwake(false);
-      return;
-    }
-    const fails = (bo.fails || 0) + 1;
-    await store.sessionSet('server_backoff', { fails, next_at: Date.now() + BACKOFF_MS[Math.min(fails, BACKOFF_MS.length) - 1] }).catch(() => {});
-    await finish({});
-    await store.set({ status: { channels, last_sync_at: Date.now(), last_error: err.message || 'Cannot reach the server', server_ok: false } });
-    await setBadge('!', '#e5484d');
-    return;
-  }
-  if (bo.fails) await store.sessionSet('server_backoff', { fails: 0, next_at: 0 }).catch(() => {});
-
-  const patch = { config: res.config, status: { channels, last_sync_at: Date.now(), last_error: '', server_ok: true } };
-  if (res.selectors) patch.selectors = res.selectors;
-  await store.set(patch);
-
-  if (st.paused || !res.config?.enabled) {
-    await finish({});
-    await setBadge('OFF', '#8a8f98');
-    return;
-  }
-
-  const jobsBy = Object.fromEntries(NAMES.map((n) => [n, []]));
-  for (const job of res.jobs || []) if (jobsBy[job.channel]) jobsBy[job.channel].push(job);
-  const scanOk = {};
-  await Promise.all(NAMES.map(async (channel) => {
-    if (channels[channel].state !== 'ready') return;
-    try {
-      scanOk[channel] = await channelWork(channel, jobsBy[channel], res.config, { ...ctxBase, tabId: info[channel]?.tabId ?? null });
-    } catch (err) {
-      scanOk[channel] = false;
-      await patchHealth(channel, { last_error: String(err?.message || err).slice(0, 140) });
-      console.warn('[acx] channel failed', channel, err?.message || err);
-    }
-  }));
-  if (ctxBase.stale()) return;
-  await finish(scanOk);
-
-  // Keep what the popup shows up to date with this cycle's reads.
-  const latest = await store.get('status');
-  await store.set({ status: { ...latest, channels: await withHealth(probed.channels) } });
-
-  const ready = NAMES.filter((n) => channels[n].state === 'ready').length;
-  await setBadge(ready ? 'ON' : '!', ready ? '#2563eb' : '#f5a524');
+async function serverBackoff() {
+  return store.sessionGet('server_backoff', { fails: 0, next_at: 0 }).catch(() => ({ fails: 0, next_at: 0 }));
 }
 
-/**
- * Run a cycle now. Calls that arrive while one is running collapse into a single follow up run.
- * A cycle that runs past `cycle_timeout_ms` (or is still running when the laptop wakes) is abandoned
- * so the agent never stalls behind one stuck step.
- */
-async function tick() {
-  let T = TIMING;
-  try {
-    T = await timing();
-    const now = Date.now();
-    const last = await store.sessionGet('last_tick_at', 0);
-    if (last && now - last > T.wake_gap_ms) await store.sessionSet('wake_pending', 'gap');
-    await store.sessionSet('last_tick_at', now);
-    if (running) {
-      const age = now - runningSince;
-      const woke = await store.sessionGet('wake_pending', null);
-      if (age > T.cycle_timeout_ms || (woke && age > 20_000)) abandon('A round of work got stuck and was restarted');
-      else { again = true; return; }
-    }
-  } catch {
-    if (running) { again = true; return; }
-  }
+let syncing = false;
+let syncAgain = false;
+let syncTimer = null;
+let syncTimerAt = 0;
 
-  running = true;
-  runningSince = Date.now();
-  const myGen = ++gen;
-  if (keepAlive) clearInterval(keepAlive);
-  // Extension API calls keep the worker awake during long sends (typing can take over 30 s).
-  keepAlive = setInterval(() => { chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError); }, 20_000);
-  let timer;
-  let timedOut = false;
+/** Run a sync in `ms` (or sooner if one is already planned). */
+function syncSoon(ms = 0) {
+  const at = Date.now() + ms;
+  if (syncTimer && syncTimerAt <= at) return;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimerAt = at;
+  syncTimer = setTimeout(() => { syncTimer = null; syncTimerAt = 0; syncTick(); }, Math.max(0, ms));
+}
+
+/** Sync now. Calls that arrive while one runs collapse into one follow up run. */
+async function syncTick() {
+  if (syncing) { syncAgain = true; return; }
+  syncing = true;
   try {
-    await Promise.race([
-      cycle(myGen),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          if (gen === myGen) timedOut = true; // not when another tick already took over
-          reject(new Error('cycle_timeout'));
-        }, T.cycle_timeout_ms);
-      }),
-    ]);
+    await syncOnce();
   } catch (err) {
-    console.warn('[acx] cycle failed', err?.message || err);
+    console.warn('[acx] sync tick failed', err?.message || err);
   } finally {
-    clearTimeout(timer);
-    if (timedOut) {
-      gen++; // the abandoned cycle stops at its next step
-      store.set({ status: { ...(await store.get('status').catch(() => ({}))), last_error: 'A round of work took too long and was restarted' } }).catch(() => {});
-    }
-    if (timedOut || gen === myGen) {
-      if (keepAlive) clearInterval(keepAlive);
-      keepAlive = null;
-      running = false;
-      if (again) { again = false; setTimeout(() => { tick(); }, 1500); }
-      else scheduleSoon().catch(() => {});
-    }
+    syncing = false;
+    if (syncAgain) { syncAgain = false; syncSoon(500); }
+    else if (paired) syncSoon(Math.min(60, Math.max(8, config?.poll_seconds ?? 20)) * 1000);
   }
 }
 
-function abandon(why) {
-  console.warn('[acx] abandon cycle:', why);
-  gen++;
-  running = false;
-  if (keepAlive) clearInterval(keepAlive);
-  keepAlive = null;
-}
+async function syncOnce() {
+  const T = await timing();
+  const now = Date.now();
+  const last = await store.sessionGet('last_tick_at', 0).catch(() => 0);
+  if (last && now - last > T.wake_gap_ms) await store.sessionSet('wake_pending', 'gap').catch(() => {});
+  await store.sessionSet('last_tick_at', now).catch(() => {});
 
-let soonTimer = null;
-/** Between alarms (30 s minimum) keep a faster beat while the worker is awake. */
-async function scheduleSoon() {
-  if (soonTimer) clearTimeout(soonTimer);
-  const cfg = await store.get('config');
-  const seconds = Math.min(60, Math.max(8, cfg?.poll_seconds ?? 20));
-  soonTimer = setTimeout(() => { tick(); }, seconds * 1000);
+  const st = await store.get(['auth', 'paused', 'selectors', 'auto_open_tabs', 'config', 'tiktok_business']);
+  paired = Boolean(st.auth?.token);
+  paused = Boolean(st.paused);
+  if (st.config) config = st.config;
+  if (st.tiktok_business === true) business = true;
+  if (!paired) { await setBadge('SET', '#8a8f98'); stopKeepAlive(); return; }
+  keepAwake(!paused);
+  if (paused) stopKeepAlive(); else startKeepAlive();
+
+  // Woke up from sleep: probe with more patience, try the server at once, reload tabs that do not answer.
+  const wake = await store.sessionGet('wake_pending', null).catch(() => null);
+  if (wake) {
+    await store.sessionSet('wake_pending', null).catch(() => {});
+    await store.sessionSet('server_backoff', { fails: 0, next_at: 0 }).catch(() => {});
+  }
+
+  const probed = await probeAll(st.auto_open_tabs && !paused, wake ? T.wake_probe_ms : PROBE_MS);
+  if (wake) {
+    for (const lane of lanes) {
+      const i = probed[lane.id]?.info;
+      if (i?.tabId && !i.away && !i.answered && !i.answeredLoading && probed[lane.id]?.st?.state !== 'loading') {
+        const h = await getHealth(lane);
+        if (await recover(lane, i.tabId, 'reload', 'No answer after the laptop woke up', h, T)) await saveHealth(lane, h);
+      }
+      await patchHealth(lane, { sweep_at: 1 }); // look over recent chats once now (1, not 0: 0 means "never")
+    }
+  }
+  // Lanes start as soon as their tab says ready, with the config they have: they never wait for the server.
+  for (const lane of lanes) kick(lane);
+
+  const channels = await channelStatus();
+  const bo = await serverBackoff();
+  let res = null;
+  let lastError = '';
+  if (Date.now() < bo.next_at) {
+    lastError = `Cannot reach the server. Trying again in ${Math.ceil((bo.next_at - Date.now()) / 1000)} s`;
+  } else {
+    try {
+      res = await api.sync({ channels, paused_locally: paused, version: VERSION }, st.selectors?.version ?? null, VERSION);
+      if (!res || typeof res !== 'object') throw new api.ApiError(0, 'bad_response', 'The server sent an empty answer');
+    } catch (err) {
+      res = null;
+      if (err.status === 401) {
+        // The owner removed this laptop in the dashboard: forget the token so the popup asks to pair again.
+        paired = false;
+        await store.set({ auth: null, status: { channels, last_sync_at: Date.now(), last_error: 'Not paired any more', server_ok: false } });
+        await setBadge('SET', '#8a8f98');
+        keepAwake(false);
+        stopKeepAlive();
+        return;
+      }
+      const fails = (bo.fails || 0) + 1;
+      await store.sessionSet('server_backoff', { fails, next_at: Date.now() + core.backoffMs(fails) }).catch(() => {});
+      lastError = err.message || 'Cannot reach the server';
+    }
+  }
+
+  if (res) {
+    if (bo.fails) await store.sessionSet('server_backoff', { fails: 0, next_at: 0 }).catch(() => {});
+    config = res.config || config;
+    const patch = { config: res.config, status: { channels, last_sync_at: Date.now(), last_error: '', server_ok: true } };
+    if (res.selectors) patch.selectors = res.selectors;
+    await store.set(patch);
+    if (!paused && config?.enabled !== false) {
+      for (const job of Array.isArray(res.jobs) ? res.jobs : []) {
+        const lane = job && laneForJob(job);
+        if (lane) { await laneLoaded(lane); enqueue(lane, job, { source: 'sync' }); }
+      }
+    }
+    flushResults();
+  } else {
+    await store.set({ status: { channels, last_sync_at: Date.now(), last_error: lastError, server_ok: false } });
+  }
+
+  for (const lane of lanes) {
+    await watchdog(lane, probed[lane.id]?.info || {}, T).catch((err) => console.warn('[acx] watchdog failed', lane.id, err?.message || err));
+    kick(lane);
+  }
+
+  if (!res) { await setBadge('!', '#e5484d'); return; }
+  if (paused || !config?.enabled) { await setBadge('OFF', '#8a8f98'); return; }
+  const ready = NAMES.filter((n) => primaryLane(n)?.probe?.state === 'ready').length;
+  await setBadge(ready ? 'ON' : '!', ready ? '#2563eb' : '#f5a524');
 }
 
 async function ensureAlarm() {
@@ -825,7 +1266,7 @@ async function boot() {
   } catch (err) {
     console.warn('[acx] boot failed', err?.message || err);
   }
-  tick();
+  syncSoon(0);
 }
 
 /** The laptop came back (screen unlocked, input after idle, or a long gap between alarms). */
@@ -834,23 +1275,57 @@ async function wake(why) {
     await store.sessionSet('wake_pending', why);
     await ensureAlarm();
   } catch { /* ignore */ }
-  tick();
+  syncSoon(0);
 }
 
 chrome.runtime.onInstalled.addListener(() => { boot(); });
 chrome.runtime.onStartup.addListener(() => { boot(); });
-chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === TICK_ALARM) tick(); });
+chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === TICK_ALARM) syncTick(); });
 try {
   chrome.idle.setDetectionInterval(60);
   chrome.idle.onStateChanged.addListener((state) => { if (state === 'active') wake('idle'); });
 } catch { /* idle API unavailable */ }
-// Every worker start (not only browser start): make sure the heartbeat alarm exists.
+// Pause, unpair or a new config take effect at once, not at the next sync.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.paused) paused = Boolean(changes.paused.newValue);
+  if (changes.auth) paired = Boolean(changes.auth.newValue?.token);
+  if (changes.config && changes.config.newValue) config = changes.config.newValue;
+  if (changes.paused || changes.auth) { for (const lane of lanes) kick(lane); syncSoon(0); }
+});
+// Every worker start (not only browser start): make sure the heartbeat alarm exists, and get going.
 ensureAlarm().catch(() => {});
+syncSoon(300);
 
 // ---- messages from pages and the popup ------------------------------------------------------------------
 
-let nudgeTimer = null;
 const diagSent = { at: 0, n: 0 };
+let nudgeSyncAt = 0;
+
+/** The lane a page belongs to: its own tab first, else by address. A second tab of a page is ignored. */
+function laneForTab(tab) {
+  if (!tab) return null;
+  const byId = lanes.find((l) => l.tabId != null && l.tabId === tab.id);
+  if (byId) return byId;
+  return lanes.find((l) => l.tabId == null && onLanePage(l, tab.url)) || null;
+}
+
+/**
+ * A page saw something change. Kick that lane: one scan 0.7 s later, however many nudges come
+ * meanwhile (they never push it back). A lane that is not running yet gets a probe soon instead.
+ */
+function nudgeLane(lane) {
+  if (!laneActive(lane)) {
+    if (Date.now() - nudgeSyncAt > 5000) { nudgeSyncAt = Date.now(); syncSoon(1000); }
+    return;
+  }
+  if (lane.nudgeTimer) return;
+  lane.nudgeTimer = setTimeout(() => {
+    lane.nudgeTimer = null;
+    lane.scanWanted = Date.now();
+    kick(lane);
+  }, 700);
+}
 
 async function trustedType(tabId, text) {
   if (!(await store.get('trusted_input'))) return { ok: false, error: 'trusted input is off' };
@@ -872,19 +1347,20 @@ async function trustedType(tabId, text) {
 
 /**
  * The owner pressed Show in the popup: bring the channel's tab to the front, in whatever window it
- * is in. A missing tab is opened, and a TikTok tab that wandered off the messages page goes back.
+ * is in. A missing tab is opened, and a tab that wandered off its page goes back.
  */
 async function showTab(channel) {
-  let tab = await findTab(channel);
-  const opened = await store.sessionGet('opened_tabs', {});
-  if (!tab && opened[channel]) { try { tab = await chrome.tabs.get(opened[channel]); } catch { tab = null; } }
+  const lane = primaryLane(channel);
+  let tab = await findTab(lane);
+  const opened = await store.sessionGet('opened_tabs', {}).catch(() => ({}));
+  if (!tab && opened[lane.id]) { try { tab = await chrome.tabs.get(opened[lane.id]); } catch { tab = null; } }
   if (!tab) {
-    tab = await chrome.tabs.create({ url: homeUrl(channel, channel === 'gmail' ? await gmailAccount() : ''), active: true, pinned: true });
-    opened[channel] = tab.id;
+    tab = await chrome.tabs.create({ url: await homeUrl(lane), active: true, pinned: true });
+    opened[lane.id] = tab.id;
     await store.sessionSet('opened_tabs', opened);
-    await store.sessionSet(`tab:${channel}`, tab.id);
-  } else if (channel === 'tiktok' && !onChannelPage(channel, tab.url || tab.pendingUrl)) {
-    await chrome.tabs.update(tab.id, { url: homeUrl(channel, '') });
+    await store.sessionSet(`tab:${lane.id}`, tab.id);
+  } else if (channel === 'tiktok' && (!onLanePage(lane, tab.url || tab.pendingUrl) || onAwayPage(lane, tab.url || tab.pendingUrl))) {
+    await chrome.tabs.update(tab.id, { url: await homeUrl(lane) });
   }
   await chrome.windows.update(tab.windowId, { focused: true });
   await chrome.tabs.update(tab.id, { active: true });
@@ -897,11 +1373,12 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     case 'sleep':
       setTimeout(() => respond({ ok: true }), Math.min(Math.max(0, Number(msg.ms) || 0), 120_000));
       return true;
-    case 'activity':
-      if (nudgeTimer) clearTimeout(nudgeTimer);
-      nudgeTimer = setTimeout(() => { tick(); }, 3000);
+    case 'activity': {
+      const lane = laneForTab(sender.tab);
+      if (lane) nudgeLane(lane);
       respond({ ok: true });
       return false;
+    }
     case 'get_selectors':
       store.get('selectors').then((selectors) => respond({ selectors }), () => respond({ selectors: null }));
       return true;
@@ -912,7 +1389,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       respond({ ok: true });
       return false;
     }
-    // A tab could not copy a customer's photo itself (cross origin CDN picture). Only our three tabs
+    // A tab could not copy a customer's photo itself (cross origin CDN picture). Only our tabs
     // may ask, and only for the hosts listed in lib/media.js.
     case 'fetch_media':
       if (!sender.tab?.id || !NAMES.includes(msg.channel)) { respond({ ok: false, error: 'not_a_channel_tab' }); return false; }
@@ -925,18 +1402,20 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     // ---- popup ----
     case 'pair':
       api.pair(msg.pairing_string, msg.name || 'Laptop').then(
-        async (auth) => { await boot(); respond({ ok: true, server_url: auth.server_url }); },
+        async (auth) => { paired = true; await boot(); respond({ ok: true, server_url: auth.server_url }); },
         (err) => respond({ ok: false, error: err.message || 'Pairing failed' }),
       );
       return true;
     case 'unpair':
-      store.set({ auth: null, config: null }).then(async () => { await setBadge('SET', '#8a8f98'); keepAwake(false); respond({ ok: true }); }, () => respond({ ok: false }));
+      store.set({ auth: null, config: null }).then(async () => { paired = false; await setBadge('SET', '#8a8f98'); keepAwake(false); stopKeepAlive(); respond({ ok: true }); }, () => respond({ ok: false }));
       return true;
     case 'pause':
-      store.set({ paused: Boolean(msg.paused) }).then(async () => { await boot(); respond({ ok: true }); }, () => respond({ ok: false }));
+      store.set({ paused: Boolean(msg.paused) }).then(async () => { paused = Boolean(msg.paused); await boot(); respond({ ok: true }); }, () => respond({ ok: false }));
       return true;
     case 'tick':
-      tick();
+      // The popup opened (or a test): sync now and have every lane look at its tab.
+      for (const lane of lanes) { lane.scanWanted = Date.now(); kick(lane); }
+      syncSoon(0);
       respond({ ok: true });
       return false;
     case 'show_tab':
@@ -944,9 +1423,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       showTab(msg.channel).then(respond, (err) => respond({ ok: false, error: String(err?.message || err) }));
       return true;
     case 'selftest':
-      Promise.all(NAMES.map(async (channel) => [channel, await tabOp(channel, 'selftest', {}, 60_000)]))
+      Promise.all(NAMES.map(async (channel) => [channel, await tabOp(primaryLane(channel), 'selftest', {}, 60_000)]))
         .then((rows) => respond({ ok: true, results: Object.fromEntries(rows) }), () => respond({ ok: false }));
       return true;
+    case 'lanes':
+      // What each lane is doing right now (for the e2e tests and for debugging from the console).
+      respond({ ok: true, lanes: lanes.map((l) => ({ id: l.id, state: l.probe.state, tab: l.tabId, queued: l.queue.length, inbound: l.inflight.size, sending: Boolean(l.job), op: l.op?.op || null, running: l.running })) });
+      return false;
     default:
       return false;
   }

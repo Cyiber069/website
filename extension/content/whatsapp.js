@@ -294,8 +294,20 @@
     try { return parsedRows().filter((r) => r.unread > 0 && !r.lastMine && !(known[r.title] && known[r.title].is_group)).length; } catch { return 0; }
   }
 
-  /** New activity is shown under the "All" filter at the top of the list. */
-  async function resetList() {
+  // The agent moved the chat list itself (scrolled a row into view): put it back on the next look.
+  let listMovedByUs = false;
+  let lastOwnerReset = 0;
+
+  /**
+   * New activity is shown under the "All" filter at the top of the list. Scans run every few seconds,
+   * so while the owner is looking at this tab the list is only moved back when the agent moved it, or
+   * once a minute, never on every scan. `force` is for opening a chat, which needs the list.
+   */
+  async function resetList(force = false) {
+    const looking = !document.hidden && document.hasFocus();
+    if (!force && looking && !listMovedByUs && Date.now() - lastOwnerReset < 60_000) return;
+    if (looking && !listMovedByUs) lastOwnerReset = Date.now();
+    listMovedByUs = false;
     const all = Q('chatList.filterAll');
     const selected = qa('chatList.filterTab').find((b) => b.getAttribute('aria-selected') === 'true');
     if (all && selected && selected !== all) { ACX.click(all); await sleep(350); }
@@ -303,10 +315,26 @@
     if (pane && pane.scrollTop > 0) { pane.scrollTop = 0; await sleep(300); }
   }
 
+  /** "typing…" or "recording audio…" shown in place of the last message: not a message. */
+  function isTypingPreview(preview) {
+    const re = lookup('text.typingPreview') ? rx('text.typingPreview') : /^(typing|recording audio|recording)\s*(…|\.\.\.)?$/i;
+    return re.test(String(preview || '').trim());
+  }
+
   const dupWarned = new Set();
 
-  // Last seen time and preview of each chat row, to notice messages already read on the phone.
+  // Last seen time and preview of each chat row, to notice messages already read on the phone:
+  // title -> { time, preview, stamp }. `stamp` is the last clock time the row showed, so the
+  // signature does not change when "23:50" turns into "Yesterday" at midnight.
   const rowSeen = new Map();
+
+  /** Signature of a row for the worker: changes with a new message, not with an ageing time label. */
+  function rowThreadSig(r) {
+    const prev = rowSeen.get(r.title);
+    const typing = isTypingPreview(r.preview);
+    const preview = typing && prev ? prev.preview : r.preview;
+    return `${ACX.stableTime(prev && prev.stamp, r.time)}|${preview}${typing ? '|typing' : ''}`;
+  }
 
   /** True for a row that is a 1:1 chat the agent may answer (not a group, not a title shared by two chats). */
   function isPersonRow(r, titleCount, byTitle) {
@@ -345,14 +373,15 @@
     await resetList();
     if (!q('chatList.grid', document, { quiet: true })) return { threads: [] };
     const { rows, titleCount, byTitle } = await listContext();
+    const now = Date.now();
     const threads = [];
     for (const r of rows) {
       if (threads.length >= 8) break;
-      if (r.lastMine || (!r.preview && !r.time)) continue;
+      if (r.lastMine || (!r.preview && !r.time) || isTypingPreview(r.preview)) continue;
       // Only today's chats (the list shows a clock time for those): older ones are the owner's to deal with.
       if (!/^\d{1,2}[:.]\d{2}/.test(String(r.time || ''))) continue;
       if (!isPersonRow(r, titleCount, byTitle)) continue;
-      threads.push({ key: r.title, title: r.title, unread: r.unread, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
+      threads.push({ key: r.title, title: r.title, unread: r.unread, preview: r.preview, is_group: false, sig: rowThreadSig(r), ts_max: ACX.labelTimeMax(r.time, now) });
     }
     return { threads };
   }
@@ -366,17 +395,24 @@
     const { rows, titleCount, byTitle } = await listContext();
 
     const threads = [];
+    const now = Date.now();
     const firstScan = !rowSeen.size;
     let earlyPicks = 0;
     for (const r of rows) {
       // A chat counts as new when it has an unread badge, OR when its last message changed since the
       // last look and is not ours: reading the message on the phone clears the badge everywhere.
-      const rowSig = `${r.time}|${r.preview}`;
-      const changed = rowSeen.has(r.title) ? rowSeen.get(r.title) !== rowSig : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
-      rowSeen.set(r.title, rowSig);
+      // A label that only ages ("23:50" to "Yesterday") or a "typing…" preview is not a new message.
+      const prev = rowSeen.get(r.title);
+      const typing = isTypingPreview(r.preview);
+      const preview = typing && prev ? prev.preview : r.preview;
+      const changed = prev
+        ? prev.preview !== preview || ACX.timeMoved(prev.time, r.time)
+        : firstScan && /^\d{1,2}:\d{2}/.test(String(r.time || '')) && earlyPicks++ < 5;
+      const sig = rowThreadSig(r);
+      rowSeen.set(r.title, { time: r.time, preview, stamp: ACX.stableTime(prev && prev.stamp, r.time) });
       if (r.lastMine || !(r.unread || changed)) continue; // nothing new from the customer
       if (!isPersonRow(r, titleCount, byTitle)) continue;
-      threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig: `${r.time}|${r.preview}` });
+      threads.push({ key: r.title, title: r.title, unread: r.unread || 1, preview: r.preview, is_group: false, sig, ts_max: ACX.labelTimeMax(r.time, now) });
     }
 
     // The chat that is open right now never gets an unread badge: watch its last message instead.
@@ -638,7 +674,7 @@
     let cur = currentChat();
     if (cur && fits(cur.title, want)) return cur;
 
-    await resetList();
+    await resetList(true);
     let row = findRow(want);
     let searched = null;
     if (!row) {
@@ -655,7 +691,7 @@
       if (!row) throw new Fail('thread_not_found', `Could not find the chat "${want.titles[0] || want.digits}"`, true);
       const targets = [Q('chatList.rowActivator', row.row), row.row.querySelector('[data-testid="cell-frame-container"]'), row.row].filter(Boolean);
       for (const el of targets) {
-        try { el.scrollIntoView({ block: 'center' }); } catch { /* not scrollable */ }
+        try { el.scrollIntoView({ block: 'center' }); listMovedByUs = true; } catch { /* not scrollable */ }
         await sleep(rand(150, 400));
         ACX.click(el);
         cur = await waitFor(() => { const c = currentChat(); return c && fits(c.title, want) ? c : null; }, { timeout: 4000, interval: 250 });
@@ -699,7 +735,9 @@
     if (messages.length) lastSeen[cur.title] = messages[messages.length - 1].external_id;
     // Photos and video previews of the newest customer messages ride along. Never throws, at most about 5 s.
     await ACX.captureMedia(messages);
-    return { thread, messages: messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts })) };
+    const out = messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts }));
+    // What the end of the chat looked like: send() refuses the reply if the customer wrote again since.
+    return { thread, messages: out, tail: ACX.tailRef(out) };
   }
 
   // ---- typing and sending -----------------------------------------------------------------------------------------------
@@ -717,21 +755,23 @@
   }
 
   /**
-   * Type one message at a human pace and confirm the box holds exactly that text.
+   * Put one message in the box and confirm the box holds exactly that text. With the old human pacing
+   * (`pace.instant` false) there is a thinking pause before and a "typing..." pause after, scaled by
+   * `pace.scale`; with typing_cps 0 the text goes in at once.
    * The message box is looked up again at every step: WhatsApp replaces the element when it goes
    * from empty to filled, so a reference kept across a pause may be dead.
    */
-  async function typePart(text, cps, title) {
+  async function typePart(text, pace, title) {
     const want = squash(text);
     const first = q('composer.input');
     if (!first) throw new Fail('composer_missing', 'Could not find the message box', true);
-    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, cps)) * 1000));
+    const total = Math.min(12_000, Math.max(700, (text.length / Math.max(3, pace.cps)) * 1000));
     const there = squash(textOf(first));
     if (there && there !== want) throw new Fail('composer_busy', 'Someone is typing in this chat', true);
 
     if (!there) { // (when the box already holds exactly this text it is ours from an attempt that was cut short)
       first.focus();
-      await sleep(total * rand(0.25, 0.4)); // thinking pause before the text appears
+      if (!pace.instant) await ACX.humanPause(total * rand(0.25, 0.4), pace.scale); // thinking pause before the text appears
       const el = Q('composer.input');
       if (!el) throw new Fail('composer_missing', 'The message box went away', true);
       if (squash(textOf(el))) throw new Fail('composer_busy', 'Someone started typing in this chat', true);
@@ -744,7 +784,7 @@
           throw err;
         }
       }
-      await sleep(total * rand(0.2, 0.35)); // the customer sees "typing..." meanwhile
+      if (!pace.instant) await ACX.humanPause(total * rand(0.2, 0.35), pace.scale); // the customer sees "typing..." meanwhile
     }
     // Read back. Anything else in the box (the owner typed, the chat changed) stops the send.
     const cur = currentChat();
@@ -754,8 +794,13 @@
 
   const idsInMain = () => new Set(messageRows().map((m) => m.dataId));
 
-  /** Click Send and wait for the new outgoing message. Returns its id. Never sends twice. */
-  async function sendTyped(text) {
+  /**
+   * Click Send and wait for the new outgoing message. Returns its id. Never sends twice.
+   * A delivery tick is waited for briefly (3 s, 5 s for the last part); after that the bubble on
+   * the clock is enough, since WhatsApp holds it in its own queue. Only when no bubble shows at all
+   * is the full 20 s waited before giving up.
+   */
+  async function sendTyped(text, { last = true } = {}) {
     const want = squash(text);
     const before = idsInMain();
     // The Send button only exists while the box has text (it swaps with the microphone).
@@ -796,10 +841,13 @@
     }
 
     // Sent or better (one tick) is success. A message still on the clock is in WhatsApp's own queue.
-    const strong = await waitFor(() => { const n = newOwn(); return n && !n.weak ? n : null; }, { timeout: 20_000, interval: 400 });
-    const res = strong || newOwn();
+    const strongWait = last ? 5000 : 3000;
+    let res = await waitFor(() => { const n = newOwn(); return n && !n.weak ? n : null; }, { timeout: strongWait, interval: 300 });
+    if (!res) res = newOwn();
+    // A slow render (a hidden tab): keep waiting for the bubble itself before calling it unclear.
+    if (!res) res = await waitFor(newOwn, { timeout: 20_000 - strongWait, interval: 400 });
     if (!res) throw new Fail('send_not_confirmed', 'The message left the box but did not show up in the chat', false);
-    if (res.weak) ACX.diag('note', { where: 'send', note: `no delivery tick after 20s (${res.status})` });
+    if (res.weak && res.status === 'echo') ACX.diag('note', { where: 'send', note: 'no delivery state on the sent bubble' });
     sentIds.add(res.id);
     return res.id;
   }
@@ -856,11 +904,16 @@
     return cur;
   }
 
-  async function send({ job, navigated }) {
+  async function send({ job, navigated, newer_than: newerThan, budget_ms: budgetMs }) {
     if (!job || !Array.isArray(job.parts) || !job.parts.length) throw new Fail('unknown', 'Nothing to send', false);
     const target = job.target || {};
     const parts = job.parts.map((p) => String(p));
-    const cps = (job.pacing && job.pacing.typing_cps) || 11;
+    // typing_cps 0: each part goes in whole with no pauses. A typing speed (older servers): the human
+    // pauses, scaled down to short floor pauses when the worker says other customers are waiting.
+    const rawCps = job.pacing ? job.pacing.typing_cps : undefined;
+    const cps = ACX.cpsOf(rawCps);
+    const nominal = 850 + parts.reduce((n, p) => n + Math.min(12_000, Math.max(700, (p.length / Math.max(3, cps)) * 1000)) * 0.6 + 1150, 0);
+    const pace = { instant: ACX.instant(rawCps), cps, scale: ACX.pauseScale(budgetMs, nominal) };
     const want = await wantFor(target);
 
     let cur;
@@ -871,7 +924,7 @@
       if (!want.titles.length && !want.digits) throw new Fail('thread_not_found', 'The job does not say which chat', false);
       cur = await openThread(want);
     }
-    await sleep(rand(500, 1200));
+    await sleep(pace.instant ? rand(150, 300) : Math.max(300, rand(500, 1200) * pace.scale)); // let the chat settle on screen
 
     // Refuse to type anywhere but the chat the job names.
     checkLabel(cur);
@@ -893,10 +946,17 @@
     const mine = jobProgress.get(job.id) || [];
     const sent = mine.length >= seen.k ? [...mine] : [...seen.ids];
     const from = sent.length;
+    // The customer wrote again after the read this reply was decided on: it is out of date. Nothing
+    // was sent for it yet, so it is refused and the worker reads the chat again for one fresh answer.
+    if (from === 0 && newerThan && ACX.newerInbound(msgs, newerThan)) {
+      await clearOurs(parts[0]);
+      throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
+    }
     for (let i = from; i < parts.length; i++) {
-      if (i > from) await sleep(rand(700, 1600));
-      await typePart(parts[i], cps, cur.title);
-      sent.push(await sendTyped(parts[i]));
+      // About 0.4 s between parts (WhatsApp keeps their order); the old human gap with a speed.
+      if (i > from) await sleep(pace.instant ? 400 : Math.max(400, rand(700, 1600) * pace.scale));
+      await typePart(parts[i], pace, cur.title);
+      sent.push(await sendTyped(parts[i], { last: i === parts.length - 1 }));
       jobProgress.set(job.id, [...sent]);
     }
     if (sent.length) lastSeen[cur.title] = sent[sent.length - 1];
