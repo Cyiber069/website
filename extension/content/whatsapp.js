@@ -51,6 +51,21 @@
     try { return new RegExp(lookup(key) || fallback); } catch { return new RegExp(fallback); }
   };
 
+  /**
+   * True when a delivery tick (ours) is inside el. Icons of the media type of the message (photo,
+   * voice note, sticker) sit right next to the tick on current builds and are left out.
+   */
+  function hasTick(el) {
+    if (!el) return false;
+    const media = ACX.chain('chatList.rowMediaSymbol').map((e) => e.s).join(', ') || '[data-testid="chat-msg-symbol"]';
+    const names = el.hasAttribute('data-icon') ? [el.getAttribute('data-icon')] : [];
+    el.querySelectorAll('[data-icon], svg > title').forEach((n) => {
+      try { if (n.closest(media)) return; } catch { /* bad selector in a hot update */ }
+      names.push(n.hasAttribute('data-icon') ? n.getAttribute('data-icon') : (n.textContent || '').trim());
+    });
+    return packRe('icons.rowTick', 'msg-(dbl)?check|msg-time|status-(dbl)?check|status-time|ic-(dbl)?check|ic-done|ic-read|ic-delivered|ic-schedule|ic-msg-time|message-fail').test(names.join(' ').toLowerCase());
+  }
+
   /** Split a data-id into its parts. Returns null for things that are not messages. */
   function parseDataId(v) {
     v = String(v || '');
@@ -282,8 +297,9 @@
       unread,
       preview: squash(textOf(previewEl)).slice(0, 200),
       time: squash(textOf(Q('chatList.rowTime', row))),
-      // The last message is ours when the preview carries a tick.
-      lastMine: Boolean(Q('chatList.rowLastMine', row)) || /msg-(dbl)?check|ic-check|ic-done/.test(iconNames(previewEl)),
+      // The last message is ours when the preview carries a tick. Current builds show the status
+      // element (chatList.rowLastMine) for the customer's last message too, so only a tick in it counts.
+      lastMine: hasTick(Q('chatList.rowLastMine', row) || previewEl) || /msg-(dbl)?check|ic-check|ic-done/.test(iconNames(previewEl)),
       groupHint: rx('icons.defaultGroup').test(icons),
     };
   }
