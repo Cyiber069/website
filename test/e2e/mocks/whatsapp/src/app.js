@@ -236,9 +236,8 @@ function messageEl(chat, msg, prev) {
   // Without it the address is dead, like a photo that has not been downloaded.
   const src = msg.photo ? realPhoto() : 'blob:https://web.whatsapp.com/5f0c1c7e-mock';
   if (msg.kind === 'image') media = h('div', { role: 'button', 'aria-label': 'Open picture', class: 'media' }, h('img', { alt: '', src }));
-  // A video shows a preview picture with a play button until it is opened. msg.video: opening it shows
-  // the media viewer with a real recorded clip behind a blob: address, the way WhatsApp Web plays one.
-  if (msg.kind === 'video') media = h('div', { role: 'button', 'data-testid': 'video-thumb', class: 'media', onclick: msg.video ? () => openViewer(msg) : null }, h('img', { alt: '', src }), icon('video-play', 'ic-play'));
+  // A video shows a preview picture with a play button until it is opened.
+  if (msg.kind === 'video') media = h('div', { role: 'button', 'data-testid': 'video-thumb', class: 'media' }, h('img', { alt: '', src }), icon('video-play', 'ic-play'));
   if (msg.kind === 'voice') {
     media = h('div', { class: 'media' }, h('button', { 'aria-label': 'Play voice message' }, icon('audio-play', 'ic-play-arrow')),
       h('span', { 'data-testid': 'ptt-status' }, icon('ptt-status', 'ic-keyboard-voice-filled')), h('div', { role: 'slider', 'aria-valuetext': '0:00/0:07' }));
@@ -257,60 +256,6 @@ function messageEl(chat, msg, prev) {
           h('span', { 'data-testid': 'msg-time' }, clock(msg.t)),
           msg.fromMe && statusIcon(msg.ack)))));
 }
-
-// ---- a real video and the media viewer -------------------------------------------------------------------------------
-
-let videoClip = null; // { url, size, type } of a short clip recorded from a canvas at start up
-let viewer = null; // the open media viewer: { msgId, opened_at }
-const viewerLog = []; // every viewer that was opened and closed, with how its player was left
-
-/** Record a 1.6 s WebM clip (moving circle on a changing colour) once, kept behind a blob: address. */
-function recordVideo() {
-  try {
-    const canvas = document.createElement('canvas');
-    canvas.width = 320; canvas.height = 240;
-    const ctx = canvas.getContext('2d');
-    let n = 0;
-    const draw = () => {
-      ctx.fillStyle = `hsl(${(n * 15) % 360} 70% 45%)`; ctx.fillRect(0, 0, 320, 240);
-      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(40 + ((n * 9) % 240), 120, 36, 0, Math.PI * 2); ctx.fill();
-      n++;
-    };
-    draw();
-    const type = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
-    const rec = new MediaRecorder(canvas.captureStream(15), { mimeType: type, videoBitsPerSecond: 600_000 });
-    const parts = [];
-    rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
-    rec.onstop = () => { const blob = new Blob(parts, { type: 'video/webm' }); videoClip = { url: URL.createObjectURL(blob), size: blob.size, type: blob.type }; };
-    const timer = setInterval(draw, 66);
-    rec.start(200);
-    setTimeout(() => { clearInterval(timer); try { rec.stop(); } catch { /* ignore */ } }, 1600);
-  } catch (err) { console.warn('mock video not recorded', err); }
-}
-
-function renderViewer() {
-  document.querySelector('.viewer-layer')?.remove();
-  if (!viewer) return;
-  const video = h('video', { src: videoClip ? videoClip.url : 'blob:https://web.whatsapp.com/0-no-clip', autoplay: true, controls: true, class: 'viewer__video' });
-  video.addEventListener('playing', () => { if (!video.muted) viewer && (viewer.audible = true); });
-  document.body.append(h('div', { class: 'viewer-layer' },
-    h('div', { 'data-testid': 'media-viewer', role: 'dialog', 'aria-modal': 'true', class: 'viewer' },
-      h('button', { 'aria-label': 'Close', 'data-testid': 'media-viewer-close', onclick: () => closeViewer('button') }, icon('x-viewer', 'ic-close')),
-      video)));
-}
-function openViewer(msg) {
-  // state.viewerDelayMs: a slow laptop, where the viewer shows a while after the click.
-  const show = () => { viewer = { msgId: msg.id, opened_at: Date.now(), audible: false, chat: state.openJid }; renderViewer(); };
-  if (state.viewerDelayMs > 0) setTimeout(show, state.viewerDelayMs); else show();
-}
-function closeViewer(how) {
-  if (!viewer) return;
-  const v = document.querySelector('.viewer__video');
-  viewerLog.push({ ...viewer, closed_at: Date.now(), how, muted: v ? v.muted : null, paused: v ? v.paused : null, chat_after: state.openJid });
-  viewer = null;
-  renderViewer();
-}
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewer) closeViewer('escape'); });
 
 let photoUrl = '';
 /** A 1600 x 1200 picture drawn once and kept behind a blob: address of this page. */
@@ -371,8 +316,7 @@ function visibleChats() {
   return state.chats
     .filter((c) => (state.filter === 'unread' ? c.unread > 0 : state.filter === 'groups' ? c.group : true))
     .filter((c) => !term || c.title.toLowerCase().includes(term) || (digits(term).length >= 4 && digits(c.title + c.jid).includes(digits(term))))
-    // Pinned chats stay at the top, like the real app.
-    .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || (lastOf(b)?.t || 0) - (lastOf(a)?.t || 0));
+    .sort((a, b) => (lastOf(b)?.t || 0) - (lastOf(a)?.t || 0));
 }
 
 function rowEl(chat, index) {
@@ -390,8 +334,6 @@ function rowEl(chat, index) {
             last && last.fromMe && h('span', { 'data-testid': 'last-msg-status' }, statusIcon(last.ack)),
             chat.group && last && !last.fromMe && [h('span', {}, last.author), h('span', {}, ': ')],
             chat.draft && !open ? [h('span', { class: 'draft' }, 'Draft: '), chat.draft] : h('span', { dir: 'ltr', title: preview }, rich(preview))),
-          // The pin, as the real list draws it: data-icon pinned2 on old builds, an svg titled "pinned" on new ones.
-          chat.pinned && h('span', { 'aria-label': 'Pinned chat', class: 'pin' }, icon('pinned2', 'pinned')),
           chat.unread > 0 && h('span', { 'aria-label': `${chat.unread} unread message${chat.unread > 1 ? 's' : ''}`, class: 'badge' }, String(chat.unread))))));
 }
 
@@ -500,7 +442,6 @@ const modules = {
         type: msg.kind === 'text' ? 'chat' : msg.kind === 'voice' ? 'ptt' : msg.kind,
         body: msg.kind === 'text' ? msg.text : '', caption: msg.kind === 'text' ? undefined : msg.text || undefined,
         t: Math.floor(msg.t / 1000), ack: msg.ack ?? 0,
-        ...(msg.kind === 'video' ? { duration: 2, size: videoClip ? videoClip.size : 0, isViewOnce: Boolean(msg.viewOnce) } : {}),
       }))),
     },
   },
@@ -532,10 +473,10 @@ const api = {
     if (!chat) {
       const d = digits(who);
       const jid = String(who).includes('@') ? String(who) : `${d}@c.us`;
-      chat = { jid, title: opts.title || formatPhone(d), phone: opts.phone || undefined, avatar: 'default', unread: 0, draft: '', messages: [], pinned: opts.pinned === true };
+      chat = { jid, title: opts.title || formatPhone(d), phone: opts.phone || undefined, avatar: 'default', unread: 0, draft: '', messages: [] };
       state.chats.push(chat);
     }
-    const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', photo: opts.photo === true, video: opts.video === true, viewOnce: opts.viewOnce === true, t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
+    const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', photo: opts.photo === true, t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
     chat.messages.push(msg);
     if (chat.jid !== state.openJid || state.dialog) chat.unread += 1; // an open chat is read straight away
     save();
@@ -556,28 +497,6 @@ const api = {
     return true;
   },
   open(who) { const c = chatBy(who); if (c) selectChat(c.jid); return Boolean(c); },
-  /** Pin or unpin a chat, as the owner would from its menu. */
-  pin(who, on = true) { const c = chatBy(who); if (!c) return false; c.pinned = Boolean(on); save(); renderList(); return true; },
-  /**
-   * The owner sends a message in a chat from the phone: it shows in the chat as ours, but this page
-   * did not send it (not in sent()). Clears any draft of that chat. Returns the message id.
-   */
-  ownerSend(who, text) {
-    const chat = chatBy(who);
-    if (!chat) return null;
-    const msg = { id: newId(), fromMe: true, text, kind: 'text', t: Date.now(), ack: 2 };
-    chat.messages.push(msg);
-    chat.draft = '';
-    if (chat.jid === state.openJid) setEditorText('');
-    save();
-    if (state.mode === 'main') { renderList(); renderMessages(); }
-    return msg.id;
-  },
-  /** The recorded clip ({ size, type }) once it is ready, else null. */
-  videoClip: () => (videoClip ? { size: videoClip.size, type: videoClip.type } : null),
-  /** Media viewers opened so far: [{ msgId, how, muted, paused, audible, chat, chat_after }]. */
-  viewerLog: () => JSON.parse(JSON.stringify(viewerLog)),
-  viewerOpen: () => Boolean(viewer),
   reset() { localStorage.removeItem(STORE); location.href = '/'; },
 };
 window.mock = api;
@@ -601,7 +520,6 @@ function boot() {
   }
   save();
   render();
-  recordVideo();
   document.body.dataset.mockReady = '1';
 }
 

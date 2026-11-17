@@ -8,7 +8,6 @@ import { bad, json, oneOf, str, type Ctx, type Router } from '../lib/http';
 import { getVapidPublicKey, notifyOwner, pushSubscriptionCount, validPushEndpoint } from '../lib/push';
 import { getSettings, getState, patchSettings, secretHints, setSecret } from '../lib/settings';
 import { clearTokenCache, normaliseShopDomain, testConnection } from '../shopify/client';
-import { VISION_MODELS, VISION_SECRET, checkVisionKey, checkVisionPatch, testVision, videosToday } from '../vision';
 import { EMPTY_WEBHOOK_STATE, WEBHOOK_STATE, type WebhookState } from './hooks';
 
 /** Models offered in the picker. Ids are exact API model ids. */
@@ -25,9 +24,9 @@ const saved = (h: { hint: string } | undefined) => ({ saved: Boolean(h), hint: h
 
 async function view(c: Ctx) {
   const db = c.db;
-  const [settings, hints, hook, publicKey, subscriptions, videos] = await Promise.all([
+  const [settings, hints, hook, publicKey, subscriptions] = await Promise.all([
     getSettings(db, true), secretHints(db), getState<WebhookState>(db, WEBHOOK_STATE, EMPTY_WEBHOOK_STATE),
-    getVapidPublicKey(c.env), pushSubscriptionCount(db), videosToday(db, c.now),
+    getVapidPublicKey(c.env), pushSubscriptionCount(db),
   ]);
   const usesToken = Boolean(hints.shopify_admin_token);
   const usesApp = Boolean(hints.shopify_client_id && hints.shopify_client_secret);
@@ -57,16 +56,6 @@ async function view(c: Ctx) {
         secret_saved: webhook,
         last_received_at: hook.last_received_at ?? null,
       },
-    },
-    // Google AI Studio reads photos and videos. The key is never sent back: only saved and its last 4 characters.
-    vision: {
-      key: saved(hints[VISION_SECRET]),
-      enabled: settings.vision.enabled,
-      active: Boolean(hints[VISION_SECRET]) && settings.vision.enabled,
-      model: settings.vision.model,
-      video_daily_cap: settings.vision.video_daily_cap,
-      videos_today: videos,
-      models: VISION_MODELS,
     },
     push: { public_key: publicKey, subscriptions },
     alerts: settings.alerts,
@@ -127,19 +116,6 @@ export function register(r: Router): void {
       return json({ ok: false, ...base, ms: Date.now() - started, error: 'The brain did not answer. Check the API key and try again.' });
     }
   });
-
-  // ---- Google AI Studio (photos and videos) ----------------------------------------------------------
-  r.put('/api/connections/vision', 'owner', async (c) => {
-    const body = await c.body<Record<string, unknown>>();
-    const key = checkVisionKey(body.gemini_api_key);
-    const patch = checkVisionPatch(body);
-    if (key !== undefined) await setSecret(c.db, VISION_SECRET, key);
-    if (Object.keys(patch).length) await patchSettings(c.db, 'vision', patch);
-    if (key === '') await logEvent(c.db, { level: 'warn', type: 'vision_removed', message: 'Google AI Studio key removed. Photos and videos go to you again.' });
-    return json({ ok: true, ...(await view(c)) });
-  });
-
-  r.post('/api/connections/vision/test', 'owner', async (c) => json(await testVision(c.env, await getSettings(c.db, true))));
 
   // ---- Shopify ---------------------------------------------------------------------------------------
   r.put('/api/connections/shopify', 'owner', async (c) => {

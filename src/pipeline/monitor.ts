@@ -125,9 +125,9 @@ async function watchStuck(env: Env, settings: Settings, m: MonitorState, now: nu
   });
 }
 
-/** Three brain calls in a row that failed: the key is wrong or the free daily limit ran out. Photo reading (gemini) is not the brain. */
+/** Three AI calls in a row that failed: the key is wrong or the free daily limit ran out. */
 async function watchAi(env: Env, settings: Settings, m: MonitorState, now: number): Promise<void> {
-  const rows = await all<{ ok: number }>(env.DB, `SELECT ok FROM llm_usage WHERE ts > ? AND provider != 'gemini' ORDER BY ts DESC LIMIT 3`, now - 6 * HOUR);
+  const rows = await all<{ ok: number }>(env.DB, 'SELECT ok FROM llm_usage WHERE ts > ? ORDER BY ts DESC LIMIT 3', now - 6 * HOUR);
   const failing = rows.length === 3 && rows.every((r) => !r.ok);
   if (failing && !m.ai_failing) {
     const sent = await alertOwner(env, settings, { kind: 'ai', title: 'The AI is failing', body: 'The AI is failing: check the key or the free daily limit. Customers are not getting answers.', path: '/#/connections' });

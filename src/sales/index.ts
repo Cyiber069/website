@@ -160,7 +160,7 @@ async function followUpOne(env: Env, settings: Settings, cv: Candidate, now: num
     parts: written.parts,
     // Source auto: an owner takeover, an opt out or a newer draft cancels it like any agent reply.
     source: 'auto', ref_id: 'followup', status: review ? 'review' : 'pending',
-    pacing: { delay_ms: 0, typing_cps: 0 },
+    pacing: { delay_ms: 0, typing_cps: settings.pacing.typing_cps },
     expires_at: Number.isFinite(expires) ? expires : now + 3 * HOUR,
     dedupe_key: `followup:${cv.id}`,
   });

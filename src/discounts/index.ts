@@ -134,26 +134,24 @@ export interface NewDiscount {
   message_text: string;
   made_by: 'owner' | 'agent';
   now: number;
-  /** The caller has just checked the code is not taken here (the agent's code turn): skip that query. */
-  checked?: boolean;
 }
 
 /** Save a draft row. Throws 409 code_taken when the code is already here. */
 export async function insertDiscount(db: D1Database, d: NewDiscount): Promise<DiscountRow> {
-  if (!d.checked && (await one(db, 'SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE', d.code))) {
+  if (await one(db, 'SELECT id FROM discount_codes WHERE code = ? COLLATE NOCASE', d.code)) {
     throw new HttpError(409, 'code_taken', `You already made the code ${d.code}. Pick another one.`, { field: 'code' });
   }
   const id = uid('dc');
   const name = d.contact?.display_name || d.conv.title || 'Customer';
-  const rows = await all<DiscountRow>(
+  const changed = await run(
     db,
     `INSERT INTO discount_codes (id, conversation_id, contact_id, contact_name, channel, code, amount, currency, applies_to, expires_at, usage_limit,
        shopify_status, message_text, status, made_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'GBP', ?, ?, ?, 'not_connected', ?, 'draft', ?, ?, ?) ON CONFLICT(code) DO NOTHING RETURNING *`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'GBP', ?, ?, ?, 'not_connected', ?, 'draft', ?, ?, ?) ON CONFLICT(code) DO NOTHING`,
     id, d.conv.id, d.contact?.id ?? null, name, d.conv.channel, d.code, d.amount, d.applies_to, d.expires_at, d.usage_limit, d.message_text, d.made_by, d.now, d.now,
   );
-  if (!rows[0]) throw new HttpError(409, 'code_taken', `You already made the code ${d.code}. Pick another one.`, { field: 'code' });
-  return rows[0];
+  if (!changed) throw new HttpError(409, 'code_taken', `You already made the code ${d.code}. Pick another one.`, { field: 'code' });
+  return loadDiscount(db, id);
 }
 
 /**
@@ -170,11 +168,11 @@ export async function makeLive(env: Env, row: DiscountRow, opts: { confirmExists
   const confirmed = !shopify.ok && Boolean(opts.confirmExists);
   const shopifyStatus = shopify.ok ? 'created' : confirmed ? 'owner_confirmed' : shopify.shopify_status;
   const live = shopify.ok || confirmed;
-  const saved = await all<DiscountRow>(
-    env.DB, 'UPDATE discount_codes SET shopify_id = COALESCE(?, shopify_id), shopify_status = ?, status = ?, error = ?, updated_at = ? WHERE id = ? RETURNING *',
+  await run(
+    env.DB, 'UPDATE discount_codes SET shopify_id = COALESCE(?, shopify_id), shopify_status = ?, status = ?, error = ?, updated_at = ? WHERE id = ?',
     shopify.shopify_id ?? null, shopifyStatus, live ? 'live' : 'draft', live ? null : shopify.message ?? null, opts.now, row.id,
   );
-  return { row: saved[0] ?? (await loadDiscount(env.DB, row.id)), shopify };
+  return { row: await loadDiscount(env.DB, row.id), shopify };
 }
 
 /**
@@ -184,21 +182,15 @@ export async function makeLive(env: Env, row: DiscountRow, opts: { confirmExists
  */
 export async function queueDiscountMessage(
   env: Env, row: DiscountRow, text: string,
-  opts: {
-    now: number; source?: EnqueueInput['source']; status?: 'pending' | 'review'; pacing?: { delay_ms: number; typing_cps: number }; reply_to?: EnqueueInput['reply_to'];
-    /** The chat and contact when the caller has them already (the agent's code turn): two queries fewer. */
-    conv?: ConversationRow; contact?: ContactRow | null;
-    /** The row was made in this request, so no job can hold its key yet: one query fewer. */
-    fresh?: boolean;
-  },
+  opts: { now: number; source?: EnqueueInput['source']; status?: 'pending' | 'review'; pacing?: { delay_ms: number; typing_cps: number } },
 ): Promise<{ outbox_id: string; already: boolean }> {
   const db = env.DB;
   if (!row.conversation_id) throw bad('no_conversation', 'This code is not linked to a chat any more, so there is nowhere to send the message.');
-  const conv = opts.conv?.id === row.conversation_id ? opts.conv : await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', row.conversation_id);
+  const conv = await one<ConversationRow>(db, 'SELECT * FROM conversations WHERE id = ?', row.conversation_id);
   if (!conv) throw bad('no_conversation', 'The chat for this code is not here any more, so there is nowhere to send the message.');
-  const contact = opts.contact !== undefined && opts.conv?.id === row.conversation_id ? opts.contact : await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id);
+  const contact = await one<ContactRow>(db, 'SELECT * FROM contacts WHERE id = ?', conv.contact_id);
   const dedupe = `discount:${row.id}`;
-  const existing = opts.fresh ? null : await one<{ id: string; status: string }>(db, 'SELECT id, status FROM outbox WHERE dedupe_key = ?', dedupe);
+  const existing = await one<{ id: string; status: string }>(db, 'SELECT id, status FROM outbox WHERE dedupe_key = ?', dedupe);
   if (existing && !OUTBOX_DONE_BAD.includes(existing.status)) return { outbox_id: existing.id, already: true };
   if (existing) await run(db, 'UPDATE outbox SET dedupe_key = NULL WHERE id = ?', existing.id);
   const id = await enqueue(db, {
@@ -208,7 +200,7 @@ export async function queueDiscountMessage(
       thread_external_id: conv.external_thread_id, title: conv.title || contact?.display_name || null,
       phone: contact?.phone ?? null, email: contact?.email ?? null, handle: contact?.handle ?? null, subject: conv.subject,
     }),
-    parts: [text], expires_at: opts.now + DAY, pacing: opts.pacing ?? { delay_ms: 0, typing_cps: 0 }, reply_to: opts.reply_to ?? null,
+    parts: [text], expires_at: opts.now + DAY, pacing: opts.pacing ?? { delay_ms: 500, typing_cps: 30 },
   });
   if (!id) {
     const again = await one<{ id: string }>(db, 'SELECT id FROM outbox WHERE dedupe_key = ?', dedupe);

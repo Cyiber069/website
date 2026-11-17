@@ -6,7 +6,6 @@ import { all } from '../lib/db';
 import { randomToken, sha256Hex, timingSafeEqual } from '../lib/crypto';
 import { HttpError, json, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
-import { replyTimes } from '../pipeline/replytime';
 
 const HOUR = 3_600_000;
 const LINK_HOURS = 24;
@@ -35,12 +34,12 @@ const initial = (s: unknown): string => { const t = String(s ?? '').trim(); retu
 export async function buildReport(db: D1Database, now: number): Promise<Record<string, unknown>> {
   const since = now - 24 * HOUR;
   const settings = await getSettings(db);
-  const [devices, diagnostics, events, jobs, jobCounts, conversations, messageCounts, urgent, llm, override, replies] = await Promise.all([
+  const [devices, diagnostics, events, jobs, jobCounts, conversations, messageCounts, urgent, llm, override] = await Promise.all([
     all<Record<string, unknown>>(db, 'SELECT id, name, created_at, last_seen_at, status, version, revoked_at FROM devices ORDER BY last_seen_at DESC LIMIT 10'),
     all<Record<string, unknown>>(db, 'SELECT ts, device_id, channel, kind, data FROM diagnostics WHERE ts >= ? ORDER BY ts DESC LIMIT 80', since),
     all<Record<string, unknown>>(db, 'SELECT ts, level, type, channel, conversation_id, message, data FROM events WHERE ts >= ? ORDER BY ts DESC LIMIT 80', since),
     all<Record<string, unknown>>(db, `SELECT id, channel, kind, conversation_id, status, source, attempts, last_error, not_before, lease_until, lease_device,
-      created_at, sent_at, reply_to_ts, json_array_length(parts) AS parts FROM outbox WHERE created_at >= ? ORDER BY created_at DESC LIMIT 60`, since),
+      created_at, sent_at, json_array_length(parts) AS parts FROM outbox WHERE created_at >= ? ORDER BY created_at DESC LIMIT 60`, since),
     all<Record<string, unknown>>(db, 'SELECT channel, status, source, COUNT(*) AS n FROM outbox WHERE created_at >= ? GROUP BY channel, status, source', since),
     all<Record<string, unknown>>(db, `SELECT id, channel, title, status, paused_until, pause_reason, needs_reply_since, processing_until, last_inbound_at,
       last_outbound_at, last_direction, updated_at FROM conversations WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT 40`, since),
@@ -50,7 +49,6 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
     all<Record<string, unknown>>(db, `SELECT provider, model, purpose, COUNT(*) AS calls, SUM(ok) AS ok, CAST(AVG(ms) AS INTEGER) AS avg_ms, MAX(ms) AS max_ms
       FROM llm_usage WHERE ts >= ? GROUP BY provider, model, purpose`, since),
     getState<{ rev?: number } | null>(db, 'selectors_override', null),
-    replyTimes(db, since),
   ]);
   return {
     generated_at: now,
@@ -75,8 +73,6 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
     message_counts: messageCounts,
     urgent: urgent.map((u) => ({ ...u, reason: scrub(cut(u.reason, 200)) })),
     llm_usage: llm,
-    // Agent replies in the last 24 hours: time from the customer's message to sent, in ms.
-    reply_times: { ...replies, slowest: replies.slowest ? { ...replies.slowest, customer: initial(replies.slowest.customer) } : null },
   };
 }
 

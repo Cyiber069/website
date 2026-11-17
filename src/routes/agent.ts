@@ -5,15 +5,13 @@ import whatsappPack from '../../extension/selectors/whatsapp.json';
 import type { Channel, DeviceRow, Settings } from '../types';
 import { CHANNELS } from '../types';
 import { randomToken, sha256Hex } from '../lib/crypto';
-import { all, one, parseJson, run, uid } from '../lib/db';
+import { all, parseJson, run, uid } from '../lib/db';
 import { logEvent } from '../lib/events';
 import { HttpError, json, ndjsonStream, oneOf, str, type Ctx, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
 import { MIN } from '../lib/time';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
-import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
-import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
-import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
+import { completeJob, leaseDue, type JobResult } from '../pipeline/outbox';
 
 const POLL_SECONDS = 20;
 export const ONLINE_WINDOW_MS = 100_000;
@@ -23,10 +21,7 @@ export interface ChannelStatus {
   state: string;
   detail: string;
   unread: number;
-  /** Reading or sending (older extensions), or reading only (newer ones, which report `sending` apart). */
   busy: boolean;
-  /** Newer extensions: true only while a message is being typed and sent. null when the extension does not say. */
-  sending: boolean | null;
   checked_at: number;
   /** Health reported by the extension (0 or '' when an older extension does not send them). */
   last_ok_at: number;    // ms of the last scan that read the page fine
@@ -69,15 +64,11 @@ export async function selectorPack(db: D1Database): Promise<{ version: string; p
   return { version: `${BASE_VERSION}.${override?.rev ?? 0}`, pack };
 }
 
-function clientConfig(settings: Settings, selectorsVersion: string, origin: string, vision: { active: boolean; whole_videos: boolean }, legacy = false) {
+function clientConfig(settings: Settings, selectorsVersion: string, origin: string) {
   return {
-    // Google AI Studio reads photos and videos: the tabs only open and send videos while it does.
-    vision,
     enabled: settings.agent.enabled,
     channels: settings.channels,
-    // Builds before 0.4.0 have no newer_message re-read: a short settle would let them answer the
-    // first of two quick messages and lose the second, so they keep the long quiet wait they had.
-    pacing: { settle_seconds: legacy ? Math.max(settings.pacing.settle_seconds, LEGACY_SETTLE_SECONDS) : settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
+    pacing: { settle_seconds: settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
     poll_seconds: POLL_SECONDS,
     selectors_version: selectorsVersion,
     dashboard_url: origin,
@@ -107,7 +98,6 @@ export function parseStatus(raw: unknown, now: number): DeviceStatus {
       detail: typeof o.detail === 'string' ? o.detail.slice(0, 200) : '',
       unread: typeof o.unread === 'number' && Number.isFinite(o.unread) ? Math.min(9999, Math.max(0, Math.round(o.unread))) : 0,
       busy: o.busy === true,
-      sending: typeof o.sending === 'boolean' ? o.sending : null,
       checked_at: now,
       last_ok_at: msTime(o.last_ok_at, now),
       last_scan_at: msTime(o.last_scan_at, now),
@@ -128,15 +118,6 @@ function statusSignature(s: DeviceStatus): string {
     const fresh = c?.last_ok_at ? Math.min(3, Math.floor(Math.max(0, (s.reported_at || 0) - c.last_ok_at) / (5 * MIN))) : -1;
     return c ? [c.state, c.detail, c.unread, c.busy, c.last_error, c.recoveries, c.version, fresh] : null;
   })]);
-}
-
-/** Whether the vision model is on (a key and the switch), and whether whole videos may still go today. One small query. */
-async function visionState(db: D1Database, settings: Settings, now: number): Promise<{ active: boolean; whole_videos: boolean }> {
-  if (!settings.vision.enabled) return { active: false, whole_videos: false };
-  const row = await one<{ k: number | null; n: number }>(db,
-    `SELECT (SELECT 1 FROM secrets WHERE key = ?) AS k, (${VIDEOS_TODAY_SQL}) AS n`, VISION_SECRET, londonDayStart(now), now);
-  const active = Boolean(row?.k);
-  return { active, whole_videos: active && Number(row?.n ?? 0) < settings.vision.video_daily_cap };
 }
 
 function requireDevice(c: Ctx): DeviceRow {
@@ -189,26 +170,13 @@ export function register(r: Router): void {
     }
 
     const settings = await getSettings(c.db);
-    const legacy = isLegacyExtension(version);
-    // The leases handed out below use the version this sync reported.
-    device.version = version;
-    // A newer extension (it reports `sending`) queues jobs per tab, so it gets them while it reads.
-    // An older one types the jobs of a sync straight away, so a channel it says is busy is left alone.
-    const ready = CHANNELS.filter((ch) => {
-      const st = status.channels[ch];
-      return st?.state === 'ready' && (st.sending !== null || !st.busy);
-    });
+    const ready = CHANNELS.filter((ch) => status.channels[ch]?.state === 'ready' && !status.channels[ch]?.busy);
     const jobs = status.paused_locally ? [] : await leaseDue(c.db, device, settings, ready);
-    // Newer extensions list the jobs they hold: the ones the server cancelled meanwhile (a pause, an opt
-    // out, a takeover) are named so they are dropped instead of sent.
-    const rawStatus = (body.status && typeof body.status === 'object' ? body.status : {}) as Record<string, unknown>;
-    const held = Array.isArray(rawStatus.held) ? rawStatus.held.filter((x): x is string => typeof x === 'string' && x.length <= 40).slice(0, 40) : [];
-    const [sel, vision, cancelled] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now), droppedJobs(c.db, held)]);
+    const sel = await selectorPack(c.db);
     return json({
       server_time: c.now,
-      config: clientConfig(settings, sel.version, c.url.origin, vision, legacy),
+      config: clientConfig(settings, sel.version, c.url.origin),
       jobs,
-      cancelled,
       selectors: body.selectors_version === sel.version ? null : sel,
     });
   });
@@ -218,27 +186,10 @@ export function register(r: Router): void {
     const device = requireDevice(c);
     // Room for up to 3 photos of 260 KB of base64 each next to the messages.
     const payload = parseInbound(await c.body(1_200_000));
-    return ndjsonStream(c.exec, async (send, isOpen) => {
-      // Jobs are only handed over while the extension is still listening; otherwise they wait for its next sync.
-      const live = () => isOpen() && !c.req.signal?.aborted;
-      const outcome = await handleInbound(c.env, device, payload, (o) => { void send({ type: 'accepted', ...o }); }, { live, startedAt: c.now });
-      const delivered = await Promise.race([send({ type: 'decision', ...outcome }), new Promise<boolean>((r) => setTimeout(() => r(true), 10_000))]);
-      // The answer could not be written: the extension hung up just now. Its jobs go back to the queue
-      // so the next sync hands them over, without counting a try.
-      if (!delivered && outcome.jobs.length) await releaseLeases(c.db, device, outcome.jobs.map((j) => j.id));
+    return ndjsonStream(c.exec, async (send) => {
+      const outcome = await handleInbound(c.env, device, payload, (o) => send({ type: 'accepted', ...o }));
+      send({ type: 'decision', ...outcome });
     });
-  });
-
-  // One customer video, before the report that names it. The bytes go straight through to Google
-  // (src/vision receiveVideo): nothing is stored here but a small row saying where it is.
-  r.post('/api/agent/media/video', 'device', async (c) => {
-    const device = requireDevice(c);
-    return json(await receiveVideo(c.env, await getSettings(c.db), c.req, c.url, device.id));
-  });
-  // Asked first: a video already described or held by Google is not pulled out of the tab or sent again.
-  r.get('/api/agent/media/video', 'device', async (c) => {
-    requireDevice(c);
-    return json(await videoCheck(c.env, await getSettings(c.db), c.url));
   });
 
   r.post('/api/agent/jobs/:id/result', 'device', async (c) => {

@@ -8,13 +8,6 @@ export interface Env {
   ACX_TEST_MODE?: string;
   /** Optional overrides, normally configured from the dashboard and stored in D1. */
   ANTHROPIC_API_KEY?: string;
-  /**
-   * Set per invocation by src/index.ts. `fetches` counts the calls to Google AI Studio (src/vision), which
-   * keeps them inside a budget: the free plan allows 50 subrequests per invocation for everything.
-   */
-  counters?: { fetches: number; videos: number };
-  /** Work that may finish after the answer (deleting a watched video from Google). Awaited when missing. */
-  waitUntil?: (p: Promise<unknown>) => void;
 }
 
 export type Channel = 'whatsapp' | 'gmail' | 'tiktok';
@@ -57,17 +50,10 @@ export interface BrainSettings {
 }
 
 export interface PacingSettings {
-  /**
-   * Version of the stored pacing values. Rows saved before version 2 held the old slow defaults and are
-   * moved once to the fast ones (src/lib/settings.ts). Not shown to the owner.
-   */
-  schema: number;
-  /** Seconds of quiet from the customer before the agent reads the thread (people send bursts). Short. */
+  /** Seconds of silence from the customer before the agent reads the thread (people send bursts). */
   settle_seconds: number;
-  /** An extra wait before an agent reply, picked between these two. 0 by default: reply as fast as possible. */
   min_reply_delay_s: number;
   max_reply_delay_s: number;
-  /** Typing speed for the checkout reminders only. Replies are pasted whole (typing_cps 0 in the job). */
   typing_cps: number;
   max_auto_replies_per_thread_per_hour: number;
   /** After the owner types in a thread themselves the agent stays out of it for this long. */
@@ -147,16 +133,6 @@ export interface SalesSettings {
   style: 'friendly' | 'relaxed' | 'keen';
 }
 
-/** Google AI Studio (Gemini) looks at customer photos and videos and describes them for the brain (src/vision). */
-export interface VisionSettings {
-  /** "Use it to look at photos and videos". Only works once a Google AI Studio key is saved. */
-  enabled: boolean;
-  /** Gemini model id, for example gemini-3.8-flash. */
-  model: string;
-  /** Most whole videos sent to Google per London day. More get a few frames looked at instead. 0: frames only. */
-  video_daily_cap: number;
-}
-
 export interface Settings {
   agent: { enabled: boolean };
   channels: Record<Channel, { mode: ChannelMode }>;
@@ -173,8 +149,6 @@ export interface Settings {
   discounts: DiscountSettings;
   /** Selling style and the follow up after a recommendation (src/sales). */
   sales: SalesSettings;
-  /** Photos and videos described by Google AI Studio (src/vision). */
-  vision: VisionSettings;
 }
 
 // ---- Tone and brain --------------------------------------------------------------------------
@@ -201,8 +175,6 @@ export interface HistoryMessage {
   body: string;
   kind: MessageKind;
   ts: number;
-  /** A reply already queued for this chat that has not been sent yet. Never repeat it. */
-  pending?: boolean;
 }
 
 export interface DecideInput {
@@ -230,17 +202,6 @@ export interface DecideMedia {
   mime: 'image/jpeg' | 'image/png' | 'image/webp';
   /** base64, no data: prefix. */
   data: string;
-  /**
-   * What the vision model (Google AI Studio) saw in the photo or video, when it looked. Customer
-   * content: the brain gets it labelled as described by the vision model, never as instructions.
-   */
-  description?: string | null;
-  /** How the vision model saw it: one photo, a few frames of a video, the whole video, or a shared post's cover. */
-  via?: 'image' | 'frames' | 'video' | 'cover' | null;
-  /** The vision model could not make it out (too dark, blurred, cropped). */
-  unclear?: boolean;
-  /** Damage, a fault or a safety problem the vision model saw. */
-  problem?: 'none' | 'damage' | 'fault' | 'safety';
 }
 
 export interface LlmUsage {
@@ -316,12 +277,7 @@ export interface AgentJob {
   parts: string[];
   pacing: { delay_ms: number; typing_cps: number };
   lease_until: number;
-  /** Time left on the lease when the job was handed over (ms). Newer extensions use it instead of lease_until, so a laptop clock that is off does not matter. */
-  lease_ms: number;
   attempts: number;
-  /** Queue order on the laptop: not_before, then created_at (server time, ms). */
-  not_before: number;
-  created_at: number;
 }
 
 // ---- Rows ---------------------------------------------------------------------------------------
@@ -338,8 +294,6 @@ export interface ConversationRow {
   needs_reply_since: number | null; processing_until: number | null; context_notes: string;
   last_inbound_at: number | null; last_outbound_at: number | null; last_preview: string;
   last_direction: string; created_at: number; updated_at: number;
-  /** The cron sweeper waits until then after a failed brain call (migration 0008). */
-  retry_at?: number | null;
   /** Sales columns (migration 0006). */
   sales_stage?: SalesStage | null; sales_product?: string | null; sales_link?: string | null; sales_link_at?: number | null;
   sales_stage_at?: number | null; interested_at?: number | null; ready_at?: number | null; bought_at?: number | null;
@@ -358,12 +312,6 @@ export interface OutboxRow {
   parts: string; status: string; source: string; ref_id: string | null; not_before: number;
   expires_at: number | null; lease_until: number | null; lease_device: string | null; attempts: number;
   last_error: string | null; dedupe_key: string | null; pacing: string; created_at: number; sent_at: number | null;
-  /** Agent replies (migration 0008): the customer message answered, and when it arrived as best known. */
-  reply_to_id?: string | null; reply_to_ts?: number | null;
-  /** Migration 0010: when a busy owner or a draft first held this job up, and whether the owner was told. */
-  busy_since?: number | null; busy_warned?: number;
-  /** Migration 0011: when the last busy result came (a long gap starts a new wait). */
-  busy_last?: number | null;
 }
 
 export interface UrgentRow {

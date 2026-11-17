@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 2,
   "verified_against": "TikTok webapp-desktop build read on 2026-11-14 (chunks 49937 IM React SDK, 64027 legacy, 85075, editor). Not yet checked on the owner's logged in account: run the popup check.",
   "urls": {
     "inbox": "https://www.tiktok.com/messages?lang=en",
@@ -66,11 +66,7 @@
     "poster": ["[data-e2e=\"dm-new-video-card\"] img", "[data-e2e=\"dm-new-shared-video\"] img", "[class*=\"VideoCard\"] img"],
     "background": ["[data-e2e=\"dm-new-shared-video\"]", "[data-e2e=\"dm-new-video-card\"]", "[data-e2e=\"dm-new-image-card\"]", "[style*=\"background-image\"]"],
     "skip": ["a[href^=\"/@\"]", "[data-official-emoji=\"true\"]", "[class*=\"Avatar\"]"],
-    "min_side": 48,
-    "shared_card": ["[data-e2e=\"dm-new-shared-video\"]"],
-    "shared_author": [{ "s": "[data-e2e=\"dm-new-shared-video\"] [data-e2e*=\"author\"]" }, { "s": "[data-e2e=\"dm-new-shared-video\"] a[href*=\"/@\"]", "attr": "href" }, "[data-e2e=\"dm-new-shared-video\"] [class*=\"Author\"]", "[data-e2e=\"dm-new-shared-video\"] [class*=\"UniqueId\"]"],
-    "shared_caption": ["[data-e2e=\"dm-new-shared-video\"] [data-e2e*=\"desc\"]", "[data-e2e=\"dm-new-shared-video\"] [class*=\"Desc\"]", "[data-e2e=\"dm-new-shared-video\"] [class*=\"Caption\"]", "[data-e2e=\"dm-new-shared-video\"] [class*=\"Title\"]"],
-    "dm_video": ["[data-e2e=\"dm-new-video-card\"] video[src]", "[data-e2e=\"dm-new-video-card\"] video source[src]"]
+    "min_side": 48
   },
   "composer": {
     "editor": [
@@ -95,7 +91,7 @@
     "limit_reached": "chat messages limit reached",
     "privacy_blocked": ["privacy settings", "only friends can send messages"],
     "policy_violation": ["violated our community guidelines"],
-    "request_pending": ["accept(s|ed) your message request", "only send up to"],
+    "request_pending": ["accepts your message request", "only send up to"],
     "captcha": ["drag the slider", "fit the puzzle", "verify to continue", "rotate the", "select \\d+ objects"],
     "logged_out": ["log in to tiktok", "log in or sign up", "use qr code"],
     "time": "^\\d{1,2}:\\d{2}( ?[ap]m)?$|^\\d{1,2}[/.]\\d{1,2}([/.]\\d{2,4})?$|^yesterday$|^(mon|tue|wed|thu|fri|sat|sun)[a-z]*$|^\\d+ ?[smhdw]( ago)?$|^just now$"

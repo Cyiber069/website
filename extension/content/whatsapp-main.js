@@ -91,8 +91,6 @@
         out[k] = {
           type: String(m.type || ''), text: textOf(m), t: Number(m.t) || null, ack: typeof m.ack === 'number' ? m.ack : null,
           from_me: Boolean(m.id.fromMe), chat: wstr(m.id.remote) || null,
-          // For a video: how long and how big, and whether it is view once (never opened by the agent).
-          duration: Number(m.duration) || null, size: Number(m.size) || null, view_once: Boolean(m.isViewOnce),
         };
       }
       return out;

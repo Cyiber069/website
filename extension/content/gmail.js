@@ -344,9 +344,6 @@
     }
   }
 
-  // The list fallback takes over the view (a search, then back to the inbox): at most once a minute.
-  let listScanAt = 0;
-
   async function scan() {
     await stateReady;
     if (isStandaloneCompose()) {
@@ -356,16 +353,10 @@
     let found = [];
     const feed = await fetchFeed();
     if (feed) {
-      found = feed.entries.filter((e) => HEX_ID.test(e.id)).map((e) => {
-        const at = Date.parse(e.stamp);
-        return {
-          key: e.id, name: e.name, email: e.email, subject: e.subject, preview: e.snippet, sig: `${e.id}|${e.stamp}|${e.snippet.slice(0, 80)}`,
-          ts_max: Number.isFinite(at) ? at + 1000 : null,
-        };
-      });
+      found = feed.entries.filter((e) => HEX_ID.test(e.id)).map((e) => ({
+        key: e.id, name: e.name, email: e.email, subject: e.subject, preview: e.snippet, sig: `${e.id}|${e.stamp}|${e.snippet.slice(0, 80)}`,
+      }));
     } else {
-      if (Date.now() - listScanAt < 60_000) return { threads: [], source: 'none' };
-      listScanAt = Date.now();
       const rows = await scanList();
       if (!rows) return { threads: [], source: 'none' };
       const looksRead = rows.filter((r) => !r.unread).length;
@@ -385,7 +376,6 @@
         preview: [t.subject, t.preview].filter(Boolean).join(': ').slice(0, 200),
         is_group: false,
         sig: t.sig,
-        ts_max: t.ts_max ?? null,
       });
     }
     return { threads, source: feed ? 'feed' : 'list' };
@@ -459,8 +449,7 @@
 
   function requireFree() {
     const why = ownerBusy();
-    // The owner is using the tab (an email anywhere, settings, a text box): wait, this chat is not theirs yet.
-    if (why) throw new Fail('owner_busy', why, true);
+    if (why) throw new Fail('composer_busy', why, true);
   }
 
   /** Back to the inbox list. Used after every read and send, and after anything that went wrong. */
@@ -642,24 +631,19 @@
       for (const m of all) {
         for (const part of m.out ? splitOwnMessage(m) : [m]) {
           const kind = !part.body && part.attachments ? 'document' : 'text';
-          // A customer email with a video attachment: its card picture is the cover, its download address
-          // the file (fetched by the service worker for the vision model). Else a picture (an attachment
-          // card or an inline photo): copy it for the brain.
-          const video = !part.out ? videoAttachment(m.el) : null;
-          const _media = video ? { el: m.el, kind: 'video', video } : !part.out && ACX.hasMedia(m.el, 'image') ? { el: m.el, kind: 'image' } : null;
+          // A customer email that shows a picture (an attachment card or an inline photo): copy it for the brain.
+          const _media = !part.out && ACX.hasMedia(m.el, 'image') ? { el: m.el, kind: 'image' } : null;
           if (!part.body && kind === 'text' && !_media) continue;
           messages.push({ external_id: part.id, direction: part.out ? 'out' : 'in', body: part.body, kind, ts: part.ts, _media });
         }
       }
       await ACX.captureMedia(messages); // never throws, at most about 5 s
-      await ACX.captureVideo(messages, (msg) => ({ url: msg._media.video.url, mime: msg._media.video.mime })); // never throws, at most about 8 s
       for (const msg of messages) {
         // A photo with no words is a photo, not a file. Without a copy and without words there is nothing to report.
-        if (msg.media && !msg.body) msg.kind = msg.media.kind === 'video_frame' ? 'video' : 'image';
+        if (msg.media && !msg.body) msg.kind = 'image';
         delete msg._media;
       }
       for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].body && messages[i].kind === 'text') messages.splice(i, 1);
-      const shown = messages.slice(-40);
       return {
         thread: {
           external_id: threadId,
@@ -668,29 +652,11 @@
           subject: subject || null,
           contact: { name: title, phone: null, email: contact.email || null, handle: null },
         },
-        messages: shown,
-        tail: ACX.tailRef(shown), // send() refuses the reply if the customer wrote again since
+        messages: messages.slice(-40),
       };
     } finally {
       await goInbox();
     }
-  }
-
-  /**
-   * The first video attachment of a message: { url, mime, name } from its download address
-   * ("video/mp4:clip.mp4:https://mail.google.com/..."), or null.
-   */
-  function videoAttachment(root) {
-    for (const e of chain('media.video_url')) {
-      let els = [];
-      try { els = Array.from(root.querySelectorAll(e.s)); } catch { continue; }
-      for (const el of els) {
-        const raw = String((e.attr ? el.getAttribute(e.attr) : el.getAttribute('download_url')) || '');
-        const m = /^(video\/[\w.+-]+):([^:]*):(https:\/\/.+)$/i.exec(raw.trim());
-        if (m) return { mime: m[1].toLowerCase(), name: m[2], url: m[3] };
-      }
-    }
-    return null;
   }
 
   // ---- the reply box ---------------------------------------------------------------------------------------
@@ -813,13 +779,9 @@
     throw new Fail('composer_missing', 'Could not type into the reply box', true);
   }
 
-  /**
-   * A pause that scales with the length of the text (older servers send a typing speed). typing_cps 0
-   * means as fast as possible: no pause at all.
-   */
+  /** A pause that scales with the length of the text, so a reply is not typed in zero time. */
   async function typingPause(text, cps, share) {
-    if (ACX.instant(cps)) return;
-    const total = Math.min(6000, Math.max(400, (text.length / Math.max(3, ACX.cpsOf(cps))) * 1000));
+    const total = Math.min(6000, Math.max(400, (text.length / Math.max(3, cps || 11)) * 1000));
     await sleep(total * share * ACX.rand(0.8, 1.2));
   }
 
@@ -850,7 +812,7 @@
 
   const jobText = (job) => (Array.isArray(job.parts) ? job.parts : []).map((p) => String(p).replace(/\r\n?/g, '\n').trim()).filter(Boolean).join('\n\n');
 
-  async function sendReply(job, newerThan) {
+  async function sendReply(job) {
     const text = jobText(job);
     const target = job.target || {};
     requireFree();
@@ -873,30 +835,17 @@
         return { sent_external_ids: ids, already_sent: true };
       }
 
-      // The customer wrote again after the read this reply was decided on: refuse it. A box holding
-      // exactly our text (an earlier try cut short) is ours to throw away, so it never blocks the chat.
-      if (newerThan && ACX.newerInbound(before.map((m) => ({ external_id: m.id, direction: m.out ? 'out' : 'in', body: m.body })), newerThan)) {
-        const left = openCompose(main);
-        if (left && squash(composeUserText(left.body)) === squash(text)) await discardCompose(left, main);
-        throw new Fail('newer_message', 'The customer wrote again before this reply went out', false);
-      }
-      // The owner answered this email by hand after the read: the agent's reply would go out on top.
-      const shown = before.map((m) => ({ external_id: m.id, direction: m.out ? 'out' : 'in', body: m.body }));
-      if (newerThan && ACX.ownerReplied(shown, newerThan, [text, ...job.parts], (m) => state.sends.some((x) => x.text && squash(m.body).startsWith(x.text.slice(0, 80))))) {
-        throw new Fail('owner_replied', 'You already replied to this email yourself', false);
-      }
-
       // A box that is already open is a draft: the owner's, or ours from a try that stopped half way.
       box = openCompose(main);
       let typed = false;
       if (box) {
         const draft = squash(composeUserText(box.body));
-        if (draft && draft !== squash(text)) throw new Fail('draft_in_chat', 'There is already a draft reply in this email', true);
+        if (draft && draft !== squash(text)) throw new Fail('composer_busy', 'There is already a draft reply in this email', true);
         typed = !!draft;
       } else {
         box = await openReplyBox(main);
         // Gmail restores a saved draft into the box it opens: that draft is not ours to touch.
-        if (composeUserText(box.body)) throw new Fail('draft_in_chat', 'There is already a draft reply in this email', true);
+        if (composeUserText(box.body)) throw new Fail('composer_busy', 'There is already a draft reply in this email', true);
         weOpened = true;
       }
 
@@ -956,7 +905,6 @@
       }
       const ids = fresh ? job.parts.map((_, i) => partId(fresh.id, i)) : [];
       await remember(job, ids, threadId, text);
-      ACX.noteSent(text);
       done = true;
 
       // Gmail holds the email for the Undo period: do not move away before it is really gone.
@@ -1036,7 +984,7 @@
       }
 
       const draft = squash(composeUserText(body));
-      if (draft && draft !== squash(text)) throw new Fail('draft_in_chat', 'The new email already has text in it', true);
+      if (draft && draft !== squash(text)) throw new Fail('composer_busy', 'The new email already has text in it', true);
       const cps = job.pacing && job.pacing.typing_cps;
       if (!draft) {
         await typingPause(text, cps, 0.35);
@@ -1075,7 +1023,7 @@
     }
   }
 
-  async function send({ job, newer_than: newerThan }) {
+  async function send({ job }) {
     await stateReady;
     if (!job || !job.id || !jobText(job)) throw new Fail('unknown', 'Empty job', false);
     // A job that was already sent from this browser is only confirmed again.
@@ -1088,7 +1036,7 @@
     try {
       if (job.kind === 'new_chat') return await sendNew(job);
       if (isStandaloneCompose()) { goHomeSoon(); throw new Fail('timeout', 'Gmail is returning to the inbox', true); }
-      return await sendReply(job, newerThan);
+      return await sendReply(job);
     } finally {
       sending = false;
     }

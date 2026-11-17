@@ -47,40 +47,6 @@ async function encodeJpeg(bmp) {
   return null;
 }
 
-const VIDEO_MAX_BYTES = 20 * 1024 * 1024;
-
-/**
- * A customer video the tab cannot read itself (a Gmail attachment, a TikTok CDN address), for the
- * vision model: { ok: true, blob } or { ok: false, error }. Same host rules as photos, https only, at
- * most 20 MB (a bigger one is stopped as soon as that is known). Never throws.
- */
-export async function fetchVideo(channel, url, timeoutMs = 30_000) {
-  try {
-    if (!mediaUrlAllowed(channel, url)) return { ok: false, error: 'host_not_allowed' };
-    const signal = AbortSignal.timeout(Math.min(Math.max(1000, Number(timeoutMs) || 30_000), 60_000));
-    const res = await fetch(url, { credentials: 'include', signal });
-    if (!mediaUrlAllowed(channel, res.url || url)) return { ok: false, error: 'redirect_not_allowed' };
-    if (!res.ok) return { ok: false, error: `http_${res.status}` };
-    const said = Number(res.headers.get('content-length') || 0);
-    if (said > VIDEO_MAX_BYTES) { res.body?.cancel().catch(() => {}); return { ok: false, error: 'too_big' }; }
-    // Read in pieces so a body bigger than it said is stopped at the cap, not held in memory.
-    const reader = res.body.getReader();
-    const parts = [];
-    let size = 0;
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > VIDEO_MAX_BYTES) { reader.cancel().catch(() => {}); return { ok: false, error: 'too_big' }; }
-      parts.push(value);
-    }
-    const type = (res.headers.get('content-type') || '').split(';')[0].trim();
-    return { ok: true, blob: new Blob(parts, { type: /^video\//.test(type) ? type : 'video/mp4' }) };
-  } catch (err) {
-    return { ok: false, error: String(err?.name || err?.message || err).slice(0, 60) };
-  }
-}
-
 /** { ok: true, data } with a base64 JPEG, or { ok: false, error }. Never throws. */
 export async function fetchMedia(channel, url, timeoutMs = 4000) {
   try {

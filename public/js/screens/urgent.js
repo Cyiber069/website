@@ -1,6 +1,6 @@
 // Urgent: customers waiting on the owner, plus drafts waiting for a yes.
 import { get, post } from '../api.js';
-import { $, html, raw, icon, setHTML, chBadge, toast, toastError, syncList, emptyState, unavailable, skeletonCards, bubbles, mediaThumb, mediaNote, timeTag, waited, dayClock, plural, transition, confirmDialog, refreshTimes } from '../ui.js';
+import { $, html, raw, icon, setHTML, chBadge, toast, toastError, syncList, emptyState, unavailable, skeletonCards, bubbles, mediaThumb, timeTag, waited, dayClock, plural, transition, confirmDialog, refreshTimes } from '../ui.js';
 
 const WHY = { low_confidence: 'The agent was not sure enough to answer on its own.', needs_human: 'This one needs a person.', unknown: 'The agent could not find this in what it knows.' };
 const SENT_HOLD_MS = 20000;
@@ -9,7 +9,7 @@ function heat(ts) { const m = (Date.now() - ts) / 60000; return m < 5 ? 'fresh' 
 const quote = (t) => `“${String(t || '').trim()}”`;
 /** Photos the customer sent in the last few messages, newest 3, shown on the card itself. */
 const photosOf = (u) => (u.recent || []).filter((m) => m.direction === 'in' && m.media).slice(-3);
-const photoRow = (u) => { const p = photosOf(u); return p.length ? html`<div class="thumbs" aria-label="${plural(p.length, 'photo')} from the customer">${p.map((m) => mediaThumb(m.media))}</div>${p.map((m) => mediaNote(m.media))}` : ''; };
+const photoRow = (u) => { const p = photosOf(u); return p.length ? html`<div class="thumbs" aria-label="${plural(p.length, 'photo')} from the customer">${p.map((m) => mediaThumb(m.media))}</div>` : ''; };
 
 function urgentCard(u) {
   if (u._sent) {
@@ -153,7 +153,7 @@ export default {
           <section id="review-wrap" hidden><div class="sechead"><h2 class="eyebrow">Drafts waiting for your OK</h2><p class="meta">From channels set to "ask me first".</p></div><div class="ulist" id="review-list"></div></section>`);
       }
       $('#lead', body).textContent = open.length ? `${plural(open.length, 'customer is', 'customers are')} waiting on you. Oldest first.` : review.length ? 'No questions. Just drafts to check.' : 'Sent. Nobody else is waiting.';
-      syncList($('#open-list', body), [...held, ...open], { key: (u) => u.id, render: urgentCard, sig: (u) => JSON.stringify([u._sent || 0, u.draft, u.question, u.customer_message, u.recent?.length, photosOf(u).map((m) => [m.media.id, m.media.description || '']), heat(u.created_at), u.discount]) });
+      syncList($('#open-list', body), [...held, ...open], { key: (u) => u.id, render: urgentCard, sig: (u) => JSON.stringify([u._sent || 0, u.draft, u.question, u.customer_message, u.recent?.length, photosOf(u).map((m) => m.media.id), heat(u.created_at), u.discount]) });
       $('#review-wrap', body).hidden = review.length === 0;
       syncList($('#review-list', body), review, { key: (r) => r.id, render: reviewCard });
       refreshTimes(body);

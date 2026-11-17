@@ -44,8 +44,6 @@ Then click the extension icon, open **More**, press **Run a check**. It tests ea
 
 It works straight away on Cloudflare's free AI (a few hundred short replies a day). For better replies paste a Claude API key from console.anthropic.com in **Connections, AI brain** and press **Test**. Claude is billed per use by Anthropic.
 
-Photos and videos: the free AI cannot see them. Make a key at aistudio.google.com (Get API key, on a project with billing on), paste it in **Connections, Google AI Studio**, press **Save**, then **Test key**. From then on the agent gets a short note of what each photo or video shows and can answer it. Unclear photos, damage, faults and safety problems still come to you in Urgent. **Most videos a day** caps the whole videos it watches (20); after that it looks at a few pictures from each one. In aistudio.google.com/logs you can also switch off request logging for the project. Google bills per use.
-
 ## 6. Teach it
 
 **Knowledge** already holds your products, policies and FAQs from the store. Answer the "teach me" cards: they are the questions customers ask that your store does not answer. Upload any other files there.

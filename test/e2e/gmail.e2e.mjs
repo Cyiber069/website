@@ -282,7 +282,7 @@ async function main() {
   await mock((id) => window.mock.setDraft(id, 'half written by the owner'), MIA);
   const busy = await op('send', job('direct-1', 'hello Mia'));
   assert.equal(busy.ok, false);
-  assert.equal(busy.error_code, 'draft_in_chat');
+  assert.equal(busy.error_code, 'composer_busy');
   assert.equal(gmail.thread(MIA).draft, 'half written by the owner');
   await mock((id) => window.mock.setDraft(id, null), MIA);
 

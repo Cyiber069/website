@@ -1,6 +1,6 @@
 // Inbox: every conversation, with the thread, a manual reply box and per thread controls.
 import { get, post } from '../api.js';
-import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, toast, toastError, syncList, emptyState, unavailable, timeTag, dayClock, kindLabel, mediaThumb, mediaNote, confirmDialog, refreshTimes, ago } from '../ui.js';
+import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, toast, toastError, syncList, emptyState, unavailable, timeTag, dayClock, kindLabel, mediaThumb, confirmDialog, refreshTimes, ago } from '../ui.js';
 
 function row(c, activeId) {
   return html`<li><a class="conv ${c.id === activeId ? 'is-active' : ''}" href="#/inbox/${c.id}" ${c.id === activeId ? raw('aria-current="true"') : ''}>
@@ -15,7 +15,7 @@ function message(m) {
   const who = m.author === 'customer' ? 'customer' : m.author === 'owner' ? 'owner' : 'agent';
   const by = who === 'customer' ? 'Customer' : who === 'owner' ? 'You' : 'Agent';
   const failed = m.status === 'failed';
-  return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}${mediaNote(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div><span class="msg__meta">${failed ? html`<span class="bad">Not delivered · </span>` : ''}${dayClock(m.ts)}</span></div>`;
+  return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div><span class="msg__meta">${failed ? html`<span class="bad">Not delivered · </span>` : ''}${dayClock(m.ts)}</span></div>`;
 }
 function pendingBubble(p) {
   const label = p.status === 'review' ? 'Waiting for your OK' : p.local ? 'Sending to your laptop' : 'Waiting to send';

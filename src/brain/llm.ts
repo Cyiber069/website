@@ -26,15 +26,10 @@ export class LlmError extends Error {
     message: string,
     /** Worth trying again later without changing anything. */
     public retryable = false,
-    /** How long the provider asked us to wait before trying again (a retry-after header), if it said. */
-    public retryAfterMs: number | null = null,
   ) {
     super(message);
   }
 }
-
-/** True for the error a call gets when the request it belongs to has no time left for it. */
-export const isDeadline = (err: unknown): boolean => err instanceof LlmError && err.code === 'timeout';
 
 /** One block of the system prompt. Blocks marked `cache` end a prefix that stays the same between calls. */
 export interface SystemBlock {
@@ -50,21 +45,8 @@ export interface PromptImage {
   data: string;
 }
 
-/**
- * Only Claude gets pictures. Workers AI answers from the text alone, including what the vision model
- * (Google AI Studio, src/vision) wrote about a photo. The mock stands in for Claude, or for Workers AI
- * when the test sets the provider to workers_ai (model "mock-text").
- */
-export const canSeeImages = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || (choice.provider === 'mock' && choice.model !== MOCK_TEXT_MODEL);
-export const MOCK_TEXT_MODEL = 'mock-text';
-/**
- * Test mode with the provider set to anthropic: the mock does the database work Claude does (the key
- * is read, every call is written to llm_usage) and has a cheaper model for small checks, so the tests
- * that hold a request under the free plan's 50 queries count what production does.
- */
-export const MOCK_CLAUDE_MODEL = 'mock-claude';
-export const MOCK_CLAUDE_CHEAP_MODEL = 'mock-claude-cheap';
-const claudeLikeMock = (choice: ProviderChoice) => choice.provider === 'mock' && choice.model.startsWith(MOCK_CLAUDE_MODEL);
+/** Only Claude gets pictures. Workers AI answers from the text alone. */
+export const canSeeImages = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || choice.provider === 'mock';
 
 /**
  * The user turn for Claude: plain text when there are no pictures, otherwise each picture after its
@@ -96,9 +78,6 @@ export interface CallJsonInput {
   mock?: () => unknown;
   /** Pass a choice made earlier to avoid reading settings twice. */
   choice?: ProviderChoice;
-  /** Claude only: how long one attempt may take, and how many times the SDK tries again. Defaults 50 s and 1. */
-  timeoutMs?: number;
-  maxRetries?: number;
 }
 
 export interface CallJsonResult<T> {
@@ -118,14 +97,7 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
  * the binding exists; the mock in test mode.
  */
 export async function chooseProvider(env: Env, settings: Settings): Promise<ProviderChoice> {
-  // Tests: the mock, which can see pictures like Claude, or reads text only like Workers AI when that provider is chosen.
-  if (env.ACX_TEST_MODE === '1') {
-    if (settings.brain.provider === 'anthropic') {
-      await getSecret(env.DB, 'anthropic_api_key'); // what the real choice reads
-      return { provider: 'mock', model: MOCK_CLAUDE_MODEL, apiKey: null };
-    }
-    return { provider: 'mock', model: settings.brain.provider === 'workers_ai' ? MOCK_TEXT_MODEL : 'mock', apiKey: null };
-  }
+  if (env.ACX_TEST_MODE === '1') return { provider: 'mock', model: 'mock', apiKey: null };
   const brain = settings.brain;
   const key = ((await getSecret(env.DB, 'anthropic_api_key')) ?? env.ANTHROPIC_API_KEY ?? '').trim();
   const workers: ProviderChoice | null = env.AI ? { provider: 'workers_ai', model: brain.workers_ai_model, apiKey: null } : null;
@@ -147,7 +119,6 @@ export async function chooseProvider(env: Env, settings: Settings): Promise<Prov
 /** The cheapest model of the same provider, for small jobs such as the sales follow up. */
 export const CHEAP_CLAUDE_MODEL = 'claude-haiku-5-5';
 export function cheapChoice(choice: ProviderChoice): ProviderChoice {
-  if (choice.provider === 'mock' && choice.model === MOCK_CLAUDE_MODEL) return { ...choice, model: MOCK_CLAUDE_CHEAP_MODEL };
   if (choice.provider !== 'anthropic' || /haiku/i.test(choice.model)) return choice;
   return { ...choice, model: CHEAP_CLAUDE_MODEL };
 }
@@ -209,39 +180,26 @@ export function parseLooseJson(raw: unknown): unknown {
 /** Server side refusal fallbacks exist for Opus and Sonnet models, not for Haiku. */
 export const supportsFallbacks = (model: string): boolean => /opus|sonnet|fable|mythos/i.test(model) && !/haiku/i.test(model);
 
-/** The retry-after header of an API error in ms (seconds or an HTTP date), capped at 2 minutes. */
-export function retryAfterMs(headers: unknown, now = Date.now()): number | null {
-  const h = headers as { get?: (k: string) => string | null } | Record<string, string> | null | undefined;
-  if (!h) return null;
-  const raw = typeof (h as { get?: unknown }).get === 'function' ? (h as { get: (k: string) => string | null }).get('retry-after') : (h as Record<string, string>)['retry-after'];
-  if (!raw) return null;
-  const secs = Number(raw);
-  const ms = Number.isFinite(secs) ? secs * 1000 : Date.parse(raw) - now;
-  return Number.isFinite(ms) && ms >= 0 ? Math.min(120_000, Math.round(ms)) : null;
-}
-
 /** Map SDK errors to LlmError, most specific class first. */
 function fromAnthropicError(err: unknown): LlmError {
   if (err instanceof LlmError) return err;
-  const after = err instanceof Anthropic.APIError ? retryAfterMs(err.headers) : null;
   if (err instanceof Anthropic.AuthenticationError) return new LlmError('auth', 'The Claude API key was rejected. Check it on the Connections screen.');
   if (err instanceof Anthropic.PermissionDeniedError) return new LlmError('auth', 'The Claude API key is not allowed to use this model.');
   if (err instanceof Anthropic.NotFoundError) return new LlmError('not_found', 'Claude does not know that model name. Pick another model on the Connections screen.');
-  if (err instanceof Anthropic.RateLimitError) return new LlmError('rate_limited', 'Claude is rate limiting this account right now.', true, after);
+  if (err instanceof Anthropic.RateLimitError) return new LlmError('rate_limited', 'Claude is rate limiting this account right now.', true);
   if (err instanceof Anthropic.BadRequestError) return new LlmError('bad_request', `Claude rejected the request: ${err.message.slice(0, 200)}`);
   if (err instanceof Anthropic.APIConnectionTimeoutError) return new LlmError('timeout', 'Claude took too long to answer.', true);
   if (err instanceof Anthropic.APIConnectionError) return new LlmError('network', 'Could not reach Claude.', true);
-  if (err instanceof Anthropic.InternalServerError) return new LlmError('overloaded', 'Claude is having trouble right now.', true, after);
-  if (err instanceof Anthropic.APIError) return new LlmError('provider_error', `Claude error ${err.status ?? ''}: ${err.message.slice(0, 200)}`, (err.status ?? 0) >= 500, after);
+  if (err instanceof Anthropic.InternalServerError) return new LlmError('overloaded', 'Claude is having trouble right now.', true);
+  if (err instanceof Anthropic.APIError) return new LlmError('provider_error', `Claude error ${err.status ?? ''}: ${err.message.slice(0, 200)}`, (err.status ?? 0) >= 500);
   return new LlmError('provider_error', String((err as Error)?.message ?? err).slice(0, 200));
 }
 
 async function callAnthropic(choice: ProviderChoice, settings: Settings, input: CallJsonInput, baseURL?: string): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
   // The key comes from D1, so the client is made per call. Timeout and retries are set on purpose:
   // the SDK defaults (10 minutes, 2 retries) would outlive the request that is waiting for us.
-  // A live request passes its own limits (see callWithin): one attempt that fits the time it has left.
   const client = new Anthropic({
-    apiKey: choice.apiKey ?? '', timeout: input.timeoutMs ?? ANTHROPIC_TIMEOUT_MS, maxRetries: input.maxRetries ?? ANTHROPIC_MAX_RETRIES,
+    apiKey: choice.apiKey ?? '', timeout: ANTHROPIC_TIMEOUT_MS, maxRetries: ANTHROPIC_MAX_RETRIES,
     ...(baseURL ? { baseURL } : {}),
   });
   const fallback = supportsFallbacks(choice.model);
@@ -305,29 +263,9 @@ export function readWorkersAiResponse(out: unknown): { content: unknown; input_t
   };
 }
 
-/** Workers AI: the plain mode retry and the repair attempt only start with at least this much time left. */
-const WORKERS_AI_MIN_LEFT_MS = 5_000;
-const workersTimeout = () => new LlmError('timeout', 'Workers AI took too long to answer.', true);
-
-/** Exported for tests. Bound by `input.timeoutMs` like Claude: the run's lock never runs out while it waits. */
-export async function callWorkersAi(env: Env, choice: ProviderChoice, input: CallJsonInput): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
+async function callWorkersAi(env: Env, choice: ProviderChoice, input: CallJsonInput): Promise<{ data: unknown; usage: Omit<LlmUsage, 'ms'> }> {
   const ai = env.AI;
   if (!ai) throw new LlmError('no_provider', 'This Worker has no AI binding');
-  const started = Date.now();
-  const limit = input.timeoutMs && input.timeoutMs > 0 ? input.timeoutMs : null;
-  const left = () => (limit === null ? Infinity : limit - (Date.now() - started));
-  /** One run, raced against the time left. The run itself goes on, but its answer is no longer waited for. */
-  const within = async <T>(p: Promise<T>): Promise<T> => {
-    if (limit === null) return p;
-    const ms = left();
-    if (ms <= 0) throw workersTimeout();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(workersTimeout()), ms); })]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
   const legacy = isLegacyWorkersModel(choice.model);
   // JSON mode is not enforced on every model, so the schema is also spelled out in the prompt.
   const system = [
@@ -347,7 +285,7 @@ export async function callWorkersAi(env: Env, choice: ProviderChoice, input: Cal
           ...(jsonMode ? { response_format: { type: 'json_schema', json_schema: { name: 'answer', strict: true, schema: input.schema } } } : {}),
         };
     // The binding is typed per model; the model id here is a setting, so it is called untyped.
-    const out = await within((ai as unknown as { run(model: string, body: unknown): Promise<unknown> }).run(choice.model, body));
+    const out = await (ai as unknown as { run(model: string, body: unknown): Promise<unknown> }).run(choice.model, body);
     const read = readWorkersAiResponse(out);
     usage.input_tokens += read.input_tokens;
     usage.output_tokens += read.output_tokens;
@@ -359,23 +297,20 @@ export async function callWorkersAi(env: Env, choice: ProviderChoice, input: Cal
   try {
     content = await once(messages, true);
   } catch (err) {
-    if (err instanceof LlmError) throw err;
     const text = String((err as Error)?.message ?? err);
     // "JSON Mode couldn't be met" and models without response_format: ask again in plain mode.
     if (!/json mode|response_format|json_schema|guided/i.test(text)) throw workersError(text);
-    if (left() < WORKERS_AI_MIN_LEFT_MS) throw workersTimeout();
     jsonMode = false;
-    try { content = await once(messages, false); } catch (err2) { throw err2 instanceof LlmError ? err2 : workersError(String((err2 as Error)?.message ?? err2)); }
+    try { content = await once(messages, false); } catch (err2) { throw workersError(String((err2 as Error)?.message ?? err2)); }
   }
   let data = parseLooseJson(content);
   if (data === undefined) {
-    if (left() < WORKERS_AI_MIN_LEFT_MS) throw Object.assign(workersTimeout(), { usage });
     // One repair attempt: show the model what it wrote and ask for the object alone.
     const bad = typeof content === 'string' ? content.slice(0, 4000) : JSON.stringify(content ?? '').slice(0, 4000);
     try {
       content = await once([...messages, { role: 'assistant', content: bad || '(empty)' }, { role: 'user', content: 'That was not a valid JSON object. Send only the JSON object that matches the schema, starting with { and ending with }.' }], jsonMode);
     } catch (err) {
-      throw Object.assign(err instanceof LlmError ? err : workersError(String((err as Error)?.message ?? err)), { usage });
+      throw Object.assign(workersError(String((err as Error)?.message ?? err)), { usage });
     }
     data = parseLooseJson(content);
   }
@@ -405,12 +340,6 @@ async function recordUsage(env: Env, purpose: string, usage: LlmUsage, ok: boole
   }
 }
 
-/** The claude-like mock writes its call to llm_usage like a real call (tests of the query limit). */
-export async function recordMockUsage(env: Env, choice: ProviderChoice, purpose: string): Promise<void> {
-  if (!claudeLikeMock(choice)) return;
-  await recordUsage(env, purpose, { provider: 'mock', model: choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ms: 0 }, true);
-}
-
 /**
  * Ask the configured model for one JSON object. Throws LlmError on any failure (including a refusal,
  * code "refusal"). Every real call is written to llm_usage, failed ones with ok = 0.
@@ -420,9 +349,7 @@ export async function callJson<T = unknown>(env: Env, input: CallJsonInput): Pro
   const choice = input.choice ?? (await chooseProvider(env, settings));
   if (choice.provider === 'mock') {
     if (!input.mock) throw new LlmError('no_provider', `No mock answer is defined for "${input.purpose}"`);
-    const data = input.mock() as T;
-    await recordMockUsage(env, choice, input.purpose);
-    return { data, usage: null, provider: 'mock', model: 'mock' };
+    return { data: input.mock() as T, usage: null, provider: 'mock', model: 'mock' };
   }
   const started = Date.now();
   try {
@@ -440,59 +367,5 @@ export async function callJson<T = unknown>(env: Env, input: CallJsonInput): Pro
       provider: choice.provider, model: choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ...partial, ms: Date.now() - started,
     }, false);
     throw e;
-  }
-}
-
-// ---- calls inside a time limit -------------------------------------------------------------------
-
-/**
- * How much of a request's time one model call may use. `deadlineAt` is when every model call of the
- * request must be done. The call gets min(capMs, time left - reserveMs), and none at all below minMs.
- */
-export interface CallBudget {
-  deadlineAt: number;
-  capMs: number;
-  /** Below this, do not start the call: it could not finish in time. */
-  minMs: number;
-  /** Time kept back for the work after the call (queueing the reply). Default 1 s. */
-  reserveMs?: number;
-  /** Try once more after a quick failure (rate limit, overload, network), never after a slow one. */
-  retryQuickFailure?: boolean;
-}
-
-/** Time this call may take, or 0 when it should not start. Exported for tests. */
-export function callTimeout(b: CallBudget, now = Date.now()): number {
-  const left = b.deadlineAt - now - (b.reserveMs ?? 1000);
-  return left < b.minMs ? 0 : Math.min(b.capMs, left);
-}
-
-/** Thrown when a request has no time left for a model call. Retryable: a fresh request has a fresh budget. */
-export const deadlineError = () => new LlmError('timeout', 'There was no time left to wait for the AI in this request.', true);
-
-const QUICK_FAILURE_MS = 10_000;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * callJson inside a request's time limit. One attempt sized to the time left, with no SDK retry, so a
- * slow but valid answer gets all the time there is and is never cut short to be asked again. A quick
- * failure may be tried once more when there is time; a slow one is handed back (the caller retries
- * later with a fresh budget).
- */
-export async function callWithin<T = unknown>(env: Env, input: CallJsonInput, budget: CallBudget): Promise<CallJsonResult<T>> {
-  const attempt = () => {
-    const timeoutMs = callTimeout(budget);
-    if (!timeoutMs) throw deadlineError();
-    return callJson<T>(env, { ...input, timeoutMs, maxRetries: 0 });
-  };
-  const started = Date.now();
-  try {
-    return await attempt();
-  } catch (err) {
-    if (!budget.retryQuickFailure || !(err instanceof LlmError) || !err.retryable || err.code === 'timeout') throw err;
-    if (Date.now() - started > QUICK_FAILURE_MS) throw err;
-    const wait = err.retryAfterMs ?? 1000;
-    if (wait > 3000 || callTimeout(budget, Date.now() + wait) === 0) throw err;
-    await sleep(wait);
-    return attempt();
   }
 }

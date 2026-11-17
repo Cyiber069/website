@@ -13,9 +13,6 @@
   font-size: 10px; line-height: 1.3; color: var(--text-1); background: color-mix(in srgb, var(--bg) 78%, transparent);
 }
 .msg .thumb { margin-bottom: 4px; }
-/* What Google AI Studio saw in a photo or video. */
-.media__desc { margin: 0 0 4px; max-width: 46ch; color: var(--text-2); font-size: var(--fs-14); line-height: 1.4; }
-.media__desc b { color: var(--text-1); font-weight: 600; }
 .msg--customer .thumb { align-self: flex-start; }
 .thread--mini .thumb { width: 56px; height: 56px; }
 

@@ -397,8 +397,3 @@ button.conv:hover { background: var(--surface-1); }
 .dcode__facts .dot--wait { color: var(--warning); }
 .dcode__facts .dot--down { color: var(--danger); }
 .dcode__facts .dot--pause { color: var(--text-3); }
-/* Live: five numbers, the reply time among them. Three a row on mid widths, two on phones with the last one wide. */
-.grid--stats.grid--stats5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-@media (max-width: 1199px) { .grid--stats.grid--stats5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 899px) { .grid--stats.grid--stats5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .grid--stats.grid--stats5 > :last-child { grid-column: 1 / -1; } }
-.stat__value.num { font-variant-numeric: tabular-nums; }

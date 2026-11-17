@@ -7,8 +7,7 @@
 //      it runs out.
 // The store is always addressed by its *.myshopify.com domain (settings.store.myshopify_domain).
 import type { Env } from '../types';
-import { all } from '../lib/db';
-import { getSettings, getState, setState } from '../lib/settings';
+import { getSecret, getSettings, getState, setState } from '../lib/settings';
 import { MIN } from '../lib/time';
 
 export const API_VERSION = '2026-10';
@@ -27,13 +26,7 @@ export class ShopifyError extends Error {
 export interface ShopifyAuth {
   mode: 'admin_token' | 'client_credentials' | 'none';
   domain: string;
-  /** Where the Admin API is: https://<domain>, or a fake Shopify in tests. */
-  base: string;
-  /** The saved details, read once (one query) and passed along so a request never reads them again. */
-  creds: { adminToken: string | null; clientId: string | null; clientSecret: string | null };
 }
-
-const SECRET_KEYS = ['shopify_admin_token', 'shopify_client_id', 'shopify_client_secret'] as const;
 
 /** Accepts "abc-123", "abc-123.myshopify.com" or a pasted admin URL. Returns '' when it is not a store domain. */
 export function normaliseShopDomain(input: string): string {
@@ -46,22 +39,13 @@ export function normaliseShopDomain(input: string): string {
   return /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(d) ? d : '';
 }
 
-/**
- * How to reach the store: the mode, the domain and every saved detail, in one query (the free plan
- * allows 50 per request and a code request makes two Admin API calls). `env` is only needed to let
- * the tests point it at a fake Shopify (test mode only).
- */
-export async function shopifyAuth(db: D1Database, env?: Env): Promise<ShopifyAuth> {
-  const [settings, rows] = await Promise.all([
-    getSettings(db),
-    all<{ key: string; value: string }>(db, `SELECT key, value FROM secrets WHERE key IN (${SECRET_KEYS.map(() => '?').join(', ')})`, ...SECRET_KEYS),
+export async function shopifyAuth(db: D1Database): Promise<ShopifyAuth> {
+  const [settings, adminToken, clientId, clientSecret] = await Promise.all([
+    getSettings(db), getSecret(db, 'shopify_admin_token'), getSecret(db, 'shopify_client_id'), getSecret(db, 'shopify_client_secret'),
   ]);
-  const got = new Map(rows.map((r) => [r.key, r.value]));
-  const creds = { adminToken: got.get('shopify_admin_token') ?? null, clientId: got.get('shopify_client_id') ?? null, clientSecret: got.get('shopify_client_secret') ?? null };
   const domain = normaliseShopDomain(settings.store.myshopify_domain);
-  const mode = creds.adminToken ? 'admin_token' : creds.clientId && creds.clientSecret ? 'client_credentials' : 'none';
-  const fake = env?.ACX_TEST_MODE === '1' ? await getState<string | null>(db, 'test_shopify_base', null) : null;
-  return { mode, domain, base: fake && /^http:\/\/127\.0\.0\.1:\d+$/.test(fake) ? fake : `https://${domain}`, creds };
+  const mode = adminToken ? 'admin_token' : clientId && clientSecret ? 'client_credentials' : 'none';
+  return { mode, domain };
 }
 
 /** True when the Admin API can be called (a token or an app id and secret is saved). */
@@ -83,11 +67,10 @@ async function timedFetch(url: string, init: RequestInit): Promise<Response> {
 }
 
 /** Client credentials grant. The token lasts 24 hours and there is no refresh token: we just ask again. */
-async function requestToken(db: D1Database, auth: ShopifyAuth): Promise<string> {
-  const { clientId, clientSecret } = auth.creds;
-  const domain = auth.domain;
+async function requestToken(db: D1Database, domain: string): Promise<string> {
+  const [clientId, clientSecret] = await Promise.all([getSecret(db, 'shopify_client_id'), getSecret(db, 'shopify_client_secret')]);
   if (!clientId || !clientSecret) throw new ShopifyError('not_connected', 'No Shopify app details are saved yet.');
-  const res = await timedFetch(`${auth.base}/admin/oauth/access_token`, {
+  const res = await timedFetch(`https://${domain}/admin/oauth/access_token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
     body: new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret }).toString(),
@@ -109,17 +92,17 @@ async function requestToken(db: D1Database, auth: ShopifyAuth): Promise<string> 
 }
 
 async function accessToken(db: D1Database, auth: ShopifyAuth, forceNew = false): Promise<string> {
-  if (auth.mode === 'admin_token' && auth.creds.adminToken) return auth.creds.adminToken;
+  if (auth.mode === 'admin_token') {
+    const token = await getSecret(db, 'shopify_admin_token');
+    if (token) return token;
+  }
   if (auth.mode === 'none') throw new ShopifyError('not_connected', 'Shopify is not connected yet.');
   if (!forceNew) {
     const cached = await getState<{ token: string; expires_at: number; domain: string } | null>(db, TOKEN_STATE, null);
     if (cached?.token && cached.domain === auth.domain && cached.expires_at - TOKEN_SKEW_MS > Date.now()) return cached.token;
   }
-  return requestToken(db, auth);
+  return requestToken(db, auth.domain);
 }
-
-/** The auth and token for several Admin API calls in one request, read once. */
-export interface ShopifySession { auth: ShopifyAuth; token: string | null }
 
 interface GqlError { message: string; extensions?: { code?: string } }
 interface GqlResponse<T> {
@@ -130,20 +113,16 @@ interface GqlResponse<T> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Run one Admin GraphQL query. Refreshes an expired token once and waits out short throttles. Pass a
- * `session` to share the auth and token between calls of one request (no database reads then).
- */
-export async function adminGraphQL<T>(env: Env, query: string, variables: Record<string, unknown> = {}, session?: ShopifySession): Promise<T> {
+/** Run one Admin GraphQL query. Refreshes an expired token once and waits out short throttles. */
+export async function adminGraphQL<T>(env: Env, query: string, variables: Record<string, unknown> = {}): Promise<T> {
   const db = env.DB;
-  const auth = session?.auth ?? (await shopifyAuth(db, env));
+  const auth = await shopifyAuth(db);
   if (!auth.domain) throw new ShopifyError('wrong_domain', 'The store address should look like your-store.myshopify.com.');
-  let token = session?.token ?? (await accessToken(db, auth));
-  if (session) session.token = token;
+  let token = await accessToken(db, auth);
   let refreshed = false;
 
   for (let attempt = 0; attempt < 4; attempt++) {
-    const res = await timedFetch(`${auth.base}/admin/api/${API_VERSION}/graphql.json`, {
+    const res = await timedFetch(`https://${auth.domain}/admin/api/${API_VERSION}/graphql.json`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json', 'x-shopify-access-token': token },
       body: JSON.stringify({ query, variables }),
@@ -154,7 +133,6 @@ export async function adminGraphQL<T>(env: Env, query: string, variables: Record
       if (auth.mode === 'client_credentials' && !refreshed) {
         refreshed = true;
         token = await accessToken(db, auth, true);
-        if (session) session.token = token;
         continue;
       }
       throw new ShopifyError('unauthorised', 'Shopify rejected the saved access details. Check the app is still installed and has the order permissions.');
