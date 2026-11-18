@@ -3,7 +3,8 @@
 //
 // Rules for this file:
 //   * READ ONLY. It never sends, opens, marks as read, edits or deletes anything.
-//   * It adds nothing to window and makes no network calls (the page's CSP applies here).
+//   * It adds nothing to window and makes no network calls (the page's CSP applies here). Reading a
+//     blob: address WhatsApp already made (a voice note it downloaded) stays inside the page.
 //   * Everything is optional. A missing module or renamed field makes one call fail, and the
 //     adapter in whatsapp.js then falls back to what it can see on the page.
 //   * Module names are not hard coded: the adapter sends them with each request from the selector
@@ -98,6 +99,32 @@
       return out;
     },
 
+    // A customer voice note (ptt) WhatsApp has already downloaded: its bytes, as the Blob WhatsApp holds
+    // in memory. Never downloads, plays or marks anything: a note not loaded yet answers why: 'not_loaded'.
+    // Field names are best effort (WhatsApp renames them): mediaData.mediaBlob (forceToBlob) or
+    // mediaData.renderableUrl (a blob: address).
+    async voice(msgId) {
+      const m = mod('collections').Msg.getModelsArray().find((x) => x.id && x.id.id === msgId);
+      if (!m) return null;
+      const type = String(m.type || '');
+      const out = { duration: Number(m.duration) || null, size: Number(m.size) || null, mime: String(m.mimetype || '').split(';')[0] || null };
+      if (type !== 'ptt' && type !== 'audio') return { ...out, why: 'not_voice' };
+      if (m.isViewOnce) return { ...out, why: 'view_once' };
+      if (out.size && out.size > 200000) return { ...out, why: 'too_big' };
+      const md = m.mediaData || {};
+      const asBlob = async (o) => {
+        if (!o) return null;
+        if (o instanceof Blob) return o;
+        try { if (typeof o.forceToBlob === 'function') { const b = await o.forceToBlob(); if (b instanceof Blob) return b; } } catch { /* not ready */ }
+        try { if (o._blob instanceof Blob) return o._blob; } catch { /* renamed */ }
+        return null;
+      };
+      let blob = await asBlob(md.mediaBlob);
+      const url = typeof md.renderableUrl === 'string' ? md.renderableUrl : '';
+      if (!blob && url.startsWith('blob:')) { try { blob = await (await fetch(url)).blob(); } catch { blob = null; } }
+      return blob && blob.size ? { ...out, blob, mime: out.mime || blob.type || null } : { ...out, why: 'not_loaded' };
+    },
+
     // Phone number (digits) for a chat id. Local lookups only; null when the person hides their number.
     phoneOf(jid) {
       const w = mod('widFactory').createWid(jid);
@@ -116,14 +143,15 @@
   window.addEventListener('message', (e) => {
     const d = e.data;
     if (e.source !== window || !d || d.tag !== TAG || d.dir !== 'req' || typeof d.fn !== 'string') return;
-    let reply;
+    const post = (reply) => { try { window.postMessage(reply, location.origin); } catch { /* result could not be cloned */ } };
+    const fail = (err) => post({ tag: TAG, dir: 'res', id: d.id, ok: false, err: String((err && err.message) || err).slice(0, 200) });
     try {
       if (!Object.prototype.hasOwnProperty.call(api, d.fn)) throw new Error('unknown call');
       if (d.modules && typeof d.modules === 'object') names = d.modules;
-      reply = { tag: TAG, dir: 'res', id: d.id, ok: true, res: api[d.fn](...(Array.isArray(d.args) ? d.args : [])) };
+      // Most calls answer at once; voice reads a Blob and answers when it has it (a Blob clones across).
+      Promise.resolve(api[d.fn](...(Array.isArray(d.args) ? d.args : []))).then((res) => post({ tag: TAG, dir: 'res', id: d.id, ok: true, res }), fail);
     } catch (err) {
-      reply = { tag: TAG, dir: 'res', id: d.id, ok: false, err: String((err && err.message) || err).slice(0, 200) };
+      fail(err);
     }
-    try { window.postMessage(reply, location.origin); } catch { /* result could not be cloned */ }
   });
 })();

@@ -213,18 +213,24 @@ export async function personalizeRecovery(env: Env, a: string | { text: string; 
 
 export interface BrainTestResult { ok: boolean; provider: string; model: string; ms: number; sample: string; error?: string }
 
-/** One small real call to the configured model, so the owner can see the connection works and what it sounds like. */
+/**
+ * One small real call to the configured model, so the owner can see the connection works and what it
+ * sounds like. With a Claude key saved it always tests Claude: never the free Cloudflare AI of the
+ * window or of a Claude outage, which would pass a bad key or a key with no credit (and spend free
+ * neurons). Workers AI only without a key, or when the owner set the provider to it.
+ */
 export async function testBrain(env: Env): Promise<BrainTestResult> {
   const started = Date.now();
   const settings = await getSettings(env.DB, true);
   let provider: string = settings.brain.provider;
   let model = settings.brain.model;
   try {
-    const choice = await chooseProvider(env, settings);
+    const choice = await chooseProvider(env, settings, { claudeOnly: true, noStandIn: true });
     provider = choice.provider;
     model = choice.model;
     const res = await callJson<{ reply?: unknown }>(env, {
-      purpose: 'test', choice,
+      // A Claude key that fails here must fail the test: no stand in.
+      purpose: 'test', choice, fallback: false,
       system: [{ text: `You text customers for ${settings.store.name}, a small UK online shop for ebike conversion kits. Answer with one JSON object.\n\n${houseStyle(settings)}` }],
       user: 'A customer just wrote: "yo is anyone there". Reply with one short friendly line that says you are here and asks what they need. State no facts about products or delivery.',
       schema: { type: 'object', additionalProperties: false, properties: { reply: { type: 'string' } }, required: ['reply'] },

@@ -94,15 +94,21 @@
   });
 
   /** Ask the page world something. Resolves to null when the bridge is off, missing, slow or failed. */
-  function bridge(fn, ...args) {
+  const bridge = (fn, ...args) => bridgeCall(fn, args);
+
+  /**
+   * bridge() with options: `timeout` (ms, default 1200) and `soft` (a slow answer does not mark the bridge
+   * down for a minute: a voice note's bytes can take a moment, and other calls must not pay for it).
+   */
+  function bridgeCall(fn, args = [], { timeout = 1200, soft = false } = {}) {
     if (lookup('bridge.enabled') === false || Date.now() < bridgeDownUntil) return Promise.resolve(null);
     return new Promise((resolve) => {
       const id = `${Date.now()}-${++bridgeSeq}`;
       const timer = setTimeout(() => {
         if (!waiting.delete(id)) return;
-        bridgeDownUntil = Date.now() + 60_000; // no answer at all: do not slow every call down
+        if (!soft) bridgeDownUntil = Date.now() + 60_000; // no answer at all: do not slow every call down
         resolve(null);
-      }, 1200);
+      }, Math.max(100, timeout));
       waiting.set(id, (res) => { clearTimeout(timer); waiting.delete(id); resolve(res ?? null); });
       try {
         window.postMessage({ tag: TAG, dir: 'req', id, fn, args, modules: lookup('bridge.modules') || {} }, location.origin);
@@ -631,10 +637,10 @@
         kind,
         ts: model && model.t ? model.t * 1000 : pre.ts,
         author: pre.author,
-        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia), and for a video
-        // what the bridge knows about it (findVideo). Voice notes are left alone.
-        _media: kind === 'image' || kind === 'video'
-          ? { el: m.row, kind, info: model ? { duration: model.duration || null, size: model.size || null, view_once: Boolean(model.view_once) } : {} }
+        // The bubble, for copying the photo or one frame of the video (ACX.captureMedia), for a video
+        // what the bridge knows about it (findVideo), and for a voice note its message id (findVoice).
+        _media: kind === 'image' || kind === 'video' || kind === 'voice'
+          ? { el: m.row, kind, id: m.id.msgId, info: model ? { duration: model.duration || null, size: model.size || null, view_once: Boolean(model.view_once) } : {} }
           : null,
       });
     }
@@ -837,6 +843,49 @@
     return { el: video, seconds, done };
   }
 
+  /**
+   * The bytes of a customer voice note, for the free Cloudflare AI to write out (ACX.captureMedia).
+   * Never plays it: first what WhatsApp already holds in memory (the bridge, read only), then an audio
+   * element in the bubble (media.voice_audio), and when the note is not downloaded yet, its download
+   * button (media.voice_load) once, then those two again. Resolves to { blob, seconds, mime } or { why }.
+   */
+  async function findVoice(m, deadline) {
+    const left = () => deadline - Date.now();
+    const info = (m._media && m._media.info) || {};
+    const bubble = m._media.el;
+    const maxSeconds = Number(lookup('media.voice_max_seconds')) || 120;
+    if (info.view_once || Q('media.view_once', bubble)) return { why: 'view_once' };
+    if (info.duration && info.duration > maxSeconds) return { why: 'too_long', seconds: info.duration };
+    if (info.size && info.size > 185_000) return { why: 'too_big' };
+    const seconds = info.duration || null;
+    const fromBridge = async () => {
+      const v = await bridgeCall('voice', [m._media.id], { timeout: Math.max(300, Math.min(2500, left())), soft: true });
+      if (v && v.blob instanceof Blob && v.blob.size) return { blob: v.blob, seconds: v.duration || seconds, mime: v.mime || v.blob.type || 'audio/ogg' };
+      return v && v.why && v.why !== 'not_loaded' ? { why: v.why } : null;
+    };
+    const fromAudio = async () => {
+      const a = Q('media.voice_audio', bubble);
+      const src = a ? String(a.currentSrc || a.src || a.getAttribute('src') || '') : '';
+      if (!/^blob:/.test(src)) return /^https:/.test(src) ? { url: src, seconds: seconds || (Number.isFinite(a.duration) ? a.duration : null), mime: 'audio/ogg' } : null;
+      try {
+        const res = await fetch(src, { signal: AbortSignal.timeout(Math.max(300, Math.min(3000, left()))) });
+        const blob = res.ok ? await res.blob() : null;
+        return blob && blob.size ? { blob, seconds: seconds || (Number.isFinite(a.duration) ? a.duration : null), mime: blob.type || 'audio/ogg' } : null;
+      } catch { return null; }
+    };
+    let hit = (await fromBridge()) || (await fromAudio());
+    if (hit) return hit;
+    const load = Q('media.voice_load', bubble);
+    if (!load || left() < 1500) return { why: load ? 'timeout' : 'not_loaded' };
+    ACX.click(load); // downloads it, as the owner tapping the arrow would. Never plays it.
+    while (left() > 400) {
+      await sleep(300);
+      hit = (await fromBridge()) || (await fromAudio());
+      if (hit) return hit;
+    }
+    return { why: 'not_loaded_in_time' };
+  }
+
   async function read({ key }) {
     const title = String(key || '').trim();
     if (!title) throw new Fail('thread_not_found', 'No chat given', false);
@@ -863,8 +912,8 @@
 
     checkLabel(cur);
     if (messages.length) lastSeen[cur.title] = messages[messages.length - 1].external_id;
-    // Photos and video previews of the newest customer messages ride along. Never throws, at most about 5 s.
-    await ACX.captureMedia(messages);
+    // Photos, video previews and voice notes of the newest customer messages ride along. Never throws, at most about 5 s.
+    await ACX.captureMedia(messages, { voice: findVoice });
     // The newest customer video itself, when Google AI Studio is connected. Never throws, at most about 8 s.
     await ACX.captureVideo(messages, findVideo);
     const out = messages.map(({ external_id, direction, body, kind, ts, media }) => (media ? { external_id, direction, body, kind, ts, media } : { external_id, direction, body, kind, ts }));

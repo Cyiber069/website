@@ -29,7 +29,7 @@
 //    inside the report's own async run (attachVideo), so it never holds up the lane
 import * as api from './lib/api.js';
 import * as core from './lib/lane-core.js';
-import { fetchMedia, fetchVideo } from './lib/media.js';
+import { fetchAudio, fetchMedia, fetchVideo } from './lib/media.js';
 import * as store from './lib/store.js';
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -1714,6 +1714,11 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     case 'fetch_media':
       if (!sender.tab?.id || !NAMES.includes(msg.channel)) { respond({ ok: false, error: 'not_a_channel_tab' }); return false; }
       fetchMedia(msg.channel, String(msg.url || ''), Number(msg.timeout_ms) || 4000).then(respond, () => respond({ ok: false, error: 'failed' }));
+      return true;
+    // A tab could not read a customer's audio attachment itself (a Gmail voice note). Same rules as photos.
+    case 'fetch_audio':
+      if (!sender.tab?.id || !NAMES.includes(msg.channel)) { respond({ ok: false, error: 'not_a_channel_tab' }); return false; }
+      fetchAudio(msg.channel, String(msg.url || ''), Number(msg.timeout_ms) || 4000).then(respond, () => respond({ ok: false, error: 'failed' }));
       return true;
     case 'trusted_type':
       if (!sender.tab?.id) { respond({ ok: false }); return false; }

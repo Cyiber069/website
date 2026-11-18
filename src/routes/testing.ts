@@ -43,6 +43,14 @@ export function register(r: Router): void {
     return json({ ok: true });
   });
 
+  // Point voice note transcription at a fake speech endpoint run by the tests (src/speech reads it in test mode only).
+  r.post('/api/test/speech-base', 'public', async (c) => {
+    guard(c);
+    const body = await c.body<{ url?: unknown }>();
+    await setState(c.db, 'test_speech_base', typeof body.url === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(body.url) ? body.url : null);
+    return json({ ok: true });
+  });
+
   // Point the Shopify client at a fake Shopify run by the tests (src/shopify/client.ts shopifyAuth reads it in test mode only).
   r.post('/api/test/shopify-base', 'public', async (c) => {
     guard(c);

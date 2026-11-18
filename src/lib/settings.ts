@@ -8,6 +8,21 @@ import { onReset } from './cache';
  */
 export const PACING_SCHEMA = 2;
 
+/**
+ * Version of the brain group. Rows from before version 2 (no `schema`) held Opus as the default model
+ * whether the owner picked it or not (the Connections form always sent the model). See migrateBrain.
+ */
+export const BRAIN_SCHEMA = 2;
+/**
+ * The default Claude model setting: Haiku answers, Sonnet at low effort answers the chats that matter
+ * (src/brain/route.ts). This id is only what Connections shows and sends. The stored row keeps
+ * `mix: true` with a real API model id in `model` (MIX_BASE_MODEL), so an older Worker after a rollback
+ * still sends a model Claude knows.
+ */
+export const MIX_MODEL = 'mix-haiku-sonnet';
+export const MIX_BASE_MODEL = 'claude-haiku-5-5';
+const API_MODEL = /^claude-[a-z0-9.-]+$/;
+
 export const DEFAULT_SETTINGS: Settings = {
   agent: { enabled: true },
   channels: {
@@ -29,7 +44,10 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   brain: {
     provider: 'auto',
-    model: 'claude-opus-5-5',
+    model: MIX_BASE_MODEL,
+    mix: true,
+    model_chosen: false,
+    schema: BRAIN_SCHEMA,
     effort: 'low',
     workers_ai_model: '@cf/google/gemma-4-26b-a4b-it',
     confidence_threshold: 0.6,
@@ -142,7 +160,19 @@ function upgrade<G extends Group>(group: G, value: Settings[G]): Settings[G] {
     const voice = value as Settings['voice'];
     if (voice.commas !== 'none') voice.commas = 'normal';
   }
+  if (group === 'brain') normaliseBrain(value as Settings['brain']);
   return value;
+}
+
+/**
+ * brain.model is always a real Claude API model id, so an older Worker (after a rollback) can still use
+ * it. The mix is `mix: true` with Haiku as the model. The mix id in `model` (an earlier build stored it
+ * there) or anything that is not a Claude model id becomes the mix.
+ */
+export function normaliseBrain(b: Settings['brain']): Settings['brain'] {
+  if (b.model === MIX_MODEL || !API_MODEL.test(b.model)) b.mix = true;
+  if (b.mix) b.model = MIX_BASE_MODEL;
+  return b;
 }
 
 /**
@@ -163,11 +193,39 @@ export function migratePacing(raw: unknown, value: Settings['pacing']): boolean 
 }
 
 /**
+ * One time move of a brain row saved before version 2. Opus was the default and the form always sent
+ * the model, so a stored Opus (or no model) that was never marked as chosen becomes the new default mix.
+ * Any other model was picked by the owner: it is kept and marked as chosen. A row with the mix id in
+ * `model` (an earlier build) gets `mix` instead. Returns true when it changed something, so the caller
+ * can save the row once.
+ */
+export function migrateBrain(raw: unknown, value: Settings['brain']): boolean {
+  if (!isObject(raw)) return false; // nothing stored: the defaults are already the new ones
+  const model = typeof raw.model === 'string' ? raw.model : '';
+  const current = typeof raw.schema === 'number' && raw.schema >= BRAIN_SCHEMA;
+  if (current && typeof raw.mix === 'boolean' && model !== MIX_MODEL) return false;
+  value.schema = BRAIN_SCHEMA;
+  if (model === MIX_MODEL || raw.mix === true) {
+    value.mix = true;
+    value.model_chosen = raw.model_chosen === true;
+  } else if (API_MODEL.test(model) && (raw.model_chosen === true || current || model !== 'claude-opus-5-5')) {
+    value.mix = false;
+    value.model = model;
+    value.model_chosen = true;
+  } else {
+    value.mix = true;
+    value.model_chosen = false;
+  }
+  normaliseBrain(value);
+  return true;
+}
+
+/**
  * State rows read in the same query as the settings groups, so knowing them costs no extra query:
  * today's database use (the budget guard, src/lib/budget.ts), the knowledge version (src/kb/cache.ts)
  * and the settings revision (below), and what the owner locked (src/lib/locks.ts).
  */
-const BUNDLED_STATE = ['d1_usage', 'kb_version', 'settings_rev', 'locks'] as const;
+const BUNDLED_STATE = ['d1_usage', 'kb_version', 'settings_rev', 'locks', 'ai_state'] as const;
 export type BundledState = (typeof BUNDLED_STATE)[number];
 
 interface Bundle { at: number; value: Settings; state: Partial<Record<BundledState, unknown>>; rev: number }
@@ -213,6 +271,10 @@ async function loadBundle(db: D1Database): Promise<Bundle> {
     // Saved straight away so it happens once. If the write fails the same values are used and it is tried again.
     await run(db, 'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', JSON.stringify(pacing), Date.now(), 'pacing').catch((err) => console.error('pacing upgrade not saved', err));
   }
+  const brain = value.brain as Settings['brain'];
+  if (migrateBrain(stored.brain, brain)) {
+    await run(db, 'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', JSON.stringify(brain), Date.now(), 'brain').catch((err) => console.error('brain upgrade not saved', err));
+  }
   const state: Bundle['state'] = {};
   for (const k of BUNDLED_STATE) if (`state:${k}` in stored) state[k] = stored[`state:${k}`];
   const rev = asNumber(state.settings_rev);
@@ -248,8 +310,12 @@ export async function cachedState<T>(db: D1Database, key: BundledState, fallback
 /** Shallow-merge a patch into one settings group and persist it. Unknown keys are dropped. */
 export async function patchSettings<G extends Group>(db: D1Database, group: G, patch: Partial<Settings[G]>): Promise<Settings[G]> {
   const current = (await getSettings(db, true))[group];
-  const next = upgrade(group, mergeKnown(DEFAULT_SETTINGS[group], { ...(current as object), ...(patch as object) }));
+  const merged: Record<string, unknown> = { ...(current as object), ...(patch as object) };
+  // A model sent without `mix` is a plain model choice, or the mix when it is the mix id.
+  if (group === 'brain' && 'model' in patch && !('mix' in patch)) merged.mix = merged.model === MIX_MODEL;
+  const next = upgrade(group, mergeKnown(DEFAULT_SETTINGS[group], merged));
   if (group === 'pacing') (next as Settings['pacing']).schema = PACING_SCHEMA; // never set back by a client
+  if (group === 'brain') (next as Settings['brain']).schema = BRAIN_SCHEMA;
   const now = Date.now();
   const rev = Math.max(now, newestRev + 1);
   // The new revision goes in the same round trip: other isolates drop their cached settings on their next signed in request.

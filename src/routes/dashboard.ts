@@ -64,10 +64,16 @@ const budgetView = (b: Budget) => ({ level: b.level, poll_seconds: DASHBOARD_SEC
  */
 function mediaOf(m: MessageRow, now: number): { id: string; kind: string; description?: string } | null {
   const ref = parseJson<MediaRef>(m.meta, {});
-  // Pictures are deleted after 14 days (src/cron.ts): do not point at one that is gone.
-  if (typeof ref.media !== 'string' || m.created_at < now - MEDIA_KEEP_DAYS * DAY) return null;
+  // Pictures are deleted after 14 days (src/cron.ts): do not point at one that is gone. A voice note has no picture.
+  if (typeof ref.media !== 'string' || ref.media_kind === 'voice' || m.created_at < now - MEDIA_KEEP_DAYS * DAY) return null;
   const kind = ref.media_kind === 'video_frame' ? 'video_frame' : 'image';
   return typeof ref.media_desc === 'string' && ref.media_desc ? { id: ref.media, kind, description: ref.media_desc } : { id: ref.media, kind };
+}
+
+/** What the speech model heard in a voice note (src/speech), for the owner under the message. From the message row, no extra query. */
+function voiceOf(m: MessageRow): { transcript: string } | null {
+  const ref = parseJson<MediaRef>(m.meta, {});
+  return typeof ref.voice_text === 'string' && ref.voice_text ? { transcript: ref.voice_text } : null;
 }
 
 async function conversationsById(db: D1Database, ids: string[]): Promise<Map<string, ConversationRow & { display_name: string | null }>> {
@@ -99,7 +105,7 @@ async function urgentView(db: D1Database, rows: UrgentRow[], now: number) {
       owner_answer: u.owner_answer, owner_note: u.owner_note, sent_text: u.status !== 'open' ? u.polished_answer : null,
       created_at: u.created_at, answered_at: u.answered_at, sent_at: u.sent_at,
       conversation_id: u.conversation_id, customer: conv?.display_name || conv?.title || 'Customer',
-      recent: recent.map((m) => ({ direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts, media: mediaOf(m, now) })),
+      recent: recent.map((m) => ({ direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts, media: mediaOf(m, now), voice: voiceOf(m) })),
       discount: dc ? { id: dc.id, code: dc.code, amount: dc.amount, status: dc.status, shopify_status: dc.shopify_status, error: dc.error, message_text: dc.message_text } : null,
     });
   }
@@ -201,7 +207,7 @@ async function conversationView(db: D1Database, id: string, now: number) {
       phone: contact.phone, email: contact.email, handle: contact.handle, opted_out: Boolean(contact.opted_out),
       tone: parseJson(contact.tone_profile, {}),
     },
-    messages: messages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, kind: m.kind, status: m.status, ts: m.ts, media: mediaOf(m, now) })),
+    messages: messages.map((m) => ({ id: m.id, direction: m.direction, author: m.author, body: m.body, kind: m.kind, status: m.status, ts: m.ts, media: mediaOf(m, now), voice: voiceOf(m) })),
     pending: pending.map((p) => ({ id: p.id, status: p.status, source: p.source, parts: parseJson<string[]>(p.parts, []) })),
   };
 }

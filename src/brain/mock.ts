@@ -15,7 +15,11 @@ export function mockSales(text: string): SalesRead {
   return { stage: 'none', product: null };
 }
 
-export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesImages?: boolean } = {}): Decision {
+/**
+ * `tier` is the model the mock stands in for (src/brain/route.ts): haiku and sonnet inside the mix, set for a
+ * plain model setting, workers for Workers AI. Only the haiku-stumped trigger looks at it.
+ */
+export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesImages?: boolean; tier?: string } = {}): Decision {
   const last = [...input.history].reverse().find((m) => m.direction === 'in');
   const text = (last?.body ?? '').toLowerCase();
   const base: Decision = {
@@ -47,6 +51,14 @@ export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesIm
   if (guided) {
     return { ...base, parts: [`Mock reply following owner guidance to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock owner guidance' };
   }
+  // Haiku is unsure, Sonnet knows (the mix gives Sonnet one try before the owner is asked).
+  if (text.includes('haiku-stumped')) {
+    if (opts.tier === 'sonnet') return { ...base, parts: [`Mock Sonnet answer to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock sonnet' };
+    return {
+      ...base, action: 'escalate', confidence: 0.2, parts: ['Let me check that for you'], note: 'mock unsure',
+      escalate: { question: last?.body ?? '', reason: 'Not sure (mock)', category: 'unknown_fact' },
+    };
+  }
   if (text.includes('warranty on the moon') || text.includes('unknown-question')) {
     return {
       ...base, action: 'escalate', confidence: 0.2, parts: ['Good question, let me check that for you'],
@@ -76,6 +88,11 @@ export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesIm
   if (text.includes('show-queued')) {
     const queued = input.history.filter((m) => m.pending).map((m) => m.body);
     return { ...base, parts: [`Mock saw ${queued.length} queued: ${queued.join(' + ').slice(0, 120) || 'none'}`] };
+  }
+  // What earlier voice notes said reaches the brain while the chat goes on (src/pipeline/inbound.ts heardMessage).
+  if (text.includes('show-voice')) {
+    const heard = input.history.filter((m) => m.direction === 'in' && m.voice_text).map((m) => m.voice_text);
+    return { ...base, parts: [`Mock heard ${heard.length} voice note${heard.length === 1 ? '' : 's'}: ${heard.join(' + ').slice(0, 120) || 'none'}`] };
   }
   // What the brain is told about an open Urgent question: is the quoted customer content labelled as such?
   if (text.includes('show-urgent-note')) {

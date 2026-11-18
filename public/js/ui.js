@@ -261,6 +261,12 @@ export function mediaThumb(media) {
     <img class="thumb__img" src="${mediaUrl(media.id)}" alt="" loading="lazy" decoding="async">${media.kind === 'video_frame' ? html`<span class="thumb__tag">Video</span>` : ''}</button>`;
 }
 
+/** What the free Cloudflare AI heard in a voice note, under the message. Nothing when it has not listened. */
+export function voiceNote(voice) {
+  if (!voice || !voice.transcript) return '';
+  return html`<p class="media__desc voice__text"><b>Voice note said:</b> ${voice.transcript}</p>`;
+}
+
 /** What Google AI Studio saw in the photo or video, under its thumbnail. Nothing when it has not looked. */
 export function mediaNote(media) {
   if (!media || !media.description) return '';
@@ -300,7 +306,7 @@ export function bubbles(messages) {
   return messages.map((m) => {
     const who = m.author === 'customer' || (m.direction === 'in' && !m.author) ? 'customer' : m.author === 'owner' ? 'owner' : 'agent';
     const by = who === 'customer' ? 'Customer' : who === 'owner' ? 'You' : 'Agent';
-    return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}${mediaNote(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div>${m.ts ? html`<span class="msg__meta">${dayClock(m.ts)}</span>` : ''}</div>`;
+    return html`<div class="msg msg--${who}"><span class="msg__by">${by}</span>${mediaThumb(m.media)}${mediaNote(m.media)}<div class="bubble">${m.body || kindLabel(m.kind)}</div>${voiceNote(m.voice)}${m.ts ? html`<span class="msg__meta">${dayClock(m.ts)}</span>` : ''}</div>`;
   });
 }
 export function kindLabel(kind) {

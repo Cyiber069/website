@@ -100,3 +100,26 @@ export async function fetchMedia(channel, url, timeoutMs = 4000) {
     return { ok: false, error: String(err?.name || err?.message || err).slice(0, 60) };
   }
 }
+
+const AUDIO_MAX_BYTES = 185_000;
+
+/**
+ * A customer voice note or audio attachment the tab cannot read itself (a Gmail attachment), for the free
+ * Cloudflare AI to write out: { ok: true, data (base64), mime } or { ok: false, error }. Same host rules
+ * as photos, https only, at most about 185 KB (a bigger one is stopped as soon as that is known). Never throws.
+ */
+export async function fetchAudio(channel, url, timeoutMs = 4000) {
+  try {
+    if (!mediaUrlAllowed(channel, url)) return { ok: false, error: 'host_not_allowed' };
+    const res = await fetch(url, { credentials: 'include', signal: AbortSignal.timeout(Math.min(Math.max(300, Number(timeoutMs) || 4000), 8000)) });
+    if (!mediaUrlAllowed(channel, res.url || url)) return { ok: false, error: 'redirect_not_allowed' };
+    if (!res.ok) return { ok: false, error: `http_${res.status}` };
+    if (Number(res.headers.get('content-length') || 0) > AUDIO_MAX_BYTES) { res.body?.cancel().catch(() => {}); return { ok: false, error: 'too_big' }; }
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > AUDIO_MAX_BYTES) return { ok: false, error: 'too_big' };
+    const type = (res.headers.get('content-type') || '').split(';')[0].trim();
+    return { ok: true, data: toBase64(buf), mime: /^audio\//.test(type) ? type : 'audio/ogg' };
+  } catch (err) {
+    return { ok: false, error: String(err?.name || err?.message || err).slice(0, 60) };
+  }
+}

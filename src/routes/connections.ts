@@ -9,15 +9,37 @@ import { getVapidPublicKey, notifyOwner, pushSubscriptionCount, validPushEndpoin
 import { getSettings, getState, patchSettings, secretHints, setSecret } from '../lib/settings';
 import { clearTokenCache, normaliseShopDomain, testConnection } from '../shopify/client';
 import { VISION_MODELS, VISION_SECRET, checkVisionKey, checkVisionPatch, testVision, videosToday } from '../vision';
+import { aiState, allowanceOf, clearClaudeDown, routeClock } from '../brain/allowance';
+import { CLAUDE_MODELS, FREE_WINDOW_START_UTC, allowanceLeft, inFreeWindow, isModelSetting, modelSetting, storedModel } from '../brain/route';
+import { SPEECH_MODEL } from '../speech';
+import type { Env } from '../types';
 import { EMPTY_WEBHOOK_STATE, WEBHOOK_STATE, type WebhookState } from './hooks';
 
-/** Models offered in the picker. Ids are exact API model ids. */
-const CLAUDE_MODELS: { id: string; label: string; note: string }[] = [
-  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', note: 'Recommended. Best judgement on tricky customer questions.' },
-  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', note: 'Faster and about half the cost. Fine for most chats.' },
-  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', note: 'Cheapest and quickest. Best kept for simple questions.' },
-  { id: 'claude-fable-5-2', label: 'Claude Fable 5.2', note: 'Most capable and most expensive. More than customer chat needs.' },
+/**
+ * Which AI does what, in the owner's words (no dashes, few commas). Shown on Connections as it is.
+ * `ai` is claude | cloudflare | google.
+ */
+export const AI_SPLIT: { ai: 'claude' | 'cloudflare' | 'google'; name: string; does: string }[] = [
+  { ai: 'claude', name: 'Claude', does: 'Every customer reply, photos, discount codes and polishing your answers.' },
+  { ai: 'cloudflare', name: 'Cloudflare AI (free)', does: `Voice notes and TikTok comments. From ${FREE_WINDOW_START_UTC}:00 UTC to midnight it answers customers too while the free allowance lasts. It also steps in if Claude stops working.` },
+  { ai: 'google', name: 'Google AI Studio', does: 'Videos. Finding sponsors comes later.' },
 ];
+
+/**
+ * Today's free Workers AI allowance (an estimate the Worker keeps itself) and whether Claude is working.
+ * `claude_down.covered`: the free Cloudflare AI is there with neurons left, so it answers while Claude is
+ * down (the same test as llm.ts workersFallback). Without it customers are not getting answers.
+ */
+async function aiView(env: Env) {
+  const s = await aiState(env);
+  const now = routeClock(env, s);
+  const a = allowanceOf(s, now);
+  const covered = (env.ACX_TEST_MODE === '1' || Boolean(env.AI)) && allowanceLeft(a);
+  return {
+    allowance: { used: a.used, limit: a.limit, left: a.left, pct: a.pct, out: a.out, out_at: s.day === a.day ? s.out_at ?? null : null, resets_at: a.resets_at, estimate: true, window_from_utc: FREE_WINDOW_START_UTC, window_now: inFreeWindow(now) && !a.out },
+    claude_down: s.claude_down ? { at: s.claude_down.at, last_at: s.claude_down.last_at ?? s.claude_down.at, code: s.claude_down.code, covered } : null,
+  };
+}
 
 const SHOPIFY_SECRETS = ['shopify_client_id', 'shopify_client_secret', 'shopify_admin_token', 'shopify_webhook_secret'] as const;
 
@@ -29,6 +51,7 @@ async function view(c: Ctx) {
     getSettings(db, true), secretHints(db), getState<WebhookState>(db, WEBHOOK_STATE, EMPTY_WEBHOOK_STATE),
     getVapidPublicKey(c.env), pushSubscriptionCount(db), videosToday(db, c.now),
   ]);
+  const ai = await aiView(c.env);
   const usesToken = Boolean(hints.shopify_admin_token);
   const usesApp = Boolean(hints.shopify_client_id && hints.shopify_client_secret);
   const api = usesToken || usesApp;
@@ -36,12 +59,17 @@ async function view(c: Ctx) {
   return {
     brain: {
       provider: settings.brain.provider,
-      model: settings.brain.model,
+      // The model setting as the form shows it: the mix id, or the plain model. The stored row keeps a
+      // real model id with mix true (an older Worker after a rollback still understands it).
+      model: modelSetting(settings.brain),
+      mix: settings.brain.mix,
+      model_chosen: settings.brain.model_chosen,
       effort: settings.brain.effort,
       // A key set as a Worker variable also counts, but there is nothing of it to hint at.
       claude_key: hints.anthropic_api_key ? saved(hints.anthropic_api_key) : { saved: Boolean(c.env.ANTHROPIC_API_KEY), hint: '' },
-      workers_ai: { available: Boolean(c.env.AI), model: settings.brain.workers_ai_model },
+      workers_ai: { available: Boolean(c.env.AI), model: settings.brain.workers_ai_model, speech_model: SPEECH_MODEL, ...ai },
       models: CLAUDE_MODELS,
+      split: AI_SPLIT,
     },
     shopify: {
       mode: api ? 'api' : webhook ? 'webhook' : 'none',
@@ -91,14 +119,18 @@ export function register(r: Router): void {
     if (key !== undefined) {
       if (key && !key.startsWith('sk-ant-')) throw bad('invalid_field', 'That does not look like a Claude API key. They start with sk-ant-', { field: 'anthropic_api_key' });
       await setSecret(c.db, 'anthropic_api_key', key);
+      // A new key: Claude is tried again at once instead of waiting out the outage.
+      if (key) await clearClaudeDown(c.env, { why: 'new_key' });
     }
     const patch: Partial<BrainSettings> = {};
     if (body.provider !== undefined) patch.provider = oneOf(body.provider, 'provider', ['auto', 'anthropic', 'workers_ai'] as const);
     if (body.effort !== undefined) patch.effort = oneOf(body.effort, 'effort', ['low', 'medium', 'high'] as const);
     if (body.model !== undefined) {
       const model = str(body.model, 'model', { max: 80 });
-      if (!/^claude-[a-z0-9.-]+$/.test(model)) throw bad('invalid_field', 'Pick one of the listed Claude models', { field: 'model' });
-      patch.model = model;
+      if (!isModelSetting(model)) throw bad('invalid_field', 'Pick one of the listed Claude models', { field: 'model' });
+      // A model the owner picks is kept from now on (a default they never chose is moved to the mix).
+      const current = (await getSettings(c.db, true)).brain;
+      if (model !== modelSetting(current) || current.model_chosen) Object.assign(patch, storedModel(model), { model_chosen: true });
     }
     if (Object.keys(patch).length) await patchSettings(c.db, 'brain', patch);
     return json({ ok: true, ...(await view(c)) });

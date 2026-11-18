@@ -19,6 +19,7 @@ import { cancelAgentJobs, cancelForOptOut, emptyTarget, enqueue, leaseById, reof
 import { isLegacyExtension } from '../lib/version';
 import { recordSalesRead } from '../sales/leads'; // SALES: lead stage tracking
 import { applyMeta, describeForBrain, parseMeta, type BrainMedia, type MediaExtra } from '../vision';
+import { parseVoiceMeta, transcribeForBrain, type BrainVoice } from '../speech';
 import { wordsOf } from '../brain/prompt';
 
 const KINDS: MessageKind[] = ['text', 'image', 'voice', 'video', 'sticker', 'document', 'other'];
@@ -170,29 +171,36 @@ function mediaWrites(db: D1Database, writes: D1PreparedStatement[], media: Media
 }
 
 /**
- * The pictures that came with the unanswered customer messages, for the brain: the newest 3, oldest
- * first, with what the vision model saw when it has looked. One query, and only when a message says
- * it has a picture.
+ * The pictures and voice notes that came with the unanswered customer messages, for the brain: the
+ * newest 3, oldest first, with what the vision model saw or the speech model heard when it has. One
+ * query, and only when a message says it has one. A voice note already written out is not read again.
  */
-async function loadMediaForBrain(db: D1Database, indexOf: (m: MessageRow) => number, unanswered: MessageRow[]): Promise<BrainMedia[]> {
+async function loadMediaForBrain(db: D1Database, indexOf: (m: MessageRow) => number, unanswered: MessageRow[]): Promise<{ media: BrainMedia[]; voice: BrainVoice[] }> {
   const wanted = unanswered
     .filter((m) => m.status !== 'history')
     .map((m) => ({ index: indexOf(m), id: parseJson<MediaRef>(m.meta, {}).media, msg: m }))
     .filter((x): x is { index: number; id: string; msg: MessageRow } => typeof x.id === 'string' && x.index >= 0)
     .slice(-MEDIA_PER_REPORT);
-  if (!wanted.length) return [];
-  const found = await all<{ id: string; message_id: string; kind: DecideMedia['kind']; mime: DecideMedia['mime']; data: string; description: string | null; vision: string | null; file_id: string | null; file_name: string | null; file_uri: string | null; file_mime: string | null }>(
+  if (!wanted.length) return { media: [], voice: [] };
+  const found = await all<{ id: string; message_id: string; kind: DecideMedia['kind'] | 'voice'; mime: DecideMedia['mime']; data: string; description: string | null; vision: string | null; file_id: string | null; file_name: string | null; file_uri: string | null; file_mime: string | null }>(
     db,
     // A video Google no longer holds (deleted once described, or after its last try) is not offered again.
-    `SELECT md.id, md.message_id, md.kind, md.mime, md.data, md.description, md.vision, vf.id AS file_id, vf.file_name, vf.file_uri, vf.mime AS file_mime
+    `SELECT md.id, md.message_id, md.kind, md.mime, CASE WHEN md.kind = 'voice' AND md.description IS NOT NULL THEN '' ELSE md.data END AS data,
+       md.description, md.vision, vf.id AS file_id, vf.file_name, vf.file_uri, vf.mime AS file_mime
      FROM media md LEFT JOIN vision_files vf ON vf.id = md.video_ref AND vf.gone_at IS NULL WHERE md.id IN (SELECT value FROM json_each(?))`,
     JSON.stringify(wanted.map((w) => w.id)),
   );
   const byId = new Map(found.map((f) => [f.id, f]));
   const out: BrainMedia[] = [];
+  const voice: BrainVoice[] = [];
   for (const w of wanted) {
     const f = byId.get(w.id);
     if (!f) continue;
+    // A voice note: for the speech model (src/speech), never shown to the brain as a picture.
+    if (f.kind === 'voice') {
+      voice.push({ index: w.index, id: f.id, message_id: f.message_id, mime: f.mime, data: f.data, meta: parseVoiceMeta(f.vision), transcript: f.description || null });
+      continue;
+    }
     const item: BrainMedia = {
       index: w.index, kind: f.kind === 'video_frame' ? 'video_frame' : 'image', mime: f.mime, data: f.data,
       id: f.id, message_id: f.message_id, meta: parseMeta(f.vision), caption: wordsOf(w.msg).slice(0, 300),
@@ -201,7 +209,7 @@ async function loadMediaForBrain(db: D1Database, indexOf: (m: MessageRow) => num
     applyMeta(item, f.description);
     out.push(item);
   }
-  return out;
+  return { media: out, voice };
 }
 
 interface Stored {
@@ -475,13 +483,28 @@ interface ChatJob { id: string; source: string; status: string; parts: string; c
 interface Line { msg: MessageRow | null; job: ChatJob | null; history: HistoryMessage }
 
 /**
+ * A stored message for the brain. A customer voice note the speech model wrote out earlier (src/speech,
+ * meta.voice_text) keeps its words when the chat goes on: they are the customer's, labelled as a voice
+ * note transcript (prompt.ts conversationLines), never instructions. From the row itself, no extra query.
+ * Exported for tests.
+ */
+export function heardMessage(m: MessageRow): HistoryMessage {
+  const h: HistoryMessage = { direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts };
+  if (m.direction !== 'in' || !m.meta || !m.meta.includes('voice_text')) return h;
+  const heard = parseJson<MediaRef>(m.meta, {}).voice_text;
+  const text = typeof heard === 'string' ? heard.replace(/\s+/g, ' ').trim() : '';
+  if (!text) return h;
+  return m.kind === 'voice' ? { ...h, body: text, voice_text: text } : { ...h, voice_text: text };
+}
+
+/**
  * The chat for the brain: the stored messages, with every reply that is queued or out with the laptop
  * but not sent yet put right after the customer message it answers (marked pending). A second decision
  * then never says those again, and a customer message that came after them is still the one to answer.
  * Exported for tests.
  */
 export function buildTimeline(rows: MessageRow[], jobs: ChatJob[]): Line[] {
-  const lines: Line[] = rows.map((m) => ({ msg: m, job: null, history: { direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts } }));
+  const lines: Line[] = rows.map((m) => ({ msg: m, job: null, history: heardMessage(m) }));
   const pending = jobs.filter((j) => (j.status === 'pending' || j.status === 'leased') && j.source !== 'recovery' && j.source !== 'alert');
   for (const j of [...pending].sort((a, b) => a.created_at - b.created_at)) {
     // The message it answers: stored on the row, or in the dedupe key of a reply queued before that column existed.
@@ -655,6 +678,8 @@ export async function processConversation(env: Env, convId: string, device: Devi
     // What a reply queued now answers, and when that message arrived (the reply time on Live and Health).
     const replyTo = { id: lastMsgNow.id, ts: arrivedAt(lastMsgNow) };
     const handOver = () => Boolean(device) && live();
+    // What the speech model heard in voice notes of this turn, by message id: the owner reads it on the Urgent card.
+    const heardBy = new Map<string, string>();
 
     // A customer asking for their own creator code: made here, or parked for the owner, instead of a
     // normal reply. A request with no code only adds a note so the reply asks what they want.
@@ -677,15 +702,22 @@ export async function processConversation(env: Env, convId: string, device: Devi
 
     let decision: Decision;
     try {
-      // Photos and video frames of the unanswered messages. Losing them must not lose the reply.
+      // Photos, video frames and voice notes of the unanswered messages. Losing them must not lose the reply.
       const at = new Map(timeline.map((l, i) => [l.msg?.id ?? '', i]));
-      const media = await loadMediaForBrain(db, (m) => at.get(m.id) ?? -1, unanswered).catch((err) => { console.error('media not loaded', err); return [] as BrainMedia[]; });
+      const loaded = await loadMediaForBrain(db, (m) => at.get(m.id) ?? -1, unanswered).catch((err) => { console.error('media not loaded', err); return { media: [] as BrainMedia[], voice: [] as BrainVoice[] }; });
+      const media = loaded.media;
       // Google AI Studio describes what is not described yet, inside a time limit. Without a key, with
       // the switch off or out of time, nothing changes (src/vision). Never throws.
       if (media.length) await describeForBrain(env, settings, media, opts.extras ?? new Map(), { deadlineAt, channel: conv!.channel, conversationId: convId });
+      // Workers AI writes out voice notes, inside a time limit and the free allowance. Without it the voice
+      // note goes to the owner as before (src/speech). Never throws.
+      if (loaded.voice.length) await transcribeForBrain(env, settings, loaded.voice, { deadlineAt, channel: conv!.channel, conversationId: convId });
+      for (const v of loaded.voice) if (v.transcript) heardBy.set(v.message_id, v.transcript);
       decision = await decide(env, {
         channel: conv!.channel, contact_name: contact.display_name || null, subject: conv!.subject,
         history, context_notes: notes, now, mode: 'live', media,
+        voice: loaded.voice.filter((v) => v.transcript).map((v) => ({ index: v.index, transcript: v.transcript!, seconds: v.meta.seconds ?? null })),
+        sales_stage: conv!.sales_stage ?? null,
       }, { deadlineAt });
     } catch (err) {
       // Worth trying again: a timeout, an overloaded or rate limited model, a network error, a bug in the mock.
@@ -778,7 +810,8 @@ export async function processConversation(env: Env, convId: string, device: Devi
     } else if (act === 'escalate') {
       action = 'escalate';
       const esc = decision.escalate ?? { question: clip(lastMsgNow.body, 300), reason: 'Needs the owner', category: 'unknown' };
-      const customerWords = rows.filter((m) => m.direction === 'in' && m.status !== 'history').slice(-3).map((m) => m.body).join('\n');
+      const customerWords = rows.filter((m) => m.direction === 'in' && m.status !== 'history').slice(-3)
+        .map((m) => (heardBy.has(m.id) ? `[voice note] ${heardBy.get(m.id)}` : m.body)).join('\n');
       if (openUrgent) {
         await run(db, 'UPDATE urgent SET question = ?, customer_message = ?, reason = ?, polished_answer = COALESCE(?, polished_answer) WHERE id = ?',
           clip(esc.question, 500), clip(customerWords, 1500), clip(esc.reason, 300), draft, openUrgent.id);

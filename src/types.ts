@@ -46,7 +46,20 @@ export interface VoiceSettings {
 export interface BrainSettings {
   /** auto: Claude when an API key is saved, else Workers AI. */
   provider: 'auto' | 'anthropic' | 'workers_ai';
+  /**
+   * A Claude API model id, always (an older Worker after a rollback sends it as it is). With `mix` it is
+   * claude-haiku-5-5.
+   */
   model: string;
+  /**
+   * "Haiku with Sonnet for the chats that matter" (the default): Haiku answers, Sonnet at low effort answers
+   * the chats that matter (src/brain/route.ts). Connections shows it as the model 'mix-haiku-sonnet'.
+   */
+  mix: boolean;
+  /** The owner picked `model` themselves on Connections. A default they never chose is moved to the mix. */
+  model_chosen: boolean;
+  /** Version of the stored brain row (src/lib/settings.ts migrateBrain). Not shown to the owner. */
+  schema: number;
   effort: 'low' | 'medium' | 'high';
   workers_ai_model: string;
   /** Below this confidence a reply is escalated instead of sent. */
@@ -203,6 +216,11 @@ export interface HistoryMessage {
   ts: number;
   /** A reply already queued for this chat that has not been sent yet. Never repeat it. */
   pending?: boolean;
+  /**
+   * What a speech model heard in the customer's voice note (src/speech). Customer content: the brain gets
+   * it labelled as a voice note transcript, never as instructions.
+   */
+  voice_text?: string;
 }
 
 export interface DecideInput {
@@ -221,6 +239,18 @@ export interface DecideInput {
    * first, at most 3. Only a model that can look at pictures gets them (src/brain/decide.ts).
    */
   media?: DecideMedia[];
+  /** Voice notes of the unanswered customer messages that a speech model wrote out (src/speech). */
+  voice?: DecideVoice[];
+  /** Where the chat stands as a sale (conversations.sales_stage). A live sale gets the stronger model. */
+  sales_stage?: SalesStage | null;
+}
+
+/** One voice note for the brain. `index` is the position in `history` of the message it came with. */
+export interface DecideVoice {
+  index: number;
+  /** What the speech model heard. Customer content. */
+  transcript: string;
+  seconds?: number | null;
 }
 
 /** One picture for the brain. `index` is the position in `history` of the message it came with. */

@@ -239,9 +239,15 @@ function messageEl(chat, msg, prev) {
   // A video shows a preview picture with a play button until it is opened. msg.video: opening it shows
   // the media viewer with a real recorded clip behind a blob: address, the way WhatsApp Web plays one.
   if (msg.kind === 'video') media = h('div', { role: 'button', 'data-testid': 'video-thumb', class: 'media', onclick: msg.video ? () => openViewer(msg) : null }, h('img', { alt: '', src }), icon('video-play', 'ic-play'));
+  // A voice note. msg.voice: 'bridge' (WhatsApp holds the bytes in memory), 'dom' (an audio element with a
+  // blob: address in the bubble) or 'download' (not downloaded yet: a download arrow first). Without it the
+  // note was never loaded, as before. Playing it here would make a sound: the test records any play.
   if (msg.kind === 'voice') {
-    media = h('div', { class: 'media' }, h('button', { 'aria-label': 'Play voice message' }, icon('audio-play', 'ic-play-arrow')),
-      h('span', { 'data-testid': 'ptt-status' }, icon('ptt-status', 'ic-keyboard-voice-filled')), h('div', { role: 'slider', 'aria-valuetext': '0:00/0:07' }));
+    const loaded = msg.voice === 'dom' || (msg.voice === 'download' && msg.downloaded);
+    media = h('div', { class: 'media' }, h('button', { 'aria-label': 'Play voice message', onclick: () => { state.voicePlays = (state.voicePlays || 0) + 1; save(); } }, icon('audio-play', 'ic-play-arrow')),
+      msg.voice === 'download' && !msg.downloaded ? h('span', { role: 'button', 'aria-label': 'Download', onclick: () => { msg.downloaded = true; save(); renderMessages(); } }, icon('audio-download', 'ic-download')) : null,
+      loaded ? h('audio', { src: voiceUrl(msg), preload: 'none' }) : null,
+      h('span', { 'data-testid': 'ptt-status' }, icon('ptt-status', 'ic-keyboard-voice-filled')), h('div', { role: 'slider', 'aria-valuetext': '0:00/0:04' }));
   }
 
   return h('div', { role: 'row' },
@@ -256,6 +262,22 @@ function messageEl(chat, msg, prev) {
         h('div', { 'data-testid': 'msg-meta', class: 'meta' },
           h('span', { 'data-testid': 'msg-time' }, clock(msg.t)),
           msg.fromMe && statusIcon(msg.ack)))));
+}
+
+// ---- voice notes ----------------------------------------------------------------------------------------------------
+// A small fake Ogg file whose bytes carry the words the fake speech endpoint "hears" (test/helpers/fake-speech.mjs).
+const voiceBlobs = new Map();
+function voiceBlob(msg) {
+  if (!voiceBlobs.has(msg.id)) {
+    const head = new Uint8Array([0x4f, 0x67, 0x67, 0x53, 0, 2]);
+    voiceBlobs.set(msg.id, new Blob([head, new Uint8Array(600).fill(7), `SAY:${msg.said || ''}`], { type: 'audio/ogg; codecs=opus' }));
+  }
+  return voiceBlobs.get(msg.id);
+}
+const voiceUrls = new Map();
+function voiceUrl(msg) {
+  if (!voiceUrls.has(msg.id)) voiceUrls.set(msg.id, URL.createObjectURL(voiceBlob(msg)));
+  return voiceUrls.get(msg.id);
 }
 
 // ---- a real video and the media viewer -------------------------------------------------------------------------------
@@ -501,6 +523,9 @@ const modules = {
         body: msg.kind === 'text' ? msg.text : '', caption: msg.kind === 'text' ? undefined : msg.text || undefined,
         t: Math.floor(msg.t / 1000), ack: msg.ack ?? 0,
         ...(msg.kind === 'video' ? { duration: 2, size: videoClip ? videoClip.size : 0, isViewOnce: Boolean(msg.viewOnce) } : {}),
+        // A voice note WhatsApp has downloaded: its bytes in memory, the way the bridge reads them.
+        ...(msg.kind === 'voice' && msg.voice ? { duration: 4, size: voiceBlob(msg).size, mimetype: 'audio/ogg; codecs=opus' } : {}),
+        ...(msg.kind === 'voice' && (msg.voice === 'bridge' || (msg.voice === 'download' && msg.downloaded)) ? { mediaData: { mediaBlob: { forceToBlob: async () => voiceBlob(msg) } } } : {}),
       }))),
     },
   },
@@ -535,7 +560,7 @@ const api = {
       chat = { jid, title: opts.title || formatPhone(d), phone: opts.phone || undefined, avatar: 'default', unread: 0, draft: '', messages: [], pinned: opts.pinned === true };
       state.chats.push(chat);
     }
-    const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', photo: opts.photo === true, video: opts.video === true, viewOnce: opts.viewOnce === true, t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
+    const msg = { id: newId(), fromMe: false, text: text || '', kind: opts.kind || 'text', photo: opts.photo === true, video: opts.video === true, viewOnce: opts.viewOnce === true, voice: opts.voice || null, said: opts.said || '', t: Date.now(), ack: null, quoted: opts.quoted, author: opts.author || (chat.group ? 'Sam' : undefined), authorJid: opts.authorJid || (chat.group ? '447700900111@c.us' : undefined) };
     chat.messages.push(msg);
     if (chat.jid !== state.openJid || state.dialog) chat.unread += 1; // an open chat is read straight away
     save();
