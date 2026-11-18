@@ -375,7 +375,9 @@ async function main() {
   await cdp.send('Debugger.enable');
   await cdp.send('Debugger.pause');
   const healed = await until('watchdog reloads the hung tab', async () => { const s = await tiktokStatus(); return s && s.recoveries > recoveriesBefore ? s : null; }, 90_000);
-  assert.match(healed.last_error, /No good read|has not answered|stopped answering/, JSON.stringify(healed));
+  // The Live data is cached for a few seconds now (D1 diet), so the short window while the error shows can be
+  // missed: the fix count going up is the proof the watchdog acted. When the error is still showing, check its words.
+  if (healed.last_error) assert.match(healed.last_error, /No good read|has not answered|stopped answering/, JSON.stringify(healed));
   await page.waitForFunction(() => window.mock && window.mock.ready, null, { timeout: 30_000 });
   const recovered = await until('tiktok ready again after the reload', async () => { const s = await tiktokStatus(); return s?.state === 'ready' && !s.last_error ? s : null; });
   assert.ok(recovered.last_ok_at > 0, 'a good read is reported after the recovery');
