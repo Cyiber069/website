@@ -5,6 +5,7 @@
 // leased only to the one that answers, and move to the next one only when the first cannot send them any
 // more. Commands from the dashboard ride on the syncs until the laptop says it ran them.
 // The owner's five points each have a block ("point 1" to "point 5").
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BASE, api, sql, unique } from '../helpers/client';
 import { OWNER_PASSWORD } from '../helpers/global-setup';
@@ -378,15 +379,23 @@ describe('point 4: the shop’s account per channel', () => {
     await sql(`UPDATE lane_leaders SET device_id = '' WHERE lane IN ('whatsapp:inbox', 'tiktok:inbox')`);
     expect(roles(await syncAs(B, unknown, { version: '0.5.2' }))['whatsapp:inbox']).toBe('unconfirmed');
     expect((await leaders())['whatsapp:inbox'].device_id).toBe('');
-    // Its reports are not stored.
+    // 0.5.2 reads every chat it has open and marks it read, whatever it was told. With no laptop online that
+    // could answer, a chat it read is kept, or the message would be lost. It never answers: no reply goes back.
     const t = wa();
-    expect(await inboundAs(B, t, [{ external_id: 'u1', direction: 'in', body: 'hello?' }])).toMatchObject({ action: 'none', reason: 'unconfirmed', conversation_id: null });
-    expect((await sql('SELECT COUNT(*) AS n FROM conversations WHERE external_thread_id = ?', [t])).data.results[0].n).toBe(0);
-    // The main laptop on 0.5.2 cannot read its own number either: it answers all the same.
+    const kept = await inboundAs(B, t, [{ external_id: 'u1', direction: 'in', body: 'hello?' }]);
+    expect(kept).toMatchObject({ action: 'reply', jobs: [] });
+    expect(kept.conversation_id).toBeTruthy();
+    // The main laptop on 0.5.2 cannot read its own number either: it answers all the same, and sends that reply.
     await age(A.id, 0);
     const a = await syncAs(A, unknown, { version: '0.5.2' });
     expect(roles(a)['whatsapp:inbox']).toBe('active');
-    const d = await inboundAs(A, t, [{ external_id: 'u1', direction: 'in', body: 'hello?' }]);
+    expect((a.data.jobs as any[]).map((j) => j.target.thread_external_id)).toEqual([t]);
+    for (const j of a.data.jobs) await resultAs(A, j.id, { status: 'sent' });
+    // Now the main laptop is online on the shop's number: Adrian's report is refused (Sam's reads that chat itself).
+    const t2 = wa();
+    expect(await inboundAs(B, t2, [{ external_id: 'u2', direction: 'in', body: 'anyone?' }])).toMatchObject({ action: 'none', reason: 'unconfirmed', conversation_id: null });
+    expect((await sql('SELECT COUNT(*) AS n FROM conversations WHERE external_thread_id = ?', [t2])).data.results[0].n).toBe(0);
+    const d = await inboundAs(A, t2, [{ external_id: 'u2', direction: 'in', body: 'anyone?' }]);
     expect(d.conversation_id).toBeTruthy();
     for (const j of d.jobs ?? []) await resultAs(A, j.id, { status: 'sent' });
     await reset();
@@ -599,6 +608,224 @@ describe('point 5: a laptop on the shop’s account stands by, takes over only w
   });
 });
 
+describe('the main laptop is one that checks in, and pairing order never moves the shop’s accounts', () => {
+  const OLD = 'dev_old_row';
+  const created = async (id: string) => (await sql('SELECT created_at FROM devices WHERE id = ?', [id])).data.results[0].created_at as number;
+
+  it('an old row left paired (never disconnected, not seen for days) is never the main laptop', async () => {
+    await reset();
+    // Sam paired again without pressing Disconnect: the old row is still paired, older than both laptops, and
+    // still named on WhatsApp and TikTok. Sam's laptop runs 0.5.2 (it reads no number or handle) and the owner
+    // never chose a main laptop.
+    await sql(`INSERT INTO devices (id, name, token_hash, created_at, last_seen_at, person) VALUES (?, 'Old MacBook', ?, 1, ?, 'Sam')`, [OLD, unique('old_hash'), Date.now() - 3 * 24 * 3600_000]);
+    await sql(`DELETE FROM settings WHERE key = 'state:main_device'`);
+    await sql(`UPDATE lane_leaders SET device_id = ?, account = '', account_src = '' WHERE lane IN ('whatsapp:inbox', 'tiktok:inbox')`, [OLD]);
+    await sql(`INSERT INTO settings (key, value, updated_at) VALUES ('state:offline_alerted', ?, 0) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(OLD)]);
+    await age(B.id, 2 * 24 * 3600_000);
+    try {
+      expect((await people()).main.device_id).toBe(A.id);
+      const unknown = all3({ whatsapp: ready(''), tiktok: ready('') });
+      const a = await syncAs(A, unknown, { version: '0.5.2' });
+      expect(roles(a)).toEqual({ 'whatsapp:inbox': 'active', 'gmail:inbox': 'active', 'tiktok:inbox': 'active' });
+      expect((await leaders())['whatsapp:inbox']).toMatchObject({ device_id: A.id, reason: 'offline', prev_device: OLD });
+      // Its WhatsApp reports are stored and answered, as before the second laptop.
+      const t = wa();
+      const d = await inboundAs(A, t, [{ external_id: 'm1', direction: 'in', body: 'hi is this the ebike shop' }]);
+      expect(d).toMatchObject({ action: 'reply', final: true });
+      expect(d.jobs).toHaveLength(1);
+      await resultAs(A, d.jobs[0].id, { status: 'sent' });
+      // The offline alert about the old row is over: nobody waits on it.
+      await api('/api/test/cron', { as: 'public', body: {} });
+      expect(JSON.parse((await sql(`SELECT value FROM settings WHERE key = 'state:offline_alerted'`)).data.results[0].value)).toBe(false);
+
+      // The owner makes the old row the main laptop (it is offline). Sam's laptop cannot show its number, so it
+      // stops answering WhatsApp, but a chat it reads is not lost: it is kept, and the reply waits for the main laptop.
+      await api('/api/people/main', { method: 'PUT', body: { device_id: OLD } });
+      expect(roles(await syncAs(A, unknown, { version: '0.5.2' }))['whatsapp:inbox']).toBe('unconfirmed');
+      const t2 = wa();
+      const kept = await inboundAs(A, t2, [{ external_id: 'm2', direction: 'in', body: 'hello? do you have the 750w in stock' }]);
+      expect(kept).toMatchObject({ action: 'reply', jobs: [], final: true });
+      expect(kept.conversation_id).toBeTruthy();
+      // Sam's laptop is the main one again: it answers and sends that reply.
+      await api('/api/people/main', { method: 'PUT', body: { device_id: A.id } });
+      const back = await syncAs(A, unknown, { version: '0.5.2' });
+      expect(roles(back)['whatsapp:inbox']).toBe('active');
+      expect((back.data.jobs as any[]).map((j) => j.target.thread_external_id)).toEqual([t2]);
+      for (const j of back.data.jobs) await resultAs(A, j.id, { status: 'sent' });
+    } finally {
+      await sql('DELETE FROM devices WHERE id = ?', [OLD]);
+      await api('/api/people/main', { method: 'PUT', body: { device_id: A.id } });
+      await sql(`DELETE FROM settings WHERE key = 'state:offline_alerted'`);
+    }
+    await reset();
+  });
+
+  it('a laptop that is main only because it is the oldest one never replaces the shop’s number; the owner’s choice does', async () => {
+    await reset();
+    expect((await leaders())['whatsapp:inbox']).toMatchObject({ account: WA, account_src: 'main' });
+    // Sam pressed Disconnect and paired again: Sam's row is now newer than Adrian's, and the owner chose no main laptop.
+    const samCreated = await created(A.id);
+    await sql(`DELETE FROM settings WHERE key = 'state:main_device'`);
+    await sql('UPDATE devices SET created_at = ? WHERE id = ?', [(await created(B.id)) + 1000, A.id]);
+    try {
+      expect((await people()).main.device_id).toBe(B.id);
+      // Adrian's laptop on his own number and handle: they never become the shop's, and it stays out.
+      const b = await syncAs(B, all3({ whatsapp: ready(WA2), tiktok: ready(TIKTOK2) }));
+      expect(roles(b)).toMatchObject({ 'whatsapp:inbox': 'other_account', 'tiktok:inbox': 'other_account', 'gmail:inbox': 'standby' });
+      const l = await leaders();
+      expect(l['whatsapp:inbox']).toMatchObject({ account: WA, account_src: 'main', device_id: A.id });
+      expect(l['tiktok:inbox']).toMatchObject({ account: TIKTOK, device_id: A.id });
+      // Sam's laptop answers WhatsApp and TikTok. (Adrian's is on the shop's Gmail, so as the main laptop it asks for Gmail back.)
+      expect(roles(await syncAs(A, all3()))).toMatchObject({ 'whatsapp:inbox': 'active', 'tiktok:inbox': 'active' });
+      // A lane that knows no account yet takes the account of that laptop all the same (the first one known).
+      await sql(`UPDATE lane_leaders SET account = '', account_src = '', device_id = '' WHERE lane = 'tiktok:inbox'`);
+      await syncAs(B, all3({ whatsapp: ready(WA2), tiktok: ready(TIKTOK2) }));
+      expect((await leaders())['tiktok:inbox']).toMatchObject({ account: TIKTOK2, account_src: 'main' });
+      // The owner makes Adrian's laptop the main one: now its number is the shop's.
+      await api('/api/people/main', { method: 'PUT', body: { device_id: B.id } });
+      await syncAs(B, all3({ whatsapp: ready(WA2), tiktok: ready(TIKTOK2) }));
+      expect((await leaders())['whatsapp:inbox']).toMatchObject({ account: WA2, account_src: 'main' });
+    } finally {
+      await sql('UPDATE devices SET created_at = ? WHERE id = ?', [samCreated, A.id]);
+      await api('/api/people/main', { method: 'PUT', body: { device_id: A.id } });
+      await sql('DELETE FROM lane_leaders');
+    }
+    await reset();
+  });
+
+  it('accounts learned before 0014 from whichever laptop answered are forgotten, the owner’s and the main laptop’s kept', async () => {
+    // migrations/0015: run its statements on rows as 10837a0 left them.
+    const text = readFileSync(new URL('../../migrations/0015_unvouched_accounts.sql', import.meta.url), 'utf8');
+    const statements = text.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').split(/;\s*(?:\n|$)/).map((x) => x.trim()).filter(Boolean);
+    expect(statements.length).toBeGreaterThan(0);
+    const seed = async (rows: [string, string, string][]) => {
+      await sql('DELETE FROM lane_leaders');
+      for (const [lane, account, src] of rows) await sql(`INSERT INTO lane_leaders (lane, account, account_src, device_id, epoch, since, reason, prev_device) VALUES (?, ?, ?, '', 1, 0, 'claim', '')`, [lane, account, src]);
+    };
+    const run = async () => { for (const st of statements) await sql(st); };
+    // Adrian's laptop took TikTok and WhatsApp over under 10837a0 and the lanes learned his accounts.
+    await seed([['whatsapp:inbox', WA2, ''], ['tiktok:inbox', TIKTOK2, ''], ['gmail:inbox', GMAIL2, '']]);
+    await run();
+    let l = await leaders();
+    for (const lane of ['whatsapp:inbox', 'tiktok:inbox', 'gmail:inbox']) expect(l[lane].account).toBe('');
+    // What the main laptop reported, or the owner set, is kept. So is a Gmail row while Connections names an inbox.
+    await seed([['whatsapp:inbox', WA, 'main'], ['tiktok:inbox', TIKTOK, 'owner'], ['gmail:inbox', GMAIL, '']]);
+    await api('/api/settings/gmail', { method: 'PUT', body: { account: GMAIL } });
+    await sql(`UPDATE lane_leaders SET account_src = '' WHERE lane = 'gmail:inbox'`);
+    await run();
+    l = await leaders();
+    expect(l['whatsapp:inbox'].account).toBe(WA);
+    expect(l['tiktok:inbox'].account).toBe(TIKTOK);
+    expect(l['gmail:inbox'].account).toBe(GMAIL);
+    await api('/api/settings/gmail', { method: 'PUT', body: { account: '' } });
+    // The People panel offers "Use the main laptop's account" for any account the main laptop did not report.
+    await sql(`UPDATE lane_leaders SET account = ?, account_src = '' WHERE lane = 'whatsapp:inbox'`, [WA2]);
+    expect((await people()).lanes.whatsapp).toMatchObject({ account: WA2, account_src: '' });
+    await api('/api/lanes/whatsapp:inbox/account', { method: 'PUT', body: { account: '' } });
+    await syncAs(A, all3());
+    expect((await leaders())['whatsapp:inbox']).toMatchObject({ account: WA, account_src: 'main' });
+    await reset();
+  });
+});
+
+describe('the main laptop on another account, with no laptop on the shop’s account online, is a channel down', () => {
+  it('Gmail on a personal inbox is told to the owner after 10 minutes, and counts on Live and Health', async () => {
+    await reset();
+    await sql(`DELETE FROM settings WHERE key IN ('state:monitor', 'state:alert_last:channel')`);
+    await sql(`DELETE FROM events WHERE type IN ('channel_down', 'channel_ok')`);
+    await api('/api/settings/gmail', { method: 'PUT', body: { account: GMAIL } });
+    try {
+      // Sam's 0.5.2 Gmail tab is on a personal inbox (it says so in its status words). Adrian's is on his own too.
+      const personal = { state: 'blocked', detail: `This tab shows ${GMAIL2}. Switch it to ${GMAIL}`, unread: 0, busy: false, sending: false, sending_id: null };
+      const a = await syncAs(A, all3({ gmail: personal }), { version: '0.5.2' });
+      expect(roles(a)['gmail:inbox']).toBe('other_account');
+      await syncAs(B, other3());
+      await api('/api/test/cron', { as: 'public', body: {} });
+      const mon = () => sql(`SELECT value FROM settings WHERE key = 'state:monitor'`).then((r) => JSON.parse(r.data.results[0]?.value ?? '{}'));
+      expect((await mon()).channels.gmail).toMatchObject({ alerted: false });
+      expect((await mon()).channels.gmail.reason).toContain(`This tab shows ${GMAIL2}`);
+      // 10 minutes on: the owner is told, as with a blocked tab before.
+      const m = await mon();
+      m.channels.gmail.since = Date.now() - 11 * MIN;
+      await sql(`UPDATE settings SET value = ? WHERE key = 'state:monitor'`, [JSON.stringify(m)]);
+      await api('/api/test/cron', { as: 'public', body: {} });
+      const ev = (await sql(`SELECT message FROM events WHERE type = 'channel_down' AND channel = 'gmail'`)).data.results;
+      expect(ev).toHaveLength(1);
+      expect(ev[0].message).toMatch(/^Gmail stopped working\./);
+      // Live and Health show it on Sam's laptop as a problem.
+      await bust();
+      const ov = (await api('/api/overview')).data;
+      expect(ov.lanes.gmail).toMatchObject({ role: 'other_account', device: { id: A.id } });
+      // Adrian's laptop on the shop's inbox comes online: it answers Gmail, and that is what counts.
+      const b = await syncAs(B, other3({ gmail: ready(GMAIL) }));
+      expect(roles(b)['gmail:inbox']).toBe('active');
+      await api('/api/test/cron', { as: 'public', body: {} });
+      expect((await mon()).channels.gmail).toBeUndefined();
+    } finally {
+      await api('/api/settings/gmail', { method: 'PUT', body: { account: '' } });
+      await sql(`DELETE FROM settings WHERE key IN ('state:monitor', 'state:alert_last:channel')`);
+      await sql(`DELETE FROM events WHERE type IN ('channel_down', 'channel_ok')`);
+    }
+    await reset();
+  });
+});
+
+describe('a hand back the main laptop cannot finish', () => {
+  it('the main laptop asks, then its lid is closed: the one answering carries on 90 s later, not 4 minutes', async () => {
+    await reset();
+    await age(A.id, 95_000);
+    expect(roles(await syncAs(B, all3()))['whatsapp:inbox']).toBe('active');
+    // Sam's laptop is back and ready for 2 minutes: it asks for its lanes back, and Adrian's stands by.
+    await age(A.id, 0);
+    await syncAs(A, all3());
+    await since(A.id, 3 * MIN);
+    await syncAs(A, all3());
+    expect((await leaders())['whatsapp:inbox'].handover_at).toBeGreaterThan(0);
+    expect(roles(await syncAs(B, all3()))['whatsapp:inbox']).toBe('standby');
+    // Then Sam's laptop goes quiet before it takes them. 60 s: Adrian's still waits.
+    await age(A.id, 60_000);
+    expect(roles(await syncAs(B, all3()))['whatsapp:inbox']).toBe('standby');
+    // 95 s: the ask is dropped and Adrian's answers again, with a lease.
+    await age(A.id, 95_000);
+    const b = await syncAs(B, all3());
+    expect(roles(b)).toEqual({ 'whatsapp:inbox': 'active', 'gmail:inbox': 'active', 'tiktok:inbox': 'active' });
+    expect(b.data.lanes['whatsapp:inbox'].lease_ms).toBeGreaterThan(0);
+    expect((await leaders())['whatsapp:inbox']).toMatchObject({ device_id: B.id, handover_at: 0 });
+    // Sam's laptop is back: just back, it waits its 2 minutes again, and never answers alongside Adrian's.
+    await age(A.id, 0);
+    expect(roles(await syncAs(A, all3()))['whatsapp:inbox']).toBe('standby');
+    await reset();
+  });
+});
+
+describe('alone on a lane', () => {
+  it('Adrian’s laptop on his own accounts does not stop Sam’s from working while the server is away', async () => {
+    await reset();
+    await syncAs(B, other3());
+    const a = await syncAs(A, all3());
+    for (const lane of ['whatsapp:inbox', 'gmail:inbox', 'tiktok:inbox']) expect(a.data.lanes[lane].solo).toBe(true);
+    expect(Object.values(await leaders()).every((r: any) => r.solo === 1)).toBe(true);
+    // Adrian's laptop on the shop's WhatsApp could stand in there: not alone on WhatsApp, still alone on the others.
+    await syncAs(B, other3({ whatsapp: ready(WA) }));
+    const a2 = await syncAs(A, all3());
+    expect(a2.data.lanes['whatsapp:inbox'].solo).toBe(false);
+    expect(a2.data.lanes['tiktok:inbox'].solo).toBe(true);
+    await reset();
+    expect((await syncAs(A, all3())).data.lanes['whatsapp:inbox'].solo).toBe(false);
+  });
+});
+
+describe('an older Gmail build that says more than its address', () => {
+  it('two Gmail tabs open: its inbox is still read, so it stands by on the shop’s Gmail', async () => {
+    await reset();
+    const two = { state: 'ready', detail: `${GMAIL}. 2 Gmail tabs are open. The agent only uses the first one`, unread: 0, busy: false, sending: false, sending_id: null };
+    const b = await syncAs(B, all3({ gmail: two }), { version: '0.5.2' });
+    expect(roles(b)['gmail:inbox']).toBe('standby');
+    expect(deviceOf(await people(), 'Adrian').channels.gmail).toMatchObject({ account: GMAIL, role: 'standby' });
+    await reset();
+  });
+});
+
 describe('switching the agent on is not a stall', () => {
   it('a laptop whose page read nothing while the agent was off keeps its lanes when it is switched on', async () => {
     await sql(`DELETE FROM events WHERE type = 'failover'`);
@@ -765,6 +992,8 @@ describe('cheap on the free plan', () => {
 
   it('old and removed laptops cost nothing: a sync, a report, a diagnostic and the dashboard read only live rows', async () => {
     const before = await syncAs(A, all3());
+    // A report first, so the knowledge is loaded as in a live isolate (a health check run by an earlier test may have changed it).
+    await inboundAs(A, wa(), [{ external_id: 'c0', direction: 'in', body: 'ignore-me' }]);
     // Only the dashboard answers are dropped (the knowledge stays loaded, as in a live isolate).
     const dashOnly = () => api('/api/test/bust', { as: 'public', body: { scope: 'dashboard' } });
     await dashOnly();

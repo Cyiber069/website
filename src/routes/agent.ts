@@ -13,11 +13,11 @@ import { MIN } from '../lib/time';
 import { onReset } from '../lib/cache';
 import { handleInbound, parseInbound } from '../pipeline/inbound';
 import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
-import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
+import { LEGACY_SETTLE_SECONDS, canStandBy, isLegacyExtension } from '../lib/version';
 import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
 import { SYNC_SECONDS, budget, syncSeconds } from '../lib/budget';
 import {
-  LEADERS_SQL, MAIN_SQL, TAKEOVER_OFFLINE_MS, cleanName, electLanes, gmailFromDetail, inboundGate, laneContext, laneInfo, normAccount, parseLeaders, shopAccount,
+  LEADERS_SQL, TAKEOVER_OFFLINE_MS, cleanName, electLanes, gmailFromDetail, inboundGate, laneContext, laneInfo, mainSql, normAccount, parseLeaders, shopAccount,
   type InboundGate, type ListedDevice,
 } from '../pipeline/leader';
 import type { LaneLeaderRow } from '../types';
@@ -216,10 +216,12 @@ function requireDevice(c: Ctx): DeviceRow {
 }
 
 /** May this laptop's reports of a channel be stored (src/pipeline/leader.ts inboundGate)? One query (the settings are cached). */
-async function reportGate(db: D1Database, device: DeviceRow, ch: Channel): Promise<InboundGate> {
-  const [info, settings] = await Promise.all([laneInfo(db, ch), getSettings(db)]);
+async function reportGate(db: D1Database, device: DeviceRow, ch: Channel, now: number): Promise<InboundGate> {
+  const settings = await getSettings(db);
+  const info = await laneInfo(db, ch, device.id, settings.gmail.account, now, now - ONLINE_WINDOW_MS);
   const account = parseJson<DeviceStatus>(device.status, { channels: {}, paused_locally: false, reported_at: 0 }).channels?.[ch]?.account ?? '';
-  return inboundGate(device.id, account, shopAccount(ch, settings, info), info);
+  // A build before 0.6.0 reads every lane it has open, whatever it was told.
+  return inboundGate(device.id, account, shopAccount(ch, settings, info), info, canStandBy(device.version));
 }
 
 export function register(r: Router): void {
@@ -322,7 +324,7 @@ export function register(r: Router): void {
       // A tab on another account, or one the server cannot confirm, is not the shop's: nothing is stored
       // (src/pipeline/leader.ts inboundGate). Jobs are only handed over while the extension is still
       // listening, and only to the laptop that answers this lane; otherwise they wait for its next sync.
-      const gate = await reportGate(c.db, device, payload.channel);
+      const gate = await reportGate(c.db, device, payload.channel, c.now);
       if (!gate.store) {
         await send({ type: 'decision', conversation_id: null, action: 'none', reason: gate.reason, jobs: [], new_inbound: 0, final: true, retry_after_ms: null, jobs_pending: false });
         return;
@@ -343,14 +345,14 @@ export function register(r: Router): void {
   r.post('/api/agent/media/video', 'device', async (c) => {
     const device = requireDevice(c);
     const ch = c.url.searchParams.get('channel') as Channel;
-    if (CHANNELS.includes(ch) && !(await reportGate(c.db, device, ch)).store) throw new HttpError(409, 'not_shop_account', 'This tab is not on the shop’s account');
+    if (CHANNELS.includes(ch) && !(await reportGate(c.db, device, ch, c.now)).store) throw new HttpError(409, 'not_shop_account', 'This tab is not on the shop’s account');
     return json(await receiveVideo(c.env, await getSettings(c.db), c.req, c.url, device.id));
   });
   // Asked first: a video already described or held by Google is not pulled out of the tab or sent again.
   r.get('/api/agent/media/video', 'device', async (c) => {
     const device = requireDevice(c);
     const ch = c.url.searchParams.get('channel') as Channel;
-    if (CHANNELS.includes(ch) && !(await reportGate(c.db, device, ch)).store) return json({ ok: true, upload: false, ref: null, described: false, why: 'not_shop_account' });
+    if (CHANNELS.includes(ch) && !(await reportGate(c.db, device, ch, c.now)).store) return json({ ok: true, upload: false, ref: null, described: false, why: 'not_shop_account' });
     return json(await videoCheck(c.env, await getSettings(c.db), c.url));
   });
 
@@ -397,9 +399,10 @@ export interface DeviceList { devices: ListedDevice[]; leaders: LaneLeaderRow[];
  * lane rows and the main laptop's id. Only what the dashboard shows (never the token hash).
  */
 export async function listDevices(db: D1Database, now: number): Promise<DeviceList> {
+  const main = mainSql(now);
   const rows = await all<Pick<DeviceRow, 'id' | 'name' | 'version' | 'last_seen_at' | 'status' | 'person'> & { leaders: string | null; main: string | null }>(db,
-    `SELECT id, name, person, version, last_seen_at, status, ${LEADERS_SQL} AS leaders, ${MAIN_SQL} AS main FROM devices
-     WHERE id IN (SELECT id FROM (SELECT id FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5) UNION SELECT ${MAIN_SQL})
+    `SELECT id, name, person, version, last_seen_at, status, ${LEADERS_SQL} AS leaders, ${main} AS main FROM devices
+     WHERE id IN (SELECT id FROM (SELECT id FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5) UNION SELECT ${main})
      ORDER BY last_seen_at DESC`);
   return {
     devices: rows.map((d) => ({

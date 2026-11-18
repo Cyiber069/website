@@ -22,8 +22,9 @@ export function channelState(ov, ch) {
   const device = laptopFor(ov, ch);
   if (!device) return { text: 'No laptop', pill: 'pill--wait', dot: 'dot--wait', mode, hint: MODE_TEXT[mode] };
   if (!device.online) return { text: 'Laptop offline', pill: 'pill--down', dot: 'dot--down', mode, hint: MODE_TEXT[mode] };
-  // The owner set the shop's account to one the main laptop is not on: say so, it is not a broken page.
-  if (ov.lanes?.[ch]?.role === 'other_account') return { text: 'Connected to another account', pill: 'pill--wait', dot: 'dot--wait', mode, hint: 'Sign in to the shop’s account there, or change it on the People panel' };
+  // The main laptop is on another account than the shop's and no laptop on the shop's account is there to
+  // answer (src/pipeline/leader.ts teamView): nobody answers this channel, so it counts as a problem.
+  if (ov.lanes?.[ch]?.role === 'other_account') return { text: 'Connected to another account', pill: 'pill--down', dot: 'dot--down', mode, hint: 'Nobody answers it. Sign in to the shop’s account there, or change it on the People panel' };
   const st = device.status?.channels?.[ch];
   if (!st) return { text: 'Tab not open', pill: 'pill--wait', dot: 'dot--wait', mode, hint: `Open ${chName(ch)} in Chrome on the laptop` };
   const [text, pill, dot] = STATE_TEXT[st.state] || ['Checking', 'pill--pause', 'dot--pause'];
@@ -164,7 +165,9 @@ export default {
         if (!many || ov.channels?.[c]?.mode === 'off') return '';
         const l = ov.lanes?.[c]?.leader;
         if (l && ov.lanes[c].handing_back) return `Going back to ${ov.main?.label || 'the main laptop'}`;
-        return l ? `${l.label} answers${l.online ? '' : '. It is offline'}` : 'No laptop answers it yet';
+        const who = l ? `${l.label} answers${l.online ? '' : '. It is offline'}` : 'No laptop answers it yet';
+        // The main laptop cannot read the shop's account (an older extension): no other laptop can stand in until it is set.
+        return ov.lanes?.[c] && !ov.lanes[c].account ? `${who}. Set the shop account on the People panel so another laptop can stand in` : who;
       };
       setHTML($('#channels', view), html`
         <div class="chcard"><span class="ch ch--icon" aria-hidden="true">${icon('i-laptop', 'ch__glyph')}</span><a class="chcard__name chcard__link" href="#/connections">${many ? 'Laptops' : laptopName}</a><span class="pill ${laptop[1]}"><span class="dot ${laptop[2]}" aria-hidden="true"></span>${laptop[0]}</span><span class="chcard__hint">${laptop[3]}</span></div>

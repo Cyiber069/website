@@ -218,9 +218,22 @@ async function main() {
   const adrianText = await dash.textContent('.dialog--people');
   for (const want of ['Adrian’s laptop', 'Main laptop', 'Connected to another account', '@adrian.rides']) assert.ok(adrianText.includes(want), `Adrian’s panel says "${want}"`);
   assert.doesNotMatch(adrianText, /[–—]/, 'no dashes in the panel');
+  // The owner set Gmail and TikTok: each can go back to the main laptop's. WhatsApp is the main laptop's own.
+  assert.ok(await dash.$('.dialog--people [data-shop-reset="tiktok"]'), 'TikTok can go back to the main laptop’s account');
+  assert.equal(await dash.$('.dialog--people [data-shop-reset="whatsapp"]'), null, 'WhatsApp is already the main laptop’s');
   await dash.click('.dialog--people [data-close].btn--primary');
   // Live: TikTok is Connected (this laptop's), not judged by Adrian's TikTok on his own account.
   await until('Live shows TikTok connected', async () => (await dash.textContent('#channels'))?.includes('TikTok') && (await dash.$$eval('#channels .chcard', (els) => els.find((e) => e.textContent.includes('TikTok'))?.querySelector('.pill')?.textContent)) === 'Connected');
+  // A WhatsApp number learned before the main laptop was known (no laptop vouched for it) can be dropped too.
+  await sql(`UPDATE lane_leaders SET account_src = '' WHERE lane = 'whatsapp:inbox'`);
+  await bust();
+  await dash.reload();
+  await dash.waitForSelector('.side [data-person]');
+  await dash.click('.side [data-person]:has-text("Sam")');
+  await dash.waitForSelector('.dialog--people[open] [data-shop-reset="whatsapp"]');
+  await dash.click('.dialog--people [data-close].btn--primary');
+  await sql(`UPDATE lane_leaders SET account_src = 'main' WHERE lane = 'whatsapp:inbox'`);
+  await bust();
   pass('pairing asked whose laptop it is; Sam and Adrian next to the logo; the panel shows each laptop, its channels and the WhatsApp number; Adrian’s TikTok is "Connected to another account"');
 
   // ---- 2. standing by: no reading, no sync on every page change -------------------------------------------------
@@ -301,6 +314,8 @@ async function main() {
   await sql(`UPDATE devices SET status = json_set(status, '$.channels.whatsapp.state_since', ?) WHERE id = ?`, [Date.now() - 3 * 60_000, adrian.device_id]);
   const asking = await adrianSync();
   assert.equal(asking.lanes['whatsapp:inbox'].role, 'standby');
+  // It keeps checking in, as a laptop that is on does (an ask from one that went quiet is dropped).
+  adrianTimer = setInterval(() => { adrianSync().catch(() => {}); }, 15_000);
   const [lane] = await sql(`SELECT device_id, handover_at FROM lane_leaders WHERE lane = 'whatsapp:inbox'`);
   assert.ok(lane.handover_at > 0, 'the hand back is asked for');
   // This laptop stands by at its next sync, and its grant names Adrian's laptop.

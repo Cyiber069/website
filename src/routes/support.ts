@@ -7,7 +7,7 @@ import { randomToken, sha256Hex, timingSafeEqual } from '../lib/crypto';
 import { HttpError, json, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
 import { replyTimes } from '../pipeline/replytime';
-import { LANES, MAIN_SQL, channelOf, deviceLabel, maskAccount } from '../pipeline/leader';
+import { LANES, channelOf, deviceLabel, mainSql, maskAccount } from '../pipeline/leader';
 import type { LaneLeaderRow } from '../types';
 
 const HOUR = 3_600_000;
@@ -74,7 +74,7 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
     getState<{ rev?: number } | null>(db, 'selectors_override', null),
     replyTimes(db, since),
     all<LaneLeaderRow>(db, 'SELECT * FROM lane_leaders'),
-    one<{ main: string | null }>(db, `SELECT ${MAIN_SQL} AS main`),
+    one<{ main: string | null }>(db, `SELECT ${mainSql(now)} AS main`),
   ]);
   const mainId = String(mainRow?.main ?? '');
   // Who answers each lane and each laptop's account there, masked (enough to tell two apart).

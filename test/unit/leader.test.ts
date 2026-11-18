@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HANDBACK_READY_MS, HANDBACK_STUCK_MS, HANDBACK_WAIT_MS, LANE_LEASE_MS, LEASE_MARGIN_MS, NOT_READY_MS, RELEASE_WAIT_MS, STALL_MS, TAKEOVER_OFFLINE_MS,
   accountFit, canAnswerOnline, channelsView, cleanName, deviceLabel, elect, gmailFromDetail, inboundGate, leaseMs, mainLearns, maskAccount, normAccount, quietLaptop,
-  releasePlan, showAccount, shownRole, staleLeader, teamView,
+  releasePlan, showAccount, shownRole, soloOn, staleLeader, teamView,
   type ElectInput, type LaneInfo, type LaneSelf, type LeaderView, type ListedDevice,
 } from '../../src/pipeline/leader';
 import { COMMAND_TTL_MS, commandId, parseCommandResults, planCommands, type DeviceCommand } from '../../src/pipeline/commands';
@@ -51,7 +51,7 @@ describe('point 1: a laptop on another account never answers, never leads, never
   });
 
   it('its reports are never stored and it gets no replies, whoever answers', () => {
-    const info = (o: Partial<LaneInfo> = {}): LaneInfo => ({ leader: 'dev_a', handover_at: 0, account: WA, main: 'dev_a', ...o });
+    const info = (o: Partial<LaneInfo> = {}): LaneInfo => ({ leader: 'dev_a', handover_at: 0, account: WA, main: 'dev_a', answer_online: true, ...o });
     expect(inboundGate('dev_b', WA2, WA, info())).toEqual({ store: false, inline: false, reason: 'other_account' });
     expect(inboundGate('dev_b', WA2, WA, info({ leader: '' }))).toEqual({ store: false, inline: false, reason: 'other_account' });
     // An account it cannot tell, or a shop account not known yet: not stored either (unless it is the main laptop).
@@ -153,18 +153,18 @@ describe('point 3: one login, and every person’s laptop is in the one view', (
 describe('point 4: the shop’s account per channel', () => {
   it('WhatsApp and TikTok are the main laptop’s; Gmail is the inbox chosen in Connections; the owner’s choice is never replaced', () => {
     const s = settings();
-    // The main laptop's account replaces one learned first from another laptop (or nothing yet).
-    expect(mainLearns('whatsapp', WA, null, s)).toBe(WA);
-    expect(mainLearns('whatsapp', WA, row({ account: WA2, account_src: '' }), s)).toBe(WA);
-    expect(mainLearns('tiktok', 'acx.ebikes', row({ account: 'adrian.rides', account_src: 'main' }), s)).toBe('acx.ebikes');
-    expect(mainLearns('whatsapp', WA, row({ account: WA }), s)).toBe('');
+    // The main laptop the owner chose: its account replaces one learned first from another laptop (or nothing yet).
+    expect(mainLearns('whatsapp', WA, null, s, true)).toBe(WA);
+    expect(mainLearns('whatsapp', WA, row({ account: WA2, account_src: '' }), s, true)).toBe(WA);
+    expect(mainLearns('tiktok', 'acx.ebikes', row({ account: 'adrian.rides', account_src: 'main' }), s, true)).toBe('acx.ebikes');
+    expect(mainLearns('whatsapp', WA, row({ account: WA }), s, true)).toBe('');
     // One the owner set: never.
-    expect(mainLearns('whatsapp', WA, row({ account: WA2, account_src: 'owner' }), s)).toBe('');
+    expect(mainLearns('whatsapp', WA, row({ account: WA2, account_src: 'owner' }), s, true)).toBe('');
     // An account it cannot read is no account.
-    expect(mainLearns('whatsapp', '', row({ account: WA2, account_src: '' }), s)).toBe('');
+    expect(mainLearns('whatsapp', '', row({ account: WA2, account_src: '' }), s, true)).toBe('');
     // Gmail: the inbox in Connections wins; with none chosen the main laptop's is used.
-    expect(mainLearns('gmail', 'sam@acx.example', null, settings({ gmail: 'shop@acx.example' }))).toBe('');
-    expect(mainLearns('gmail', 'sam@acx.example', null, s)).toBe('sam@acx.example');
+    expect(mainLearns('gmail', 'sam@acx.example', null, settings({ gmail: 'shop@acx.example' }), true)).toBe('');
+    expect(mainLearns('gmail', 'sam@acx.example', null, s, true)).toBe('sam@acx.example');
   });
 
   it('an account the server cannot read never claims or takes a lane over, except the main laptop', () => {
@@ -327,7 +327,7 @@ describe('leases end before anyone may take over', () => {
 
 describe('inline jobs go only to the laptop that answers', () => {
   it('hands jobs over to the leader (not while it hands the lane back), or to anyone on the shop’s account while nobody answers', () => {
-    const info = (o: Partial<LaneInfo> = {}): LaneInfo => ({ leader: 'dev_a', handover_at: 0, account: WA, main: 'dev_a', ...o });
+    const info = (o: Partial<LaneInfo> = {}): LaneInfo => ({ leader: 'dev_a', handover_at: 0, account: WA, main: 'dev_a', answer_online: true, ...o });
     expect(inboundGate('dev_a', WA, WA, info())).toEqual({ store: true, inline: true, reason: '' });
     // A standby on the shop's account: its report is kept (an older build read it), its replies wait for the leader.
     expect(inboundGate('dev_b', WA, WA, info())).toEqual({ store: true, inline: false, reason: '' });
@@ -401,6 +401,118 @@ describe('the health check speaks for the shop’s accounts only', () => {
     const sam = laptop('dev_a', 'Sam', samAll);
     sam.status.paused_locally = true;
     expect(channelsView([sam], lanes('dev_a', shopAccounts), 'dev_a', settings(), NOW)).toMatchObject({ channels: {}, paused_locally: true });
+  });
+});
+
+describe('an older build the server cannot confirm loses no message, and never answers', () => {
+  const info = (o: Partial<LaneInfo> = {}): LaneInfo => ({ leader: 'dev_a', handover_at: 0, account: '', main: 'dev_a', answer_online: true, ...o });
+  it('kept while the shop’s account is not known, with the replies left for the laptop that answers', () => {
+    // 0.5.2 reads every lane and marks a chat reported after any final answer: refusing it would lose the message.
+    expect(inboundGate('dev_b', '', '', info(), false)).toEqual({ store: true, inline: false, reason: '' });
+    expect(inboundGate('dev_b', WA2, '', info({ leader: '' }), false)).toEqual({ store: true, inline: false, reason: '' });
+    // A 0.6.0 build never reads a lane it is not confirmed on: a report from it is refused.
+    expect(inboundGate('dev_b', '', '', info(), true)).toEqual({ store: false, inline: false, reason: 'unconfirmed' });
+  });
+  it('kept while no laptop that could answer is online, refused while one is', () => {
+    expect(inboundGate('dev_b', '', WA, info({ answer_online: false }), false)).toEqual({ store: true, inline: false, reason: '' });
+    expect(inboundGate('dev_b', '', WA, info({ answer_online: true }), false)).toEqual({ store: false, inline: false, reason: 'unconfirmed' });
+  });
+  it('a tab on another account is refused whatever the build', () => {
+    expect(inboundGate('dev_b', WA2, WA, info({ answer_online: false, leader: '' }), false)).toEqual({ store: false, inline: false, reason: 'other_account' });
+  });
+});
+
+describe('a main laptop the owner did not choose never changes the shop’s accounts', () => {
+  it('fills an empty account only; the one the owner chose replaces it', () => {
+    const s = settings();
+    // Adrian's laptop is main only because Sam paired again after him: Sam's number stays the shop's.
+    expect(mainLearns('whatsapp', WA2, row({ account: WA, account_src: 'main' }), s, false)).toBe('');
+    expect(mainLearns('tiktok', 'adrian.rides', row({ account: 'acx.ebikes', account_src: '' }), s, false)).toBe('');
+    // Nothing known yet: its account is the first the lane learns.
+    expect(mainLearns('whatsapp', WA2, row({ account: '', account_src: '' }), s, false)).toBe(WA2);
+    expect(mainLearns('whatsapp', WA2, null, s, false)).toBe(WA2);
+    // The owner made it the main laptop on the People panel: now it does replace it.
+    expect(mainLearns('whatsapp', WA2, row({ account: WA, account_src: 'main' }), s, true)).toBe(WA2);
+    // So Sam's laptop on the shop's number stays in, and Adrian's on his own stays out.
+    expect(elect(input({ me: 'dev_a', self: ready, row: row({ device_id: '' }), leader: null }))).toMatchObject({ role: 'active', action: { kind: 'claim' } });
+    expect(elect(input({ me: 'dev_b', main: true, self: { ...ready, account: WA2 }, row: row({ device_id: 'dev_a' }) }))).toEqual({ role: 'other_account', action: null });
+  });
+});
+
+describe('the main laptop on another account, with no laptop on the shop’s account online, is a channel down', () => {
+  const gmailOther = { state: 'blocked', account: 'sam@home.example', detail: 'This tab shows sam@home.example. Switch it to shop@acx.example' };
+  it('one laptop with its Gmail tab on a personal inbox: Gmail is judged, and down', () => {
+    const sam = laptop('dev_a', 'Sam', { ...samAll, gmail: gmailOther }, { version: '0.5.2' });
+    const s = settings({ gmail: 'shop@acx.example' });
+    const rows = [row({ lane: 'whatsapp:inbox', device_id: 'dev_a' }), row({ lane: 'gmail:inbox', device_id: '', account: 'shop@acx.example', account_src: 'owner' }), row({ lane: 'tiktok:inbox', device_id: 'dev_a', account: 'acx.ebikes' })];
+    const view = channelsView([sam], rows, 'dev_a', s, NOW);
+    expect(view.channels.gmail).toMatchObject({ state: 'blocked', detail: gmailOther.detail });
+    expect(canAnswerOnline([sam], rows, 'dev_a', s)).toBe(true);
+    const team = teamView([sam], rows, 'dev_a', s);
+    expect(team.lanes.gmail).toMatchObject({ device: { id: 'dev_a' }, role: 'other_account' });
+  });
+  it('a tab that reads fine on another account counts as down too, in plain words', () => {
+    // The owner set the shop's WhatsApp to another number than the one on Sam's laptop.
+    const sam = laptop('dev_a', 'Sam', samAll);
+    const rows = [row({ lane: 'whatsapp:inbox', device_id: '', account: WA2, account_src: 'owner' }), ...lanes('dev_a', shopAccounts).slice(1)];
+    const st = channelsView([sam], rows, 'dev_a', settings(), NOW).channels.whatsapp;
+    expect(st).toMatchObject({ state: 'other_account', last_error: 'WhatsApp is on another account on Sam’s laptop. Sign in to the shop’s account there.' });
+    expect(st?.last_error).not.toMatch(/[–—]/);
+  });
+  it('Adrian’s laptop on his own accounts still never speaks for the channel, and a laptop on the shop’s account comes first', () => {
+    const rows = [row({ lane: 'whatsapp:inbox', device_id: '', account: WA, account_src: 'owner' }), ...lanes('', shopAccounts).slice(1)];
+    // Sam (main) is on another number and Adrian on his own: judged from Sam's, never Adrian's.
+    const sam = laptop('dev_a', 'Sam', { ...samAll, whatsapp: { account: '447700900555' } });
+    const adrian = laptop('dev_b', 'Adrian', adrianOther);
+    expect(channelsView([adrian, sam], rows, 'dev_a', settings(), NOW).channels.whatsapp).toMatchObject({ state: 'other_account', account: '447700900555' });
+    // A laptop on the shop's number is online but signed out: that one is the channel, not the main laptop's tab.
+    const jo = laptop('dev_c', 'Jo', { whatsapp: { account: WA, state: 'logged_out' } });
+    expect(channelsView([adrian, sam, jo], rows, 'dev_a', settings(), NOW).channels.whatsapp).toMatchObject({ state: 'logged_out', account: WA });
+    // Sam's laptop is offline: nothing is judged, the offline alert says it all.
+    const gone = { ...sam, online: false, last_seen_at: NOW - 30 * 60_000 };
+    expect(channelsView([adrian, gone], rows, 'dev_a', settings(), NOW).channels.whatsapp).toBeUndefined();
+  });
+});
+
+describe('a hand back the main laptop cannot finish is dropped at once', () => {
+  it('the main laptop asked, then went quiet: the one answering carries on after 90 s, not 4 minutes', () => {
+    const asked = row({ device_id: 'dev_b', handover_at: NOW - 30_000 });
+    const answering = (mainSeenAt?: number) => elect(input({ me: 'dev_b', row: asked, leader: null, mainSeenAt }));
+    expect(answering(NOW - 20_000)).toEqual({ role: 'standby', action: null });
+    expect(answering(NOW - TAKEOVER_OFFLINE_MS + 1000)).toEqual({ role: 'standby', action: null });
+    expect(answering(NOW - TAKEOVER_OFFLINE_MS - 1000)).toEqual({ role: 'active', action: { kind: 'cancel_handback' } });
+    // No main laptop any more (removed after asking): dropped too. Not known: the old rule (4 minutes).
+    expect(answering(0)).toEqual({ role: 'active', action: { kind: 'cancel_handback' } });
+    expect(answering(undefined)).toEqual({ role: 'standby', action: null });
+  });
+});
+
+describe('alone on a lane: a laptop on another account does not count', () => {
+  it('only a laptop that could stand in there means this one is not alone', () => {
+    expect(soloOn('whatsapp', WA, [])).toBe(true);
+    // Adrian's laptop is on his own number: Sam's keeps working while the server is away.
+    expect(soloOn('whatsapp', WA, [{ whatsapp: WA2, gmail: 'adrian@home.example', tiktok: 'adrian.rides' }])).toBe(true);
+    // On the shop's number, or one it cannot tell (no tab, an older build), or a shop account not known yet: not alone.
+    expect(soloOn('whatsapp', WA, [{ whatsapp: WA }])).toBe(false);
+    expect(soloOn('whatsapp', WA, [{ whatsapp: '' }])).toBe(false);
+    expect(soloOn('whatsapp', WA, [{}])).toBe(false);
+    expect(soloOn('whatsapp', '', [{ whatsapp: WA2 }])).toBe(false);
+    // Per lane: Adrian's Gmail is the shop's inbox, his WhatsApp is not.
+    const adrian = [{ whatsapp: WA2, gmail: 'shop@acx.example', tiktok: 'adrian.rides' }];
+    expect(soloOn('gmail', 'shop@acx.example', adrian)).toBe(false);
+    expect(soloOn('tiktok', 'acx.ebikes', adrian)).toBe(true);
+    // Too many to tell apart: never alone.
+    expect(soloOn('whatsapp', WA, Array.from({ length: 21 }, () => ({ whatsapp: WA2 })))).toBe(false);
+  });
+});
+
+describe('an older Gmail build that says more than its address', () => {
+  it('still reads the inbox it is on', () => {
+    expect(gmailFromDetail('shop@acx.example. 2 Gmail tabs are open. The agent only uses the first one')).toBe('shop@acx.example');
+    expect(gmailFromDetail('Sam@Mail.co.uk. Writing a new email')).toBe('sam@mail.co.uk');
+    expect(gmailFromDetail('This tab shows adrian@home.example. Switch it to shop@acx.example. 2 Gmail tabs are open.')).toBe('adrian@home.example');
+    expect(gmailFromDetail('2 Gmail tabs are open. The agent only uses the first one')).toBe('');
+    expect(gmailFromDetail('not.an@address')).toBe('');
   });
 });
 

@@ -9,16 +9,22 @@
 //
 // The rules (`elect`, pure, test/unit/leader.test.ts):
 //  * The main laptop is the one the owner chose on the People panel (state:main_device), else the oldest
-//    laptop still paired. It is the shop's own laptop.
+//    paired laptop that checked in today, else the one that answers most lanes. A row nobody uses any
+//    more (paired again, never disconnected) is never the main laptop. It is the shop's own laptop.
 //  * The shop has one account per lane. Gmail: the inbox chosen in Connections. WhatsApp and TikTok (and
-//    Gmail while Connections names none): the main laptop's account, which replaces one learned from
-//    another laptop. One the owner set on the People panel is never replaced (lane_leaders.account_src).
+//    Gmail while Connections names none): the main laptop's account. A main laptop the owner chose
+//    replaces one learned before; one that is main only because it is the oldest fills an empty one only,
+//    so pairing order never changes the shop's accounts. One the owner set is never replaced
+//    (lane_leaders.account_src).
 //  * A laptop whose tab is on another account never answers that lane, never gets its jobs, its reports
 //    are not stored and it never speaks for the channel on Live, Health or in alerts: "Connected to
-//    another account". Its other lanes work on their own.
+//    another account". Its other lanes work on their own. The main laptop on another account, with no
+//    laptop on the shop's account online, is the channel down: nobody answers it.
 //  * An account the server cannot read: the main laptop may still answer (builds before 0.6.0 cannot read
 //    the WhatsApp number or the TikTok handle). Any other laptop never claims the lane and never takes it
 //    over ("Account not confirmed"), so it can never steal the lane from a laptop whose account matches.
+//    Such a laptop on an older build still reads (it ignores lanes): its reports are kept while the shop's
+//    account is not known or no laptop that answers is online, and the laptop that answers sends the replies.
 //  * A laptop on the shop's account that is not the main one stands by. It takes over (a compare and swap
 //    on the epoch, so two standbys never both win) only when the one answering is offline for 90 s, not
 //    ready for 45 s, paused, removed, on another account, or has worked the lane for 3 min (active_ms)
@@ -26,17 +32,20 @@
 //  * Hand back: once the main laptop has been ready for 2 minutes while another one answers, it asks for
 //    the lane back (handover_at). The one answering stands by at once (no lease, no jobs) and the main
 //    laptop takes the lane 70 s later, when the last lease it handed out is over: never two at once. An
-//    ask still open after 4 minutes is dropped, and so is one the main laptop cannot follow (not ready).
+//    ask still open after 4 minutes is dropped, and so is one the main laptop cannot follow (not ready,
+//    or offline for 90 s: the one answering then carries on).
 //  * The active laptop's lease (lease_ms in the sync answer) ends before anyone may take over: at most
 //    its last stored check in + 80 s, and takeover for offline waits 90 s. The one exception is a laptop
-//    told it is the only one paired (solo): it keeps working while the server is away, as before, so a
-//    takeover from it waits until the jobs it holds have run out.
+//    told it is the only one for the lane (solo: no other laptop seen today on the shop's account there,
+//    or one it cannot tell): it keeps working while the server is away, as before, so a takeover from it
+//    waits until the jobs it holds have run out.
 //  * A page that reads nothing is only judged stalled once its lane has worked for STALL_MS (the
 //    laptop says how long, active_ms): switching the agent or a channel on is never a stall.
 //
-// Cost (free plan): a sync reads the leader rows, the main laptop and counts the other laptops seen today
-// in one query (a partial index, so only live rows), reads the other laptops' rows only while it could
-// replace one, and writes only on a handover. An inbound report reads one leader row and the main laptop.
+// Cost (free plan): a sync reads the leader rows, the main laptop and the accounts of the other laptops
+// seen today in one query (a partial index, so only live rows), reads the other laptops' rows only while
+// it could replace one, and writes only on a handover. An inbound report reads one leader row, the main
+// laptop and the laptops online now.
 import type { Channel, DeviceRow, Env, LaneLeaderRow, Settings } from '../types';
 import { CHANNELS } from '../types';
 import { all, one, parseJson, stmt } from '../lib/db';
@@ -113,12 +122,16 @@ export function normAccount(channel: Channel, raw: unknown): string {
 
 /**
  * The Gmail address a build before 0.6.0 shows in its status detail (it sends no account): the address
- * itself while the inbox is ready, "This tab shows x@y. Switch it to ..." on another inbox.
+ * itself while the inbox is ready, maybe followed by more words ("x@y. 2 Gmail tabs are open. ..."), and
+ * "This tab shows x@y. Switch it to ..." on another inbox.
  */
 export function gmailFromDetail(detail: unknown): string {
   const s = typeof detail === 'string' ? detail.trim() : '';
   const direct = normAccount('gmail', s);
   if (direct) return direct;
+  const lead = /^(\S+@\S+?\.[a-z]{2,})(?:\.\s|$)/i.exec(s);
+  const first = lead ? normAccount('gmail', lead[1]) : '';
+  if (first) return first;
   const m = /^This tab shows (\S+@\S+?)\.(?:\s|$)/.exec(s);
   return m ? normAccount('gmail', m[1]) : '';
 }
@@ -170,13 +183,25 @@ export function deviceLabel(d: { person?: string | null; name?: string | null } 
 
 // ---- reading the lane rows -----------------------------------------------------------------------------
 
+/** The owner's choice of main laptop (state:main_device, a JSON string), as an SQL expression. */
+const CHOSEN_SQL = `(SELECT trim(value, '"') FROM settings WHERE key = 'state:main_device')`;
+
 /**
- * The main laptop's id, as one SQL expression: the one the owner chose (state:main_device, a JSON
- * string) while it is still paired, else the oldest laptop still paired (index devices_paired_age).
+ * The main laptop's id, as one SQL expression: the one the owner chose while it is still paired, else
+ * the oldest paired laptop that checked in within SOLO_WINDOW_MS (through devices_live_seen, so only the
+ * live rows), else the paired laptop that answers most lanes. An old row left paired (the extension was
+ * paired again without Disconnect) is never the main laptop: it would make the laptop that works
+ * "Account not confirmed" on WhatsApp and TikTok. `now` is the server's time; it goes in as a number.
  */
-export const MAIN_SQL = `COALESCE(
-  (SELECT id FROM devices WHERE id = (SELECT trim(value, '"') FROM settings WHERE key = 'state:main_device') AND revoked_at IS NULL),
-  (SELECT id FROM devices INDEXED BY devices_paired_age WHERE revoked_at IS NULL ORDER BY created_at ASC LIMIT 1))`;
+export function mainSql(now: number): string {
+  const cut = Math.floor(Number(now) - SOLO_WINDOW_MS);
+  if (!Number.isFinite(cut)) throw new Error('mainSql needs a time');
+  return `COALESCE(
+  (SELECT id FROM devices WHERE id = ${CHOSEN_SQL} AND revoked_at IS NULL),
+  (SELECT id FROM devices INDEXED BY devices_live_seen WHERE revoked_at IS NULL AND last_seen_at > ${cut} ORDER BY created_at ASC, id ASC LIMIT 1),
+  (SELECT l.device_id FROM lane_leaders l JOIN devices d ON d.id = l.device_id WHERE d.revoked_at IS NULL
+     GROUP BY l.device_id ORDER BY COUNT(*) DESC, MAX(d.last_seen_at) DESC LIMIT 1))`;
+}
 
 /** Every lane row as one JSON array, for a query that reads them along with something else. */
 export const LEADERS_SQL = `(SELECT json_group_array(json_object('lane', lane, 'account', account, 'device_id', device_id, 'epoch', epoch,
@@ -198,61 +223,117 @@ export function parseLeaders(raw: unknown): LaneLeaderRow[] {
   return out;
 }
 
-/** The main laptop, as a sync needs it (its name for the grant while a lane goes back to it). */
-export interface MainLaptop { id: string; person: string; name: string }
+/**
+ * The main laptop, as a sync needs it: its name for the grant while a lane goes back to it, whether the
+ * owner chose it (only then does its account replace one the lane learned before), and when it last
+ * checked in (a hand back it asked for is dropped once it has gone quiet).
+ */
+export interface MainLaptop { id: string; person: string; name: string; chosen: boolean; last_seen_at: number }
 
-/** What a sync needs to elect: who answers each lane, the main laptop, and how many other laptops checked in today. */
+/** The accounts another laptop seen today showed in its last status, per channel ('' when it showed none). */
+export type PeerAccounts = Partial<Record<Channel, string>>;
+
+/** What a sync needs to elect: who answers each lane, the main laptop, and the other laptops that checked in today. */
 export interface LaneContext {
   leaders: LaneLeaderRow[];
-  /** Other paired laptops seen in the last SOLO_WINDOW_MS. 0: this laptop is alone. */
-  others: number;
+  /** Other paired laptops seen in the last SOLO_WINDOW_MS, with their accounts. None: this laptop is alone. */
+  others: PeerAccounts[];
   main: MainLaptop | null;
 }
 
+/** At most this many other laptops are read for `solo`: with more, none of them could be told apart anyway. */
+const OTHERS_MAX = 20;
+
 /**
- * One query. The count reads only the laptops seen today through the partial index devices_live_seen
- * (migration 0013): a laptop paired long ago, or one paired again under a new name, stops counting a day
- * after it last checked in, and removed ones never count. The main laptop is one or two rows more.
+ * Alone on a lane: no other laptop seen today could stand in there, because each showed another account
+ * than the shop's on that channel. One on the shop's account, or one whose account (or the shop's) is not
+ * known, could: then this laptop is not alone. A laptop on Adrian's own accounts never counts.
+ */
+export function soloOn(ch: Channel, shop: string, others: PeerAccounts[]): boolean {
+  if (others.length > OTHERS_MAX) return false;
+  return others.every((o) => accountFit(o[ch] ?? '', shop) === 'other');
+}
+
+const PEER_ACCOUNTS_SQL = `CASE WHEN json_valid(status) THEN json_object(${CHANNELS.map((ch) => `'${ch}', COALESCE(json_extract(status, '$.channels.${ch}.account'), '')`).join(', ')}) ELSE json_object() END`;
+
+/**
+ * One query. The other laptops are read only from those seen today through the partial index
+ * devices_live_seen (migration 0013): a laptop paired long ago, or one paired again under a new name,
+ * stops counting a day after it last checked in, and removed ones never count. The main laptop is one or
+ * two rows more.
  */
 export async function laneContext(db: D1Database, deviceId: string, now: number): Promise<LaneContext> {
-  const row = await one<{ leaders: string | null; others: number | null; main: string | null }>(db,
+  const row = await one<{ leaders: string | null; others: string | null; main: string | null }>(db,
     `SELECT ${LEADERS_SQL} AS leaders,
-       (SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL AND last_seen_at > ? AND id != ?) AS others,
-       (SELECT json_object('id', id, 'person', person, 'name', name) FROM devices WHERE id = ${MAIN_SQL}) AS main`,
+       (SELECT json_group_array(json(a)) FROM (SELECT ${PEER_ACCOUNTS_SQL} AS a FROM devices INDEXED BY devices_live_seen
+          WHERE revoked_at IS NULL AND last_seen_at > ? AND id != ? LIMIT ${OTHERS_MAX + 1})) AS others,
+       (SELECT json_object('id', id, 'person', person, 'name', name, 'last_seen_at', last_seen_at, 'chosen', id = ${CHOSEN_SQL})
+          FROM devices WHERE id = ${mainSql(now)}) AS main`,
     now - SOLO_WINDOW_MS, deviceId);
-  const m = parseJson<Partial<MainLaptop> | null>(row?.main ?? null, null);
+  const m = parseJson<Partial<Record<keyof MainLaptop, unknown>> | null>(row?.main ?? null, null);
+  const others = parseJson<unknown[]>(row?.others ?? '[]', []).filter((o): o is PeerAccounts => Boolean(o) && typeof o === 'object');
   return {
-    leaders: parseLeaders(row?.leaders ?? '[]'), others: Number(row?.others ?? 0) || 0,
-    main: m && typeof m.id === 'string' && m.id ? { id: m.id, person: String(m.person ?? ''), name: String(m.name ?? '') } : null,
+    leaders: parseLeaders(row?.leaders ?? '[]'), others,
+    main: m && typeof m.id === 'string' && m.id ? {
+      id: m.id, person: String(m.person ?? ''), name: String(m.name ?? ''), chosen: Number(m.chosen) === 1 || m.chosen === true,
+      last_seen_at: Number(m.last_seen_at) || 0,
+    } : null,
   };
 }
 
-/** One lane, as an inbound report needs it: who answers, whether it is going back, its account and the main laptop. */
-export interface LaneInfo { leader: string; handover_at: number; account: string; main: string }
+/**
+ * One lane, as an inbound report needs it: who answers, whether it is going back, its account, the main
+ * laptop, and whether a laptop other than the one reporting that could answer the channel is online.
+ */
+export interface LaneInfo { leader: string; handover_at: number; account: string; main: string; answer_online: boolean }
 
-/** One query: the lane's row and the main laptop's id. */
-export async function laneInfo(db: D1Database, ch: Channel): Promise<LaneInfo> {
-  const row = await one<{ leader: string | null; handover_at: number | null; account: string | null; main: string | null }>(db,
-    `SELECT l.device_id AS leader, l.handover_at, l.account, ${MAIN_SQL} AS main FROM (SELECT 1 AS x) LEFT JOIN lane_leaders l ON l.lane = ?`, laneOf(ch));
-  return { leader: row?.leader ?? '', handover_at: Number(row?.handover_at ?? 0) || 0, account: row?.account ?? '', main: row?.main ?? '' };
+/**
+ * One query: the lane's row, the main laptop's id, and whether another laptop that could answer the
+ * channel is online (checked in since `onlineSince`, not paused, and the main laptop not on another
+ * account, or one on the shop's account). Only the laptops online now are read (devices_live_seen).
+ * `gmailSet`: the inbox chosen in Connections, which is the shop's Gmail account when set.
+ */
+export async function laneInfo(db: D1Database, ch: Channel, deviceId: string, gmailSet: string, now: number, onlineSince: number): Promise<LaneInfo> {
+  const row = await one<{ leader: string | null; handover_at: number | null; account: string | null; main: string | null; answer_online: number | null }>(db,
+    `WITH l AS (SELECT device_id, handover_at, account FROM lane_leaders WHERE lane = ?1),
+       m AS (SELECT ${mainSql(now)} AS id),
+       s AS (SELECT CASE WHEN ?2 != '' THEN ?2 ELSE COALESCE((SELECT account FROM l), '') END AS shop)
+     SELECT (SELECT device_id FROM l) AS leader, (SELECT handover_at FROM l) AS handover_at, (SELECT account FROM l) AS account, (SELECT id FROM m) AS main,
+       EXISTS (SELECT 1 FROM devices d INDEXED BY devices_live_seen, m, s WHERE d.revoked_at IS NULL AND d.last_seen_at > ?3 AND d.id != ?4 AND json_valid(d.status)
+         AND COALESCE(json_extract(d.status, '$.paused_locally'), 0) != 1
+         AND ((d.id = m.id AND (s.shop = '' OR COALESCE(json_extract(d.status, ?5), '') IN ('', s.shop)))
+           OR (s.shop != '' AND json_extract(d.status, ?5) = s.shop))) AS answer_online`,
+    laneOf(ch), ch === 'gmail' ? normAccount('gmail', gmailSet) : '', onlineSince, deviceId, `$.channels.${ch}.account`);
+  return {
+    leader: row?.leader ?? '', handover_at: Number(row?.handover_at ?? 0) || 0, account: row?.account ?? '', main: row?.main ?? '',
+    answer_online: Number(row?.answer_online ?? 0) === 1,
+  };
 }
 
 /** Whether a report is stored, and whether its replies may go back in the answer. */
 export interface InboundGate { store: boolean; inline: boolean; reason: '' | 'other_account' | 'unconfirmed' }
 
 /**
- * A laptop's report of a chat. Stored only from a laptop on the shop's account (or the main laptop when
- * its account cannot be read): a tab on another account, or one the server cannot confirm, is never a
- * shop chat. Stored from such a laptop even while another one answers (builds before 0.6.0 read every
- * lane and mark a chat reported after any final answer, so a message read in a failover or hand back
- * window would be lost); its replies then wait in the queue for the laptop answering. Replies go back in
- * the answer only to the laptop answering (not while it hands the lane back), or to anyone while nobody does.
+ * A laptop's report of a chat. Stored from a laptop on the shop's account (or the main laptop when its
+ * account cannot be read): a tab on another account is never a shop chat. Stored from such a laptop even
+ * while another one answers (builds before 0.6.0 read every lane and mark a chat reported after any final
+ * answer, so a message read in a failover or hand back window would be lost); its replies then wait in
+ * the queue for the laptop answering. Replies go back in the answer only to the laptop answering (not
+ * while it hands the lane back), or to anyone on the shop's account while nobody does.
+ * A laptop the server cannot confirm (its account or the shop's is not known) never answers, so it never
+ * gets replies back. A build that follows lanes (`followsLanes`, 0.6.0) never reads such a lane, so a
+ * report from it is refused. An older build reads it all the same: its report is kept while the shop's
+ * account is not known or no other laptop that could answer is online, or the message would be lost; the
+ * replies wait for the laptop that answers.
  * `account`: the account this laptop's tab reported for the channel. `shop`: the shop's account.
  */
-export function inboundGate(deviceId: string, account: string, shop: string, info: LaneInfo): InboundGate {
+export function inboundGate(deviceId: string, account: string, shop: string, info: LaneInfo, followsLanes = true): InboundGate {
   const fit = accountFit(account, shop);
   if (fit === 'other') return { store: false, inline: false, reason: 'other_account' };
-  if (fit === 'unknown' && info.main !== deviceId) return { store: false, inline: false, reason: 'unconfirmed' };
+  if (fit === 'unknown' && info.main !== deviceId) {
+    if (!followsLanes && (!shop || !info.answer_online)) return { store: true, inline: false, reason: '' };
+    return { store: false, inline: false, reason: 'unconfirmed' };
+  }
   return { store: true, inline: !info.leader || (info.leader === deviceId && !info.handover_at), reason: '' };
 }
 
@@ -300,6 +381,11 @@ export interface ElectInput {
   leader: LeaderView | null;
   /** The agent is switched on: only then does a page that reads nothing count as stalled. */
   agentOn: boolean;
+  /**
+   * When the main laptop last checked in (its stored row), 0 with no main laptop. Left out: not known.
+   * A hand back it asked for is dropped once it has been quiet for TAKEOVER_OFFLINE_MS.
+   */
+  mainSeenAt?: number;
 }
 
 export type ElectAction =
@@ -349,8 +435,10 @@ export function elect(i: ElectInput): ElectOutput {
       if (i.main) return { role: 'active', action: asked ? { kind: 'cancel_handback' } : null };
       if (!asked) return { role: 'active', action: null };
       // The main laptop wants the lane back: stand by at once, so the two never answer together. An ask
-      // it did not follow up for minutes is dropped and this laptop carries on.
-      if (now - asked > HANDBACK_STUCK_MS) return { role: 'active', action: { kind: 'cancel_handback' } };
+      // it did not follow up for minutes is dropped and this laptop carries on, and so is one from a main
+      // laptop that went quiet after asking (the lid was closed): nobody would answer until it is back.
+      const mainGone = i.mainSeenAt !== undefined && (!i.mainSeenAt || now - i.mainSeenAt > TAKEOVER_OFFLINE_MS);
+      if (now - asked > HANDBACK_STUCK_MS || mainGone) return { role: 'active', action: { kind: 'cancel_handback' } };
       return { role: 'standby', action: null };
     }
     // Needs the person at the laptop (signed out, blocked, no tab, paused): give it up so a standby answers now.
@@ -411,7 +499,10 @@ export interface LaneGrant {
   epoch: number;
   /** The shop's account for the lane ('' until known). */
   account: string;
-  /** The only laptop paired: it keeps working while the server cannot be reached. */
+  /**
+   * No other laptop seen today could stand in on this lane (each is on another account there): it keeps
+   * working while the server cannot be reached.
+   */
   solo: boolean;
   /** The laptop answering the lane (while this one hands it back: the main laptop it goes to). */
   leader: { device_id: string; person: string; name: string } | null;
@@ -463,12 +554,16 @@ function releaseStatement(db: D1Database, deviceId: string, ch: Channel, plan: {
 /**
  * The account the main laptop makes the shop's on this lane, or '' for none: its own, when it can be read,
  * differs from the lane's and the owner did not set one. Gmail only while Connections names no inbox.
+ * `chosen`: the owner made it the main laptop on the People panel. Only then does its account replace one
+ * the lane already has. A laptop that is main only because it is the oldest one checking in fills an
+ * empty account, nothing more: which laptop was paired first never changes the shop's accounts.
  */
-export function mainLearns(ch: Channel, account: string, row: Pick<LaneLeaderRow, 'account' | 'account_src'> | null, settings: Settings): string {
+export function mainLearns(ch: Channel, account: string, row: Pick<LaneLeaderRow, 'account' | 'account_src'> | null, settings: Settings, chosen: boolean): string {
   if (!account) return '';
   if (ch === 'gmail' && normAccount('gmail', settings.gmail.account)) return '';
   if (row?.account_src === 'owner') return '';
-  return row?.account === account ? '' : account;
+  if (row?.account === account) return '';
+  return chosen || !row?.account ? account : '';
 }
 
 /**
@@ -479,8 +574,10 @@ export function mainLearns(ch: Channel, account: string, row: Pick<LaneLeaderRow
 export async function electLanes(env: Env, device: DeviceRow, status: DeviceStatus, settings: Settings, now: number, storedSeen: number, ctx: LaneContext): Promise<Elected> {
   const db = env.DB;
   const rows = new Map(ctx.leaders.map((r) => [r.lane, r]));
-  const solo = ctx.others === 0;
   const isMain = ctx.main?.id === device.id;
+  const chosen = isMain && Boolean(ctx.main?.chosen);
+  // When the main laptop last checked in, as stored: this laptop's own sync for itself.
+  const mainSeenAt = !ctx.main ? 0 : isMain ? storedSeen : ctx.main.last_seen_at;
   const selfOf = (ch: Channel): LaneSelf => {
     const st = status.channels[ch];
     return { state: st?.state ?? 'no_tab', account: st?.account ?? '', paused: status.paused_locally, mode: settings.channels[ch].mode, state_since: st?.state_since || now };
@@ -492,14 +589,15 @@ export async function electLanes(env: Env, device: DeviceRow, status: DeviceStat
   for (const ch of CHANNELS) {
     const lane = laneOf(ch);
     const row = rows.get(lane) ?? null;
-    const learn = isMain ? mainLearns(ch, status.channels[ch]?.account ?? '', row, settings) : '';
+    const learn = isMain ? mainLearns(ch, status.channels[ch]?.account ?? '', row, settings, chosen) : '';
     if (!learn) continue;
     rows.set(lane, row ? { ...row, account: learn, account_src: 'main' }
       : { lane, account: learn, device_id: '', epoch: 0, since: now, reason: 'account', prev_device: '', solo: 0, account_src: 'main', handover_at: 0 });
+    // A main laptop the owner did not choose only fills an empty account (checked again here, in case another laptop wrote one meanwhile).
     writes.push({ lane, ch, action: { kind: 'learn' }, st: stmt(db,
       `INSERT INTO lane_leaders (lane, account, account_src, device_id, epoch, since, reason, prev_device) VALUES (?, ?, 'main', '', 0, ?, 'account', '')
-       ON CONFLICT(lane) DO UPDATE SET account = excluded.account, account_src = 'main' WHERE lane_leaders.account_src != 'owner'`,
-      lane, learn, now) });
+       ON CONFLICT(lane) DO UPDATE SET account = excluded.account, account_src = 'main' WHERE lane_leaders.account_src != 'owner' AND (? = 1 OR lane_leaders.account = '')`,
+      lane, learn, now, chosen ? 1 : 0) });
   }
 
   // The other laptops this one may have to replace: read only when it could take over (one query).
@@ -514,14 +612,16 @@ export async function electLanes(env: Env, device: DeviceRow, status: DeviceStat
     for (const p of list) peers.set(p.id, p);
   }
 
-  const out: Record<string, { ch: Channel; res: ElectOutput; row: LaneLeaderRow | null; shop: string }> = {};
+  const out: Record<string, { ch: Channel; res: ElectOutput; row: LaneLeaderRow | null; shop: string; solo: boolean }> = {};
   for (const ch of CHANNELS) {
     const lane = laneOf(ch);
     const row = rows.get(lane) ?? null;
     const shop = shopAccount(ch, settings, row);
+    // Alone on this lane: no other laptop seen today could stand in here (one on another account never could).
+    const solo = soloOn(ch, shop, ctx.others);
     const leader = row?.device_id && row.device_id !== device.id ? leaderView(peers.get(row.device_id), ch) : null;
-    const res = elect({ now, me: device.id, self: selfOf(ch), main: isMain, shop, row, leader, agentOn: settings.agent.enabled });
-    out[lane] = { ch, res, row, shop };
+    const res = elect({ now, me: device.id, self: selfOf(ch), main: isMain, shop, row, leader, agentOn: settings.agent.enabled, mainSeenAt });
+    out[lane] = { ch, res, row, shop, solo };
     const a = res.action;
     const iLead = row?.device_id === device.id;
     if (!a) {
@@ -539,11 +639,14 @@ export async function electLanes(env: Env, device: DeviceRow, status: DeviceStat
          WHERE lane_leaders.device_id = '' RETURNING *`,
         lane, a.account, isMain && a.account ? 'main' : '', device.id, now, solo ? 1 : 0) });
     } else if (a.kind === 'takeover') {
+      // Taking the lane back after asking: only while the ask still stands. The one answering may have
+      // dropped it just now (this laptop was quiet) and carry on with a lease: then this one waits.
+      const back = a.reason === 'main_back';
       writes.push({ lane, ch, action: a, st: stmt(db,
         `UPDATE lane_leaders SET device_id = ?, epoch = epoch + 1, since = ?, reason = ?, prev_device = device_id, solo = ?, handover_at = 0,
            account = CASE WHEN account = '' THEN ? ELSE account END
-         WHERE lane = ? AND device_id = ? AND epoch = ? RETURNING *`,
-        device.id, now, a.reason, solo ? 1 : 0, a.account, lane, row!.device_id, row!.epoch) });
+         WHERE lane = ? AND device_id = ? AND epoch = ? AND (? = 0 OR handover_at = ?) RETURNING *`,
+        device.id, now, a.reason, solo ? 1 : 0, a.account, lane, row!.device_id, row!.epoch, back ? 1 : 0, back ? row!.handover_at : 0) });
     } else if (a.kind === 'vacate') {
       writes.push({ lane, ch, action: a, st: stmt(db,
         `UPDATE lane_leaders SET device_id = '', epoch = epoch + 1, since = ?, reason = ?, prev_device = device_id, solo = 0, handover_at = 0 WHERE lane = ? AND device_id = ? RETURNING *`,
@@ -553,9 +656,10 @@ export async function electLanes(env: Env, device: DeviceRow, status: DeviceStat
         `UPDATE lane_leaders SET handover_at = ? WHERE lane = ? AND device_id = ? AND epoch = ? AND handover_at = 0 RETURNING *`,
         now, lane, row!.device_id, row!.epoch) });
     } else {
+      // The ask is dropped. When this laptop answers and carries on, the row says again whether it is alone.
       writes.push({ lane, ch, action: a, st: stmt(db,
-        `UPDATE lane_leaders SET handover_at = 0 WHERE lane = ? AND epoch = ? AND handover_at = ? RETURNING *`,
-        lane, row!.epoch, row!.handover_at) });
+        `UPDATE lane_leaders SET handover_at = 0, solo = CASE WHEN device_id = ? AND ? = 1 THEN ? ELSE solo END WHERE lane = ? AND epoch = ? AND handover_at = ? RETURNING *`,
+        device.id, res.role === 'active' ? 1 : 0, solo ? 1 : 0, lane, row!.epoch, row!.handover_at) });
     }
   }
 
@@ -615,7 +719,7 @@ export async function electLanes(env: Env, device: DeviceRow, status: DeviceStat
       lease_ms: leaseMs(role, st?.state ?? 'no_tab', storedSeen, now),
       epoch: o.row?.epoch ?? 0,
       account: o.row?.account || o.shop,
-      solo,
+      solo: o.solo,
       leader: goingBack ? { device_id: ctx.main!.id, person: ctx.main!.person, name: ctx.main!.name }
         : leaderId ? { device_id: leaderId, person: leaderRow?.person ?? '', name: leaderRow?.name ?? '' } : null,
     };
@@ -728,6 +832,7 @@ export function teamView(devices: ListedDevice[], leaders: LaneLeaderRow[], main
       ?? (p.mainOk && (p.main!.online || !p.leader) ? p.main : null)
       ?? p.leader
       ?? devices.find((d) => d.online && fitOf(d) === 'shop' && d.status?.channels?.[ch]?.state === 'ready' && !d.status?.paused_locally)
+      ?? devices.find((d) => d.online && fitOf(d) === 'shop' && !d.status?.paused_locally)
       ?? p.main
       ?? null;
     lanes[ch] = {
@@ -768,14 +873,26 @@ export function teamView(devices: ListedDevice[], leaders: LaneLeaderRow[], main
 }
 
 /**
+ * The main laptop's tab is on another account and no laptop on the shop's account is online: nobody
+ * answers the channel. Its page counts as down (`other_account`, src/pipeline/monitor.ts), unless it
+ * already says why (signed out, or blocked: an older Gmail build on another inbox says "This tab shows ...").
+ */
+function onAnotherAccount(ch: Channel, st: ChannelStatus, d: ListedDevice): ChannelStatus {
+  if (st.state === 'logged_out' || st.state === 'blocked') return st;
+  return { ...st, state: 'other_account', last_error: `${CHANNEL_NAME[ch]} is on another account on ${deviceLabel(d)}. Sign in to the shop’s account there.` };
+}
+
+/**
  * One status for the channel checks: each channel as the laptop that answers it sees it while that one
- * is online, else as the main laptop sees it, else as a laptop online and ready on the shop's account
- * does. A laptop signed in to another account never speaks for the shop's channel. When the laptop that
- * should answer (the one named, else the main laptop) is offline and a laptop that could take over is
- * online but did not, the channel counts as not read since that laptop's last good read: the health
- * check (src/pipeline/monitor.ts) calls it down after 10 minutes. With no such laptop online the channel
- * is not judged: the offline alert says it all, as with one laptop (one on another account changes
- * nothing). A channel whose laptop is paused is left out too.
+ * is online, else as the main laptop sees it, else as a laptop online on the shop's account does (ready
+ * first). A laptop that is not the main one and is signed in to another account never speaks for the
+ * shop's channel. When the laptop that should answer (the one named, else the main laptop) is offline and
+ * a laptop that could take over is online but did not, the channel counts as not read since that laptop's
+ * last good read: the health check (src/pipeline/monitor.ts) calls it down after 10 minutes. With no such
+ * laptop online the channel is not judged: the offline alert says it all, as with one laptop (one on
+ * another account changes nothing). When nobody answers, the main laptop is online on another account and
+ * no laptop on the shop's account is online, the channel is down: judged from the main laptop's tab
+ * (`onAnotherAccount`), so the owner is told after 10 minutes. A channel whose laptop is paused is left out.
  */
 export function channelsView(devices: ListedDevice[], leaders: LaneLeaderRow[], main: string, settings: Settings, now: number): DeviceStatus {
   const rows = new Map(leaders.map((r) => [r.lane, r]));
@@ -792,7 +909,16 @@ export function channelsView(devices: ListedDevice[], leaders: LaneLeaderRow[], 
     if (p.leader?.online) pick = p.leader;
     else if (p.mainOk) { if (p.main!.online) pick = p.main!; else quiet = p.leader ?? p.main; }
     else if (p.leader) quiet = p.leader;
-    else pick = online.find((d) => fitOf(d) === 'shop' && d.status?.channels?.[ch]?.state === 'ready' && !d.status?.paused_locally);
+    else {
+      // Nobody answers and the main laptop is on another account (or there is none).
+      const shopOnline = online.filter((d) => fitOf(d) === 'shop' && !d.status?.paused_locally);
+      pick = shopOnline.find((d) => d.status?.channels?.[ch]?.state === 'ready') ?? shopOnline[0];
+      if (!pick && p.main?.online && !p.main.status?.paused_locally && !online.some((d) => fitOf(d) === 'shop')) {
+        const st = p.main.status?.channels?.[ch];
+        if (st) out.channels[ch] = onAnotherAccount(ch, st, p.main);
+        continue;
+      }
+    }
     if (quiet) {
       // Offline for longer than a standby needs to take over (the online window is longer), and nobody
       // took over though a laptop that could is online. Judged from its last good read, so the alert comes on time.

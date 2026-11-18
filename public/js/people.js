@@ -10,6 +10,8 @@ const STATE = {
   logged_out: ['Signed out', 'pill--down', 'dot--down'], blocked: ['Blocked', 'pill--down', 'dot--down'], error: ['Problem', 'pill--down', 'dot--down'],
 };
 const initial = (name) => ([...String(name || '?').trim()][0] || '?').toUpperCase();
+/** What the shop's account looks like on each channel, for the box that sets it. */
+const SHOP_HINT = { whatsapp: '+44 7700 900123', gmail: 'shop@example.com', tiktok: '@acx.ebikes' };
 
 let current = { ov: null, refresh: () => {}, me: null };
 let panel = null; // { dialog, key }
@@ -30,7 +32,7 @@ export function roleText(ov, d, ch) {
   if (c.role === 'off') return ['Switched off', 'pill--pause', 'dot--pause', ''];
   if (!d.online && c.role !== 'other_account' && c.role !== 'unconfirmed') return ['Laptop offline', 'pill--down', 'dot--down', c.role === 'active' ? 'Answers here.' : ''];
   if (c.role === 'other_account') return ['Connected to another account', 'pill--pause', 'dot--pause', 'Not the shop’s account, so it stays out of this channel.'];
-  if (c.role === 'unconfirmed') return ['Account not confirmed', 'pill--pause', 'dot--pause', c.account ? 'The shop’s account is not set for this channel yet.' : 'This laptop cannot say which account it is on. Update its extension.'];
+  if (c.role === 'unconfirmed') return ['Account not confirmed', 'pill--pause', 'dot--pause', c.account ? 'The shop’s account is not set yet. Set it so this laptop can stand in.' : 'This laptop cannot say which account it is on. Update its extension so it can stand in.'];
   if (c.role === 'active') return c.state === 'ready' ? ['Connected', 'pill--live', 'dot--live', 'Answers here.'] : [...(STATE[c.state] || ['Checking', 'pill--pause', 'dot--pause']), 'Answers here.'];
   if (c.role === 'handing_back') return ['Connected', 'pill--live', 'dot--live', `Handing back to ${main}.`];
   if (c.role === 'standby') return ['Connected', 'pill--live', 'dot--live', leader?.online ? `Standing by for ${leader.label}.` : 'Standing by.'];
@@ -106,7 +108,7 @@ function paintPanel() {
           <span class="pill ${d.online ? (d.paused ? 'pill--pause' : 'pill--live') : 'pill--down'}"><span class="dot ${d.online ? (d.paused ? 'dot--pause' : 'dot--live') : 'dot--down'}" aria-hidden="true"></span>${d.online ? (d.paused ? 'Paused' : 'Online') : 'Offline'}</span></div>
         <p class="meta">${d.online ? `Laptop connected. Checked in ${ago(d.last_seen_at, ov.now)}.` : d.last_seen_at ? `Laptop not connected. Last seen ${ago(d.last_seen_at, ov.now)}.` : 'Has not checked in yet.'} ${d.name && d.person ? `Named ${d.name}.` : ''}</p>
         ${d.can_stand_by ? '' : html`<p class="banner banner--wait">${icon('i-dot')}<span>This laptop has an older extension${d.version ? ` (${d.version})` : ''}. Update it to 0.6.0 so it can stand in for the others and open tabs from here.</span></p>`}
-        <p class="field__hint">${d.main ? 'The main laptop. Its WhatsApp and TikTok accounts are the shop’s, and it answers whenever it is ready.' : html`Stands in when the main laptop is off. <button type="button" class="linkbtn" data-main="${d.id}" data-label="${d.label}">Make this the main laptop</button>`}</p>
+        <p class="field__hint">${d.main ? 'The main laptop. Its WhatsApp and TikTok accounts are the shop’s, and it answers whenever it is ready.' : html`Stands in when the main laptop is off. <button type="button" class="linkbtn" data-main="${d.id}" data-label="${d.label}" data-online="${d.online ? '1' : ''}">Make this the main laptop</button>`}</p>
         <ul class="plist">${CHANNELS.map((ch) => {
           const c = d.channels?.[ch] || {};
           const [text, pill, dot, does] = roleText(ov, d, ch);
@@ -132,8 +134,15 @@ function paintPanel() {
       <ul class="plist plist--lanes">${CHANNELS.map((ch) => {
         const l = lanes[ch];
         const who = !l?.leader ? 'Nobody yet' : l.handing_back ? `${l.leader.label}. Handing back to ${ov?.main?.label || 'the main laptop'}` : l.leader.online ? l.leader.label : `${l.leader.label}. Offline`;
-        const shop = l?.account_shown ? `Shop account ${l.account_shown}` : 'Shop account not set yet';
-        return html`<li>${chBadge(ch, true)}<span class="plist__name">${chName(ch)}</span><span class="meta">${who}. ${shop}${l?.account_src === 'owner' ? html` <button type="button" class="linkbtn" data-shop-reset="${ch}">Use the main laptop’s account</button>` : ''}</span></li>`;
+        // Not known: the main laptop cannot read it (an older extension), so no other laptop can stand in until it is set.
+        const shop = l?.account_shown ? `Shop account ${l.account_shown}` : 'Shop account not set. Set it so another laptop can stand in';
+        // Any account the main laptop did not report can be dropped, so the main laptop's is used again.
+        const reset = l?.account && l.account_src !== 'main';
+        return html`<li>${chBadge(ch, true)}<span class="plist__name">${chName(ch)}</span><span class="meta">${who}. ${shop}${reset ? html` <button type="button" class="linkbtn" data-shop-reset="${ch}">Use the main laptop’s account</button>` : ''}</span>
+          ${l && !l.account && ov?.channels?.[ch]?.mode !== 'off' ? html`<details class="fold"><summary>Set the shop account</summary>
+            <form class="row fold__body" data-set-shop="${ch}"><label class="sr-only" for="sa-${ch}">${chName(ch)} account of the shop</label>
+              <input class="input" id="sa-${ch}" name="account" maxlength="160" placeholder="${SHOP_HINT[ch] || ''}" autocomplete="off">
+              <button type="submit" class="btn btn--primary btn--sm">Save</button></form></details>` : ''}</li>`;
       })}</ul>
       <p class="field__hint">${ov?.main ? `${ov.main.label} is the main laptop.` : ''} Another laptop on the shop’s account stands by. It takes over in about a minute and a half if the main laptop goes off or stops working, and hands back when the main laptop is ready again. A laptop on another account stays out.</p></div>
     <div class="dialog__actions"><a class="btn btn--ghost" href="#/connections" data-close>Pair another laptop</a><button type="button" class="btn btn--primary" data-close>Close</button></div>`);
@@ -149,7 +158,7 @@ async function onPanelClick(e) {
   if (main) {
     const ok = await confirmDialog({
       title: `Make ${main.dataset.label} the main laptop?`,
-      text: 'Its WhatsApp and TikTok accounts become the shop’s, unless you set one. It answers once it has been ready for 2 minutes. The others stand in when it is off.',
+      text: `Its WhatsApp and TikTok accounts become the shop’s, unless you set one. It answers once it has been ready for 2 minutes. The others stand in when it is off.${main.dataset.online ? '' : ' It is offline now, so it answers once it is back.'}`,
       confirm: 'Make it the main laptop',
     });
     if (!ok) return;
@@ -179,6 +188,20 @@ async function onPanelClick(e) {
 }
 
 async function onPanelSubmit(e) {
+  const set = e.target.closest('[data-set-shop]');
+  if (set) {
+    e.preventDefault();
+    const ch = set.dataset.setShop;
+    const account = set.elements.namedItem('account').value.trim();
+    if (!account) { toast(`Type the shop’s ${chName(ch)} account.`, { type: 'warn' }); return; }
+    try {
+      const r = await put(`/api/lanes/${encodeURIComponent(`${ch}:inbox`)}/account`, { account });
+      toast(`${chName(ch)} now uses ${r.account_shown || account}.`);
+      document.activeElement?.blur?.();
+      await current.refresh();
+    } catch (err) { toastError(err, 'Not saved. Try again.'); }
+    return;
+  }
   const f = e.target.closest('[data-rename]');
   if (!f) return;
   e.preventDefault();

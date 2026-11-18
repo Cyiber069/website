@@ -47,6 +47,8 @@ function reasonFor(ch: Channel, st: ChannelStatus | undefined): string {
   if (st.state === 'logged_out') return `${NAME[ch]} is signed out on the laptop.`;
   if (st.state === 'blocked') return st.detail ? `${NAME[ch]} is blocking the page: ${st.detail}` : `${NAME[ch]} is blocking the page.`;
   if (st.state === 'no_tab') return `The ${NAME[ch]} tab is not open on the laptop.`;
+  // The main laptop's tab is on another account and no laptop on the shop's account is online (src/pipeline/leader.ts channelsView).
+  if (st.state === 'other_account') return st.last_error || `${NAME[ch]} is on another account on the laptop. Sign in to the shop’s account there.`;
   if (st.last_error) return st.last_error;
   if (st.detail) return st.detail;
   return `The ${NAME[ch]} page could not be read.`;
@@ -54,7 +56,7 @@ function reasonFor(ch: Channel, st: ChannelStatus | undefined): string {
 
 /** Is this channel down right now, and since when (best guess)? */
 function channelDown(st: ChannelStatus | undefined, now: number): { down: boolean; since: number } {
-  if (st && (st.state === 'logged_out' || st.state === 'blocked')) return { down: true, since: now };
+  if (st && (st.state === 'logged_out' || st.state === 'blocked' || st.state === 'other_account')) return { down: true, since: now };
   // Older extensions do not send last_ok_at: nothing to judge by.
   if (!st?.last_ok_at) return { down: false, since: 0 };
   if (now - st.last_ok_at >= CHANNEL_DOWN_MS) return { down: true, since: st.last_ok_at };
@@ -179,6 +181,9 @@ export async function watchUsageOnly(env: Env, now = Date.now()): Promise<void> 
  */
 async function watchOffline(env: Env, settings: Settings, list: DeviceList, alerted: boolean | string, now: number): Promise<void> {
   const d = quietLaptop(list.devices, list.leaders, list.main, settings, now, Math.max(ONLINE_WINDOW_MS, settings.alerts.offline_minutes * MIN));
+  // The laptop the alert named is no longer one anybody waits on (another one answers its lanes, or it is
+  // not the main laptop any more, say an old row left paired): that alert is over. One write, once.
+  if (!d && typeof alerted === 'string' && alerted) { await setState(env.DB, 'offline_alerted', false); return; }
   if (!d || alerted === true || alerted === d.id) return;
   const name = deviceLabel(d);
   await setState(env.DB, 'offline_alerted', d.id);

@@ -14,11 +14,13 @@ import m0011 from '../../migrations/0011_waits_and_videos.sql';
 import m0012 from '../../migrations/0012_d1_diet.sql';
 import m0013 from '../../migrations/0013_people.sql';
 import m0014 from '../../migrations/0014_main_laptop.sql';
+import m0015 from '../../migrations/0015_unvouched_accounts.sql';
 import m0016 from '../../migrations/0016_discounts_by_hand.sql';
 import m0017 from '../../migrations/0017_no_follow_ups.sql';
 import m0018 from '../../migrations/0018_discounts_auto.sql';
 
-const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003], ['0004_agent_discounts', m0004], ['0005_read_indexes', m0005], ['0006_sales', m0006], ['0007_media', m0007], ['0008_reply_speed', m0008], ['0009_vision', m0009], ['0010_send_waits', m0010], ['0011_waits_and_videos', m0011], ['0012_d1_diet', m0012], ['0013_people', m0013], ['0014_main_laptop', m0014], ['0016_discounts_by_hand', m0016], ['0017_no_follow_ups', m0017], ['0018_discounts_auto', m0018]];
+// Applied by name, so 0015 (merged after 0016 to 0018 were live) still runs once wherever it has not.
+const MIGRATIONS: [string, string][] = [['0001_init', m0001], ['0002_kb_fts', m0002], ['0003_discounts', m0003], ['0004_agent_discounts', m0004], ['0005_read_indexes', m0005], ['0006_sales', m0006], ['0007_media', m0007], ['0008_reply_speed', m0008], ['0009_vision', m0009], ['0010_send_waits', m0010], ['0011_waits_and_videos', m0011], ['0012_d1_diet', m0012], ['0013_people', m0013], ['0014_main_laptop', m0014], ['0016_discounts_by_hand', m0016], ['0017_no_follow_ups', m0017], ['0018_discounts_auto', m0018], ['0015_unvouched_accounts', m0015]];
 
 let ready: Promise<void> | null = null;
 

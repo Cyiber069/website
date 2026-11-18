@@ -733,21 +733,27 @@ for the quick check), Shopify is the real client against a fake (`POST /api/test
 usage flush (3) are added. Shopify reads its saved details once per request (`shopifyAuth`, one query); alert throttles are
 one query each (`claimSlot`); `leaseById` is one `UPDATE ... RETURNING`.
 
-### People, laptops and failover (`src/pipeline/leader.ts`, `src/pipeline/commands.ts`, `src/routes/people.ts`, `migrations/0013_people.sql`, `migrations/0014_main_laptop.sql`)
+### People, laptops and failover (`src/pipeline/leader.ts`, `src/pipeline/commands.ts`, `src/routes/people.ts`, `migrations/0013_people.sql`, `migrations/0014_main_laptop.sql`, `migrations/0015_unvouched_accounts.sql`)
 
 * One dashboard login for everyone (the one owner password). Each paired laptop belongs to a person (`devices.person`, asked on the
   Connections screen with the pairing line and in the popup, changed later on the People panel or Connections). The sidebar shows
   one chip per person next to the logo (the phone: in the top bar), with an online dot. Anyone signed in can click a chip: the
   People panel shows that person's laptops, online or not, and for each channel its state, its account (`+447700900123`, the Gmail
   address, `@handle`) and what it does there.
-* The main laptop (`state:main_device`, chosen on the People panel, "Make this the main laptop"; else the oldest laptop still paired,
-  partial index `devices_paired_age`) is the shop's own laptop. `MAIN_SQL` reads it inside the queries that already run (the sync,
-  an inbound report, the dashboard's laptop list, the health check), one or two rows.
+* The main laptop (`state:main_device`, chosen on the People panel, "Make this the main laptop"; else the oldest paired laptop that
+  checked in within a day, through `devices_live_seen`; else the paired laptop that answers most lanes) is the shop's own laptop. A
+  row left paired when the extension was paired again without Disconnect is never the main laptop, so the laptop that works is never
+  "Account not confirmed" because of it. `mainSql(now)` reads it inside the queries that already run (the sync, an inbound report,
+  the dashboard's laptop list, the health check), a few rows. Making an offline laptop the main one says it answers once it is back.
 * The shop's account per lane: Gmail is the inbox chosen in Connections (`settings.gmail.account`); WhatsApp and TikTok (and Gmail
-  while Connections names none) are the main laptop's, written by its sync (`mainLearns`, `lane_leaders.account_src = 'main'`), which
-  replaces one learned before from another laptop. One the owner set on the People panel ("Use this one for the shop",
-  `PUT /api/lanes/:lane/account`, `account_src = 'owner'`) is never replaced by a laptop; clearing it ("Use the main laptop's
-  account") brings the main laptop's back.
+  while Connections names none) are the main laptop's, written by its sync (`mainLearns`, `lane_leaders.account_src = 'main'`). A
+  main laptop the owner chose replaces one learned before; one that is main only by the fallback fills an empty account only, so
+  pairing order never changes the shop's accounts. One the owner set on the People panel ("Use this one for the shop", or "Set the
+  shop account" when none is known, `PUT /api/lanes/:lane/account`, `account_src = 'owner'`) is never replaced by a laptop. Any
+  account the main laptop did not report can be cleared ("Use the main laptop's account"), which brings the main laptop's back.
+  Migration 0015 forgot the WhatsApp and TikTok accounts (and Gmail while Connections names none) learned before 0014 from whichever
+  laptop answered (`account_src = ''`). While the main laptop cannot read an account (0.5.2), the People panel and Live say to set
+  it so another laptop can stand in.
 * Accounts: the adapters send the signed in account in each probe (Gmail from the title, TikTok from the page data or the header
   profile link, WhatsApp from `last-wid-md` in the page's own storage, else the bridge's `me()`). Builds before 0.6.0 send none:
   their Gmail status detail names the inbox (`gmailFromDetail`). `normAccount` makes them one form; a WhatsApp hidden id (`@lid`) is
@@ -757,9 +763,12 @@ one query each (`claimSlot`); `leaseById` is one `UPDATE ... RETURNING`.
     videos are refused (`inboundGate`: decision `none`, reason `other_account`, nothing stored), and it never speaks for the channel on
     Live, Health or in the alerts. The People panel says "Connected to another account" (not an error). Its other lanes work on
     their own.
-  * `unconfirmed`: not the main laptop, and its account (or the shop's) cannot be read. Treated like another account: it never claims
-    or takes over a lane, so an unreadable account never steals one from a laptop whose account matches. "Account not confirmed".
-    The main laptop may answer with an account it cannot read (0.5.2 reads no WhatsApp number or TikTok handle).
+  * `unconfirmed`: not the main laptop, and its account (or the shop's) cannot be read. It never claims or takes over a lane, so an
+    unreadable account never steals one from a laptop whose account matches. "Account not confirmed". The main laptop may answer
+    with an account it cannot read (0.5.2 reads no WhatsApp number or TikTok handle). Its reports: a 0.6.0 build never reads such a
+    lane (refused if one comes); an older build reads it anyway and marks the chat reported, so its report is kept while the shop's
+    account is not known or no other laptop that could answer is online (`laneInfo.answer_online`), with no reply back inline: the
+    laptop that answers sends it. Otherwise refused.
   * `active`: it answers (`lane_leaders`, one row per lane: `whatsapp:inbox`, `gmail:inbox`, `tiktok:inbox`). A ready laptop on the
     shop's account (or the main one) claims a lane nobody answers.
   * `standby`: on the shop's account, another laptop answers. It probes only, never opens a chat, gets no jobs, and takes over (a
@@ -771,30 +780,38 @@ one query each (`claimSlot`); `leaseById` is one `UPDATE ... RETURNING`.
   (role `standby`, no lease, no jobs, its grant names the main laptop; the People panel says "Handing back"); reports are still
   stored but no reply goes back inline. 70 s after the ask (longer than any lane lease) the main laptop takes the lane (`main_back`),
   so two laptops never answer at once; the old one's jobs move as for any takeover (a 0.6.0 build handed them back when it stood by).
-  An ask still open after 4 minutes, or one the main laptop cannot follow (not ready, paused), is dropped. A takeover is a line on
+  An ask still open after 4 minutes, or one the main laptop cannot follow (not ready, paused), is dropped, and so is one from a main
+  laptop that went quiet for 90 s after asking (the one answering drops it at its next sync; the main laptop takes the lane only
+  while its ask still stands, `handover_at` unchanged). A takeover is a line on
   Live and a push (an hour apart at most): "Adrian's laptop took over WhatsApp. Sam's laptop is offline."; the hand back is a good
   line only: "Sam's laptop took over WhatsApp. Adrian's laptop handed it back."
 * The sync answers `lanes: { [lane]: { role: active | standby | other_account | unconfirmed | off, lease_ms, epoch, account, solo,
   leader: { device_id, person, name } } }`. A 0.6.0 lane works only while `role` is active and inside `lease_ms` (counted from when it
-  sent the sync, at most 60 s and always 10 s before a standby may take over). `solo`: no other laptop checked in today (partial
-  index `devices_live_seen`), so it keeps working while the server is away. On losing a lane it hands its queued jobs back
+  sent the sync, at most 60 s and always 10 s before a standby may take over). `solo`, per lane: no other laptop checked in today
+  (partial index `devices_live_seen`) whose last status shows the shop's account there or one that cannot be told (`soloOn`), so
+  it keeps working while the server is away. A laptop on Adrian's own accounts never stops it. On losing a lane it hands its queued jobs back
   (`stood_down`, no try used, only by the laptop that holds them). Jobs a laptop held move when it cannot send them any more
   (`releasePlan`): paused at once (not the one it is typing, `sending_id`), offline after 30 s for a 0.6.0 laptop that was not
   alone, and for an older build or one told it was alone only once their job lease is over. Builds before 0.6.0 ignore `lanes`;
   they get jobs only for the lanes they answer. Their reports: stored from a laptop on the shop's account (or the main one) even
   when it does not answer the lane (such a build marks a chat reported after any final answer, so a message read in a failover or
-  hand back window would be lost otherwise), with its replies left for the laptop that answers; refused from another account or an
-  unconfirmed one.
+  hand back window would be lost otherwise), with its replies left for the laptop that answers; refused from another account, and
+  from an unconfirmed one as above.
 * Live, Health and the health check judge each channel from the laptop answering it while that one is online, else the main laptop
-  (unless it is on another account), else the one answering, else one online and ready on the shop's account; never a laptop on
-  another account (`teamView` `lanes[ch].device` and `role`, `channelsView`). The hero and Health's laptop card talk about a laptop
+  (unless it is on another account), else the one answering, else one online on the shop's account (ready first); never a laptop
+  that is not the main one on another account (`teamView` `lanes[ch].device` and `role`, `channelsView`). When nobody answers, the
+  main laptop is online on another account and no laptop on the shop's account is online (one laptop with its Gmail tab on a
+  personal inbox), the channel is down: judged from the main laptop's tab (blocked as it says, else `other_account`, "WhatsApp is
+  on another account on Sam's laptop. Sign in to the shop's account there."), the owner is told after 10 minutes, and Live shows a
+  red "Connected to another account" that Health counts. The hero and Health's laptop card talk about a laptop
   online that answers a lane, else the main laptop. When the laptop that should answer is offline and a laptop that could take over
   is online but did not, the channel counts as down from its last good read; with no such laptop online only the offline alert
   goes out, as with one laptop. The offline alert names a laptop that answers a lane, or the main laptop for a lane nobody answers
-  (`quietLaptop`); `state:offline_alerted` holds its id and only that laptop checking in again ends it.
-* Cost: a sync reads the leader rows, the main laptop and the count of laptops seen today in one query, reads the other laptops'
-  rows only while it could replace one, and writes only on a handover, an ask for the lane back or a new shop account. A report
-  reads one leader row and the main laptop.
+  (`quietLaptop`); `state:offline_alerted` holds its id and that laptop checking in again ends it, as does the health check once no
+  laptop anybody waits on is quiet (another one answers its lanes, or it is not the main laptop any more).
+* Cost: a sync reads the leader rows, the main laptop and the accounts of the other laptops seen today in one query, reads the
+  other laptops' rows only while it could replace one, and writes only on a handover, an ask for the lane back or a new shop
+  account. A report reads one leader row, the main laptop and the laptops online now.
 * The blue dot on each Live channel card (and each channel on the People panel) opens and pins that tab. On a
   paired laptop `content/dashboard.js` (registered by the service worker for the paired server's address only,
   `scripting` permission) relays `hello` and `open_tab` to the service worker, which answers only a top page of
