@@ -32,7 +32,7 @@ export default {
 
     function paintStyle(err) {
       if (!voice) { setHTML(styleEl, unavailable('The style settings', err)); return; }
-      setHTML(styleEl, html`<form class="card stack form" id="voice-form" novalidate>
+      setHTML(styleEl, html`<form class="card stack form" id="voice-form" data-lock="voice" novalidate>
         <div><h2 class="eyebrow">How the agent writes</h2><p class="meta">It should sound like someone at the shop texting, never like a robot.</p></div>
         ${segmented({ legend: 'Copy the customer\'s style', name: 'mirror_level', value: voice.mirror_level, options: [['match', 'Match them'], ['light', 'A little'], ['off', 'Do not copy']] })}
         <p class="field__hint">Match them: "yoooo brooo" gets "Hey broo" back. Every reply starts with a capital letter. Formal customers always get plain polite replies.</p>

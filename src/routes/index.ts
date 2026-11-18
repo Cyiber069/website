@@ -11,11 +11,13 @@ import * as sales from './sales';
 import * as support from './support';
 import * as testing from './testing';
 import * as voice from './voice';
+import * as locks from './locks';
 
 /** Every API route in one place. Each module owns its own paths. */
 export function buildRouter(): Router {
   const r = new Router();
   auth.register(r);
+  locks.register(r);
   agent.register(r);
   dashboard.register(r);
   kb.register(r);

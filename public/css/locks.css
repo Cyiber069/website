@@ -1,0 +1,36 @@
+/* Settings locks (public/js/locks.js): the lock button at the top right of each settings box, the Locked pill,
+   how a locked box looks, and the PIN dialog. Room is kept beside the box's first line for the button. */
+[data-lock] { position: relative; }
+[data-lock] > :first-child:not(.lockctl) { padding-inline-end: 44px; }
+[data-lock].is-locked > :first-child:not(.lockctl) { padding-inline-end: 136px; }
+
+.lockctl { position: absolute; top: var(--sp-3); right: var(--sp-3); z-index: 2; display: flex; align-items: center; gap: var(--sp-2); }
+[data-lock]:not(.card) > .lockctl { top: 0; right: 0; }
+.lockctl__pill { height: 26px; }
+.lockctl__pill[hidden] { display: none; }
+.lockctl__pill svg { width: 13px; height: 13px; flex: none; }
+.lockctl__btn { width: 36px; min-height: 36px; padding: 0; color: var(--text-3); }
+.lockctl__btn svg { width: 18px; height: 18px; }
+.lockctl__btn.is-on { color: var(--info); background: var(--info-soft); box-shadow: inset 0 0 0 1px var(--info-line); }
+@media (hover: none), (pointer: coarse) {
+  .lockctl__btn { width: 44px; min-height: 44px; }
+  [data-lock] > :first-child:not(.lockctl) { padding-inline-end: 52px; }
+  [data-lock].is-locked > :first-child:not(.lockctl) { padding-inline-end: 144px; }
+}
+
+/* A locked part with no button of its own (Knowledge: adding files, Teach me) says so where its controls are. */
+.lockpart { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.lockpart .meta { flex: 1 1 140px; min-width: 0; }
+
+/* A locked box: what would change something is switched off and looks it. */
+.is-locked :is(.input, select, textarea):disabled { opacity: 0.6; cursor: not-allowed; }
+.is-locked :is(.seg__opt, .switch, .check, .choice):has(input:disabled) { opacity: 0.55; cursor: not-allowed; }
+.is-locked :is(.chip, .btn--icon):disabled { opacity: 0.55; cursor: not-allowed; }
+.is-locked .drop { opacity: 0.55; cursor: not-allowed; }
+
+/* The PIN dialog */
+.lockdlg__pin { letter-spacing: 0.3em; font-variant-numeric: tabular-nums; }
+.lockdlg__foot { margin-top: var(--sp-1); }
+/* On a phone the shared dialog stacks its buttons; keep them one line high (flex-basis 100% in a column is a height). */
+@media (max-width: 479px) { .lockdlg .dialog__actions .btn { flex: 0 0 auto; width: 100%; } }
+.lockdlg__link { display: inline; min-height: 0; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }

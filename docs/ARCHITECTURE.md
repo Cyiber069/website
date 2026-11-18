@@ -36,7 +36,7 @@ This file is the contract between the parts. Keep it true when you change code.
 | `migrations/` | D1 schema | add new numbered files, never edit applied ones |
 | `src/index.ts` | entry: API router, static assets, cron | |
 | `src/types.ts` | shared types | the brain / pipeline contract lives here |
-| `src/lib/` | http router, db helpers, auth, crypto, settings, time, events, push, in-isolate caches (`cache.ts`), the daily database budget guard (`budget.ts`) | |
+| `src/lib/` | http router, db helpers, auth, crypto, settings, time, events, push, in-isolate caches (`cache.ts`), the daily database budget guard (`budget.ts`), settings locks (`locks.ts`) | |
 | `src/pipeline/` | inbound (store + decide + queue), outbox, urgent, alerts | the spine |
 | `src/brain/` | tone profile, style sanitizer, prompts, LLM providers | exports via `src/brain/index.ts` |
 | `src/kb/` | knowledge base: extract, chunk, search, store sync | exports via `src/kb/index.ts` |
@@ -432,6 +432,38 @@ Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook
 * `PUT /api/connections/shopify { myshopify_domain?, client_id?, client_secret?, admin_token?, webhook_secret? }`; `POST /api/connections/shopify/test` -> `{ ok, shop_name?, checkouts?, error? }`; `DELETE /api/connections/shopify`
 * `POST /api/push/subscribe { endpoint, keys: { p256dh, auth } }`; `POST /api/push/unsubscribe { endpoint }`; `POST /api/push/test`
 
+### Settings locks (`owner`, `src/routes/locks.ts`, rules in `src/lib/locks.ts`, dashboard `public/js/locks.js`)
+
+The owner locks a settings box with a PIN so it cannot be changed, on every device.
+
+* `GET /api/locks` -> `{ pin_set, locked: [id], sections: [{ id, label, screen, locked, locked_at }] }`, from the settings read (no extra query).
+* `POST /api/locks/sections/:id { locked, pin }` -> the same view. `POST /api/locks/pin { pin, old_pin? }` sets the PIN (first time, no
+  old PIN) or changes it (the old PIN is checked). Errors: 400 `invalid_pin` (4 to 8 digits as text), 404 `unknown_section`, 409 `no_pin` |
+  `pin_exists`, 403 `wrong_pin` (`tries_left`), 429 `pin_blocked` (`retry_at`).
+* Boxes (`LOCK_SECTIONS`) and the changes each covers (`LOCK_RULES`, `* ` is any of POST PUT PATCH DELETE, a last `*` is the rest of the path):
+  `voice` PUT settings/voice; `brain` PUT settings/brain, connections/brain[/*]; `vision` PUT settings/vision, connections/vision[/*];
+  `shopify` PUT settings/store, connections/shopify[/*]; `alerts` PUT settings/alerts, POST push/subscribe and push/unsubscribe;
+  `channels` PUT settings/channels; `gmail` PUT settings/gmail; `pacing` PUT settings/pacing; `laptops` devices[/*] (pair code, remove);
+  `recovery_message` PUT recovery/template; `recovery_settings` PUT settings/recovery; `discounts` PUT settings/discounts;
+  `sales` PUT sales/settings and settings/sales; `knowledge` kb[/*] (upload, note, edit, delete, store sync, Teach me answers and skips).
+  A new owner route that changes what a box shows must be added there.
+* Enforcement is one hook in `handleApi` (`src/index.ts`) after the owner session check: a change whose path (read like the router: empty
+  segments dropped, segments decoded) maps to a locked box is refused with 423 `locked`, "This is locked. Unlock it with your PIN.", plus
+  `section` and `locks { pin, locked }`. Reads are never refused. `NEVER_LOCKED` is checked first: the agent switch and `POST /api/panic`,
+  `PUT /api/settings/agent`, Urgent, review, Inbox sends, pauses and opt outs, the Urgent Approve code, the support link, setup, login,
+  logout, password, the lock routes, `/api/agent/*`, hooks, test helpers and the Test buttons. The agent's own work never goes through it.
+* Every owner answer carries `x-acx-locks: {"pin":true,"locked":["voice"]}` (`withLockHeader`), so an open dashboard follows a lock made
+  on another device at its next refresh. `api.js` hands it and every 423 to `locks.js`.
+* State: `state:locks` `{ pin, sections: { id: locked_at } }` is in `BUNDLED_STATE` (read with the settings, cached 30 s). A lock change
+  writes it and `state:settings_rev` in one batch, so other isolates drop their cached copy on their next signed in request.
+  `state:lock_pin` `{ hash, salt, iterations, set_at }` is PBKDF2 only. `state:lock_fails` `{ fails, until }`: every PIN check takes a try
+  first in one statement (parallel guesses all count), a right PIN sets it to 0, the 5th wrong one blocks every PIN check for 15 min.
+* Dashboard: a screen marks a box `data-lock="<id>"` (button at the top right and the Locked pill) or `data-lock-part="<id>"` (governed, a
+  short Locked line once a page); `data-lock-keep` keeps a control usable. Copy, Try again and Test buttons always stay usable. A locked
+  box's inputs, selects, switches and buttons are disabled, and clicks, submits and file drops in it are stopped.
+* Forgotten PIN: `DELETE FROM settings WHERE key IN ('state:lock_pin', 'state:locks', 'state:lock_fails')` in the D1 console
+  (docs/SETUP.md). Everything is unlocked within the 30 s settings cache.
+
 ### Shopify webhooks (`public`, `src/routes/hooks.ts`)
 
 * `POST /api/hooks/shopify` verified with `X-Shopify-Hmac-Sha256`. Topics: checkout create / update, order create.
@@ -637,4 +669,5 @@ conversations with a context note about the checkout.
 * Photos or videos are not being described: `note` rows with `vision_error` (Google said no: the code and message), `video_capture` (the tab could not get the file, for example `no_viewer`, `no_video_in_viewer`, `viewer_still_open`) or `video_upload` (the worker could not send it, for example `daily_cap`). `media.vision` holds the last error per picture. Test the key on the Connections screen.
 * Fix a broken selector: `PUT /api/selectors` or the `state:selectors_override` settings row, shape
   `{ "rev": n, "pack": { "whatsapp": { "send_button": ["..."] } } }`. Check `diagnostics` first.
+* The owner forgot the settings PIN: delete `state:lock_pin`, `state:locks` and `state:lock_fails` from `settings` (section 5, Settings locks).
 * Deploys happen on push to the connected branch (Cloudflare Workers Builds).

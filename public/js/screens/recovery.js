@@ -73,7 +73,7 @@ export default {
           <article class="stat"><h2 class="stat__label">Came back and bought</h2><p class="stat__value">${num(stats.recovered_30d)}</p></article>
         </section>
 
-        <section class="card stack" id="teach" aria-labelledby="teach-h">
+        <section class="card stack" id="teach" aria-labelledby="teach-h" data-lock="recovery_message">
           <div class="card__head"><div><h2 class="eyebrow" id="teach-h">The message</h2><p class="meta">${tpl.approved ? `Approved${tpl.updated_at ? ' ' + dayClock(tpl.updated_at) : ''}. Edit and approve again to change it.` : tpl.text ? 'Saved as a draft. Not approved yet, so nothing is sent.' : 'Nothing written yet.'}</p></div>
             <span class="pill ${tpl.approved ? 'pill--live' : 'pill--wait'}"><span class="dot ${tpl.approved ? '' : 'dot--wait'}" aria-hidden="true"></span>${tpl.approved ? 'Approved' : 'Not approved'}</span></div>
           <form class="stack" id="rough-form" novalidate>
@@ -96,7 +96,7 @@ export default {
           </form>
         </section>
 
-        <section class="card stack" id="rec-settings" aria-labelledby="set-h">
+        <section class="card stack" id="rec-settings" aria-labelledby="set-h" data-lock="recovery_settings">
           <h2 class="eyebrow" id="set-h">Settings</h2>
           <form class="stack form" id="set-form" novalidate>
             ${switchRow({ name: 'enabled', checked: s.enabled, label: 'Send checkout reminders', hint: `Every day at ${String(s.send_hour_london ?? 20).padStart(2, '0')}:00 UK time` })}

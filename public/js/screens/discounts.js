@@ -50,7 +50,7 @@ const MODES = [
 
 function settingsCard(s) {
   const mode = s?.mode || 'auto';
-  return html`<section class="card stack" aria-labelledby="dc-set-h">
+  return html`<section class="card stack" aria-labelledby="dc-set-h" data-lock="discounts">
     <div class="card__head"><div><h2 class="eyebrow" id="dc-set-h">When a creator asks for a code</h2><p class="meta" id="dc-mode-say">${(MODES.find((m) => m[0] === mode) || MODES[0])[2]}</p></div></div>
     <form class="stack form" id="dc-set" novalidate>
       ${segmented({ legend: 'What the agent does', name: 'mode', value: mode, options: MODES.map(([v, t]) => [v, t]) })}

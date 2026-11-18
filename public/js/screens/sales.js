@@ -59,7 +59,7 @@ function followCard(list) {
 function settingsCard(s) {
   const style = STYLES.find((x) => x[0] === s.style) || STYLES[0];
   const hours = HOURS.some(([h]) => h === s.follow_up_hours) ? HOURS : [...HOURS, [s.follow_up_hours, `${s.follow_up_hours} hours`]].sort((a, b) => a[0] - b[0]);
-  return html`<section class="card stack" aria-labelledby="sl-set-h">
+  return html`<section class="card stack" aria-labelledby="sl-set-h" data-lock="sales">
     <div class="card__head"><div><h2 class="eyebrow" id="sl-set-h">How it sells</h2><p class="meta" id="sl-style-say">${style[2]}</p></div></div>
     <form class="stack form" id="sl-set" novalidate>
       ${segmented({ legend: 'Sales style', name: 'style', value: s.style, options: STYLES.map(([v, t]) => [v, t]) })}

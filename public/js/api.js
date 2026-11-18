@@ -17,6 +17,9 @@ export class AuthError extends Error { constructor() { super('signed_out'); this
 
 let onSignedOut = () => {};
 export const setSignedOutHandler = (fn) => { onSignedOut = fn; };
+// Settings locks (locks.js): owner answers carry what is locked (x-acx-locks), and a 423 says a box is locked.
+let onLocks = () => {};
+export const setLocksWatcher = (fn) => { onLocks = fn; };
 
 export async function api(path, { method, body, form, quiet401 = false } = {}) {
   const init = { method: method || (body !== undefined || form ? 'POST' : 'GET'), credentials: 'same-origin', headers: { accept: 'application/json' } };
@@ -32,6 +35,8 @@ export async function api(path, { method, body, form, quiet401 = false } = {}) {
   let data = null;
   let notJson = false;
   if (text) { try { data = JSON.parse(text); } catch { notJson = true; } }
+  const locks = res.headers.get('x-acx-locks');
+  if (locks || res.status === 423) { try { onLocks(locks, res.status === 423 ? data : null); } catch (e) { console.error(e); } }
   if (res.status === 401 && !quiet401) { onSignedOut(); throw new AuthError(); }
   if (!res.ok || notJson) {
     const d = data && typeof data === 'object' ? data : {};

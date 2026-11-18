@@ -6,6 +6,7 @@ import { buildRouter } from './routes';
 import type { Env } from './types';
 import { flushUsage, meteredDb } from './lib/usage';
 import { bumpDashboard } from './lib/cache';
+import { assertUnlocked, withLockHeader } from './lib/locks';
 
 const router = buildRouter();
 
@@ -85,6 +86,8 @@ async function handleApi(req: Request, env: Env, exec: ExecutionContext, url: UR
   if (route.auth === 'owner') {
     assertSameOrigin(req);
     if (!(await hasOwnerSession(env, req))) throw new HttpError(401, 'signed_out', 'Sign in again');
+    // Settings locks: a change to a box the owner locked with the PIN is refused (423). Reads never are.
+    await assertUnlocked(env.DB, req.method, url.pathname);
   } else if (route.auth === 'device') {
     c.device = await deviceFromRequest(env, req);
     if (!c.device) throw new HttpError(401, 'bad_device_token', 'This laptop is not paired any more');
@@ -92,7 +95,9 @@ async function handleApi(req: Request, env: Env, exec: ExecutionContext, url: UR
     // Public browser routes (sign in, first run). The extension and Shopify call from other origins.
     assertSameOrigin(req);
   }
-  return route.handler(c);
+  const res = await route.handler(c);
+  // Every owner answer carries what is locked, so the dashboard on every device follows it (public/js/locks.js).
+  return route.auth === 'owner' ? withLockHeader(env.DB, res) : res;
 }
 
 export default {

@@ -43,7 +43,7 @@ function mountList(view, ctx) {
 
   setHTML(view, html`
     <p class="muted lead" id="kb-lead">Everything the agent is allowed to say comes from here. If it is not here, it asks you.</p>
-    <section class="stack" aria-label="Add knowledge">
+    <section class="stack" aria-label="Add knowledge" data-lock-part="knowledge">
       <label class="drop" id="drop" tabindex="-1">
         ${icon('i-upload', 'drop__icon')}
         <span class="drop__title">Drop files here</span>
@@ -66,15 +66,15 @@ function mountList(view, ctx) {
         <div class="wrap"><button type="submit" class="btn btn--primary">Save note</button><button type="button" class="btn btn--ghost" data-action="note-close">Cancel</button></div>
       </form>
     </section>
-    <section id="gaps" hidden></section>
-    <section class="card" aria-labelledby="docs-h">
+    <section id="gaps" hidden data-lock-part="knowledge"></section>
+    <section class="card" aria-labelledby="docs-h" data-lock="knowledge">
       <div class="card__head"><h2 class="eyebrow" id="docs-h">What the agent knows</h2><span class="meta num" id="totals"></span></div>
-      <div class="inbox__filters">
+      <div class="inbox__filters" data-lock-keep>
         <div class="search"><label class="sr-only" for="kb-q">Search knowledge</label>${icon('i-search', 'search__icon')}<input class="input" id="kb-q" type="search" placeholder="Search titles and text" autocomplete="off"></div>
         <div class="chips" role="group" aria-label="Filter by type"><button type="button" class="chip" data-cat="" aria-pressed="true">All</button>${CATEGORIES.map(([v, t]) => html`<button type="button" class="chip" data-cat="${v}" aria-pressed="false">${t}</button>`)}</div>
       </div>
       <ul class="docs" id="docs">${[0, 1, 2].map(() => html`<li class="doc"><span class="doc__main"><span class="skel skel--title" style="--w:40%"></span><span class="skel" style="--w:70%"></span></span></li>`)}</ul>
-      <button type="button" class="btn btn--ghost btn--block" id="docs-more" data-action="more" hidden>Show more</button>
+      <button type="button" class="btn btn--ghost btn--block" id="docs-more" data-action="more" data-lock-keep hidden>Show more</button>
     </section>`);
 
   const docsEl = $('#docs', view);
@@ -89,7 +89,7 @@ function mountList(view, ctx) {
     const gapsEl = $('#gaps', view);
     gapsEl.hidden = gaps.length === 0;
     if (gaps.length) {
-      if (!$('#gap-list', gapsEl)) setHTML(gapsEl, html`<div class="sechead"><h2 class="eyebrow">Teach me</h2><p class="meta">Things customers ask that the agent cannot answer yet. One box each.</p></div><div class="ulist" id="gap-list"></div><button type="button" class="btn btn--ghost btn--block" id="gaps-more" data-action="gaps-more" hidden>Show more</button>`);
+      if (!$('#gap-list', gapsEl)) setHTML(gapsEl, html`<div class="sechead"><h2 class="eyebrow">Teach me</h2><p class="meta">Things customers ask that the agent cannot answer yet. One box each.</p></div><div class="ulist" id="gap-list"></div><button type="button" class="btn btn--ghost btn--block" id="gaps-more" data-action="gaps-more" data-lock-keep hidden>Show more</button>`);
       syncList($('#gap-list', gapsEl), gaps.slice(0, gapLimit).map((g, i) => ({ ...g, i })), { key: (g) => g.question, render: (g) => gapCard(g, g.i), sig: (g) => g.question });
       const gm = $('#gaps-more', gapsEl); gm.hidden = gaps.length <= gapLimit; gm.textContent = `Show ${gaps.length - gapLimit} more ${gaps.length - gapLimit === 1 ? 'question' : 'questions'}`;
       $('.sechead .meta', gapsEl).textContent = `${gaps.length} ${gaps.length === 1 ? 'thing' : 'things'} customers ask that the agent cannot answer yet. One box each.`;
@@ -261,7 +261,7 @@ function mountDoc(view, ctx, id) {
     ctx.setTitle('Knowledge');
     setHTML(view, html`
       <a class="backlink" href="#/knowledge">${icon('i-back')}All knowledge</a>
-      <form class="card stack" id="doc-form" novalidate>
+      <form class="card stack" id="doc-form" data-lock="knowledge" novalidate>
         <p class="meta">${SOURCE[doc.source] || 'Added'}${doc.filename ? ` · ${doc.filename}` : ''} · ${words(doc.token_estimate)} · updated ${ago(doc.updated_at)}</p>
         ${field({ label: 'Title', name: 'title', value: doc.title, attrs: 'maxlength="160" required' })}
         <div class="field"><label class="field__label" for="doc-cat">Type</label>${catSelect(doc.category, 'doc-cat')}</div>

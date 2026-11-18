@@ -23,13 +23,13 @@ export default {
 
     setHTML(view, html`
       <nav class="chips jump" aria-label="Jump to">${[['laptop', 'Laptop'], ['brain', 'AI brain'], ['vision', 'Photos and videos'], ['shopify', 'Shopify'], ['notify', 'Notifications'], ['channels', 'Channels'], ['pacing', 'Pacing'], ['account', 'Password']].map(([id, t]) => html`<a class="chip" href="#sec-${id}" data-jump>${t}</a>`)}</nav>
-      <section class="card stack" id="sec-laptop" aria-labelledby="h-laptop">${skeletonCards(1)}</section>
-      <section class="card stack" id="sec-brain" aria-labelledby="h-brain">${skeletonCards(1)}</section>
-      <section class="card stack" id="sec-vision" aria-labelledby="h-vision">${skeletonCards(1)}</section>
-      <section class="card stack" id="sec-shopify" aria-labelledby="h-shopify">${skeletonCards(1)}</section>
-      <section class="card stack" id="sec-notify" aria-labelledby="h-notify">${skeletonCards(1)}</section>
-      <section class="card stack" id="sec-channels" aria-labelledby="h-channels">${skeletonCards(1)}</section>
-      <section class="card stack" id="sec-pacing" aria-labelledby="h-pacing">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-laptop" aria-labelledby="h-laptop" data-lock="laptops">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-brain" aria-labelledby="h-brain" data-lock="brain">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-vision" aria-labelledby="h-vision" data-lock="vision">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-shopify" aria-labelledby="h-shopify" data-lock="shopify">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-notify" aria-labelledby="h-notify" data-lock="alerts">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-channels" aria-labelledby="h-channels" data-lock="channels">${skeletonCards(1)}</section>
+      <section class="card stack" id="sec-pacing" aria-labelledby="h-pacing" data-lock="pacing">${skeletonCards(1)}</section>
       <section class="card stack" id="sec-account" aria-labelledby="h-account"></section>`);
 
     const head = (id, ic, title, sub, right = '') => html`<div class="card__head sec__head"><div class="row">${icon(ic, 'sec__icon')}<div><h2 class="sec__title" id="h-${id}">${title}</h2><p class="meta">${sub}</p></div></div>${right}</div>`;
@@ -186,7 +186,7 @@ export default {
         ${CHANNELS.map((c) => { const mode = settings.channels?.[c]?.mode || 'off'; return html`<div class="chmode">${chBadge(c)}
           ${segmented({ legend: html`<span class="sr-only">${chName(c)} mode</span>`, name: `mode-${c}`, value: mode, action: `mode:${c}`, options: [['auto', 'Auto'], ['review', 'Ask me first'], ['off', 'Off']] })}
           <p class="field__hint" id="mode-hint-${c}">${MODE_HINT[mode]}</p></div>`; })}
-        <form class="stack form" id="gmail-form" novalidate>
+        <form class="stack form" id="gmail-form" data-lock="gmail" novalidate>
           ${field({ label: 'Gmail inbox the agent uses', name: 'gmail_account', type: 'email', value: settings.gmail?.account || '', placeholder: 'shop@gmail.com', attrs: 'autocomplete="off" spellcheck="false" inputmode="email"', hint: 'Sign in to this address in Chrome on the laptop. The agent opens this inbox and never replies from any other. Leave empty to use the first account in Chrome.' })}
           ${field({ label: 'Never answer emails from', name: 'ignore_senders', textarea: true, rows: 5, value: (settings.gmail?.ignore_senders || []).join('\n'), placeholder: 'pinterest.com\nsupplier@example.com', attrs: 'spellcheck="false"', hint: 'One per line. A whole site like pinterest.com, or one address. These are never answered. The agent also skips anything that is not from a customer.' })}
           <p class="form-error" role="alert" hidden></p>

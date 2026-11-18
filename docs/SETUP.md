@@ -76,6 +76,26 @@ Read this before choosing "everyone": first messages to people who never wrote t
 
 Open your site address in the phone browser, sign in, add it to the home screen, then **Connections, Phone notifications, Turn on**. On iPhone it must be added to the home screen first.
 
+## 10. Lock settings with a PIN (if you want)
+
+Every settings box has a lock button at its top right. Press it and pick a PIN of 4 to 8 numbers the first time. The box is then locked on every device, your phone and your laptop. Nobody can change it until it is unlocked with the PIN. You need the PIN to lock as well as to unlock. To change the PIN press any lock button, then **Change PIN**.
+
+Locks never stop the agent working. These always work, even with everything locked: the agent switch, **Stop everything**, answering Urgent, sending and approving replies, the report link for Claude, and signing in and out.
+
+After 5 wrong PINs the PIN does not work for 15 minutes on any device.
+
+### Forgot your PIN
+
+1. Sign in at dash.cloudflare.com.
+2. Open **Storage & databases**, then **D1 SQL database**, then **acx-agent**.
+3. Open **Console**, paste this line and press **Execute**:
+
+```sql
+DELETE FROM settings WHERE key IN ('state:lock_pin', 'state:locks', 'state:lock_fails');
+```
+
+4. Wait one minute and reload the dashboard. Everything is unlocked and there is no PIN. Press any lock button to pick a new one.
+
 ## Everyday
 
 * **Urgent** is where it asks you. Type a rough answer, it writes it properly and the laptop sends it. Or press **Tell the agent what's going on**, say what is happening in your own words ("the 72v batteries are back on Friday") and press **Let the agent reply**. It writes the reply itself in the customer's style and never quotes your note. With **Remember this for next time** on, a note that helps with other customers is saved in Knowledge, where you can change or delete it. The note also stays with that chat.
