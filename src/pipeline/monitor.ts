@@ -1,7 +1,7 @@
 // Every minute: is the agent really working? Tells the owner once per problem, and writes a
 // "back to normal" line in the activity feed when it is fixed. Built to be cheap on D1: a handful
 // of rows read per run and a write only when something changed.
-import type { Channel, DeviceRow, Env, Settings } from '../types';
+import type { Channel, Env, Settings } from '../types';
 import { CHANNELS } from '../types';
 import { all, parseJson, run } from '../lib/db';
 import { logEvent } from '../lib/events';
@@ -9,9 +9,9 @@ import { getSettings, setState } from '../lib/settings';
 import { HOUR, MIN } from '../lib/time';
 import { usageToday, type D1Usage } from '../lib/usage';
 import { HIGH_PCT } from '../lib/budget';
-import { ONLINE_WINDOW_MS, type ChannelStatus, type DeviceStatus } from '../routes/agent';
+import { ONLINE_WINDOW_MS, listDevices, type ChannelStatus, type DeviceList, type DeviceStatus } from '../routes/agent';
 import { alertOwner } from './alerts';
-import { channelsView, type WatchedDevice } from './leader';
+import { canAnswerOnline, channelsView, deviceLabel, quietLaptop } from './leader';
 
 /** A channel that has not read its page for this long, or is signed out or blocked this long, is down. */
 export const CHANNEL_DOWN_MS = 10 * MIN;
@@ -34,10 +34,11 @@ export const EMPTY_MONITOR: MonitorState = { channels: {}, stuck: [], stuck_by_c
 const NAME: Record<Channel, string> = { whatsapp: 'WhatsApp', gmail: 'Gmail', tiktok: 'TikTok' };
 
 /** The state rows the monitor and the dashboard need, in one query. */
-export async function monitorRows(db: D1Database): Promise<{ monitor: MonitorState; usage: D1Usage | null; offlineAlerted: boolean }> {
+export async function monitorRows(db: D1Database): Promise<{ monitor: MonitorState; usage: D1Usage | null; offlineAlerted: boolean | string }> {
   const rows = await all<{ key: string; value: string }>(db, `SELECT key, value FROM settings WHERE key IN ('state:monitor', 'state:d1_usage', 'state:offline_alerted')`);
   const get = <T>(k: string, fb: T): T => parseJson<T>(rows.find((r) => r.key === `state:${k}`)?.value, fb);
-  return { monitor: { ...EMPTY_MONITOR, ...get<Partial<MonitorState>>('monitor', {}) }, usage: get<D1Usage | null>('d1_usage', null), offlineAlerted: get('offline_alerted', false) };
+  // The offline alert names the laptop it was about (its id), or true from before it did.
+  return { monitor: { ...EMPTY_MONITOR, ...get<Partial<MonitorState>>('monitor', {}) }, usage: get<D1Usage | null>('d1_usage', null), offlineAlerted: get<boolean | string>('offline_alerted', false) };
 }
 
 /** Why a channel is not working, in plain words. */
@@ -171,41 +172,37 @@ export async function watchUsageOnly(env: Env, now = Date.now()): Promise<void> 
   if (JSON.stringify(m) !== before) await setState(env.DB, 'monitor', m);
 }
 
-async function watchOffline(env: Env, settings: Settings, d: Pick<DeviceRow, 'name' | 'last_seen_at'>, alerted: boolean, now: number): Promise<void> {
-  if (!d.last_seen_at || alerted) return;
-  if (now - d.last_seen_at < Math.max(ONLINE_WINDOW_MS, settings.alerts.offline_minutes * MIN)) return;
-  await setState(env.DB, 'offline_alerted', true);
-  await logEvent(env.DB, { level: 'error', type: 'device_offline', message: `${d.name} has gone quiet. Nothing can be sent until Chrome is open on it again.` });
-  await alertOwner(env, settings, { kind: 'offline', title: 'Your laptop agent is offline', body: `${d.name} stopped checking in. Customers are not being answered.`, path: '/#/health' });
+/**
+ * A laptop that answers a lane (or the main laptop, for a lane nobody answers) stopped checking in. A
+ * laptop that answers nothing, such as one on another account, is never an alert. Told once per laptop:
+ * the flag (its id) ends only when that laptop checks in again (src/routes/agent.ts).
+ */
+async function watchOffline(env: Env, settings: Settings, list: DeviceList, alerted: boolean | string, now: number): Promise<void> {
+  const d = quietLaptop(list.devices, list.leaders, list.main, settings, now, Math.max(ONLINE_WINDOW_MS, settings.alerts.offline_minutes * MIN));
+  if (!d || alerted === true || alerted === d.id) return;
+  const name = deviceLabel(d);
+  await setState(env.DB, 'offline_alerted', d.id);
+  await logEvent(env.DB, { level: 'error', type: 'device_offline', message: `${name} has gone quiet. Nothing can be sent until Chrome is open on it again.` });
+  await alertOwner(env, settings, { kind: 'offline', title: 'Your laptop agent is offline', body: `${name} stopped checking in. Customers are not being answered.`, path: '/#/health' });
 }
 
 /** The every minute health check. */
 export async function watchHealth(env: Env, now = Date.now()): Promise<void> {
   const db = env.DB;
   const settings = await getSettings(db);
-  // The newest laptops, with who answers each lane (src/pipeline/leader.ts) in the same query.
-  const [{ monitor, usage, offlineAlerted }, devices] = await Promise.all([
-    monitorRows(db),
-    // Through the partial index devices_live_seen (migration 0013): the newest five rows, never every laptop ever paired.
-    all<WatchedDevice>(db,
-      `SELECT id, name, person, last_seen_at, status,
-         (SELECT json_group_array(json_object('lane', lane, 'account', account, 'device_id', device_id)) FROM lane_leaders) AS leaders
-       FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5`),
-  ]);
+  // The newest laptops and the main one, with who answers each lane (src/pipeline/leader.ts), in one query.
+  const [{ monitor, usage, offlineAlerted }, list] = await Promise.all([monitorRows(db), listDevices(db, now)]);
   const m: MonitorState = JSON.parse(JSON.stringify(monitor));
   const before = JSON.stringify(m);
 
   // Database use is watched even with the agent off: the dashboard alone uses rows too.
   await watchUsage(env, settings, usage, m, now);
   if (settings.agent.enabled) {
-    // The newest laptop: when it is offline, every laptop is.
-    const d = devices[0];
-    if (d) {
-      await watchOffline(env, settings, d, offlineAlerted, now);
-      const online = d.last_seen_at !== null && now - d.last_seen_at < ONLINE_WINDOW_MS;
-      // Offline has its own alert. Channel problems are judged only while a laptop is checking in, each
-      // from the laptop that answers it (or the best one online while nobody does).
-      if (online) await watchChannels(env, settings, channelsView(devices, settings, now, ONLINE_WINDOW_MS), m, now);
+    if (list.devices.length) {
+      await watchOffline(env, settings, list, offlineAlerted, now);
+      // Offline has its own alert. Channel problems are judged only while a laptop that could answer is
+      // checking in, each from the laptop that answers it, else the main laptop, never one on another account.
+      if (canAnswerOnline(list.devices, list.leaders, list.main, settings)) await watchChannels(env, settings, channelsView(list.devices, list.leaders, list.main, settings, now), m, now);
     }
     await watchStuck(env, settings, m, now);
     await watchAi(env, settings, m, now);

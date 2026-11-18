@@ -241,6 +241,8 @@ export async function runChecks() {
       'whatsapp:inbox': { role: 'active', lease_ms: 60_000, solo: false, epoch: 3, account: '447700900123', leader: { device_id: 'dev_a', person: 'Sam' } },
       'gmail:inbox': { role: 'standby', lease_ms: 0, leader: { device_id: 'dev_b', person: 'Adrian' } },
       'tiktok:inbox': { role: 'active', lease_ms: 0, solo: true },
+      'shop:other': { role: 'other_account', lease_ms: 60_000, solo: true },
+      'shop:unsure': { role: 'unconfirmed', lease_ms: 60_000, solo: true },
       junk: null,
     }, sent);
     assert.equal(core.readGrants(undefined, sent), null, 'an older server elects nobody: every lane works');
@@ -250,6 +252,8 @@ export async function runChecks() {
     assert.ok(!core.grantActive(g['gmail:inbox'], sent), 'a standby never reads or sends');
     assert.ok(core.grantActive(g['tiktok:inbox'], sent + 3600_000), 'the only laptop paired keeps working while the server is away');
     assert.ok(core.grantActive(undefined, sent), 'a lane the server did not name works');
+    assert.ok(!core.grantActive(g['shop:other'], sent), 'a tab on another account never reads or sends, alone or not');
+    assert.ok(!core.grantActive(g['shop:unsure'], sent), 'nor does one whose account the server cannot confirm');
     assert.equal(core.grantChange(g['whatsapp:inbox'], g['gmail:inbox']), 'stood_down');
     assert.equal(core.grantChange(g['gmail:inbox'], g['whatsapp:inbox']), 'promoted');
     assert.equal(core.grantChange(g['whatsapp:inbox'], g['whatsapp:inbox']), null);

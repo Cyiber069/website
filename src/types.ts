@@ -421,6 +421,9 @@ export interface LaneLeaderRow {
   lane: string; account: string; device_id: string; epoch: number; since: number; reason: string; prev_device: string;
   /** 1 while the laptop that answers was told it is the only one paired. */
   solo: number;
+  /** Migration 0014: who set `account` ('owner', 'main' or ''), and when the main laptop asked for the lane back (0 for none). */
+  account_src: string;
+  handover_at: number;
 }
 
 export interface CheckoutRow {

@@ -1,10 +1,13 @@
 // End to end test of people, failover and the blue dot on Live: node test/e2e/people.e2e.mjs   (exit code 0 = pass)
 //
 // One Chromium with the unpacked extension is "Sam's laptop" with the three mock sites. A second laptop,
-// "Adrian's", is played through the API with its own token (it says its WhatsApp is ready on the same
-// number). The phone is a second browser with no extension. Checked:
+// "Adrian's", is played through the API with its own token. It was paired first, so it is the main
+// laptop: its WhatsApp is on the shop's number, and its TikTok on Adrian's own account. The owner sets the
+// shop's Gmail and TikTok accounts on the People panel. The phone is a second browser with no extension.
+// Checked:
 //  1. Pairing asks whose laptop it is. The chips next to the logo show Sam and Adrian, and the People
 //     panel shows this laptop, each channel and its account (the WhatsApp number from the page itself).
+//     Adrian's TikTok says "Connected to another account", and this laptop answers TikTok.
 //  2. While Adrian's laptop answers WhatsApp, this one stands by: it never opens a new chat, and the
 //     page changing all the time does not make it sync every few seconds.
 //  3. The blue dot on this laptop opens and pins the tab at once (a closed tab is opened, an unpinned
@@ -12,6 +15,8 @@
 //  4. From the phone, the dot sends a command to the laptop picked: it opens there on its next sync and
 //     the phone says so.
 //  5. Adrian's laptop goes offline: this one takes WhatsApp over and answers the waiting customer, once.
+//  6. Adrian's laptop (the main one) is back and ready: this one stands by again at once when the lane
+//     goes back, and does not answer a new customer while it does.
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -78,13 +83,20 @@ async function main() {
   await api('/api/settings/channels', { method: 'PUT', body: { whatsapp: { mode: 'auto' }, gmail: { mode: 'auto' }, tiktok: { mode: 'auto' } } });
   await api('/api/selectors', { method: 'PUT', body: { override: { gmail: { timing: { afterSendMs: 250, waitVisibleMs: 6000, waitHiddenMs: 6000 } } } } });
 
-  // Adrian's laptop: paired first, it answers WhatsApp on the shop's number. It checks in every 15 s.
+  // The shop's Gmail inbox and TikTok account, set by the owner on the People panel (the main laptop has no
+  // Gmail tab and its TikTok is Adrian's own).
+  await api('/api/lanes/gmail:inbox/account', { method: 'PUT', body: { account: 'support@acxebikes.example' } });
+  await api('/api/lanes/tiktok:inbox/account', { method: 'PUT', body: { account: '@acx.ebikes' } });
+  // Adrian's laptop: paired first, so it is the main laptop. It answers WhatsApp on the shop's number, and its
+  // TikTok is on Adrian's own account. It checks in every 15 s.
   const adrianCode = await api('/api/devices/pair-code', { body: { person: 'Adrian' } });
   const adrian = await fetch(`${base}/api/agent/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: adrianCode.code, name: 'Adrian MacBook' }) }).then((r) => r.json());
   assert.equal(adrian.person, 'Adrian');
-  const adrianSync = () => api('/api/agent/sync', { token: adrian.token, body: { version: '0.6.0', status: { channels: { whatsapp: { state: 'ready', account: `${SHOP_NUMBER}@c.us`, unread: 0, busy: false, sending: false, sending_id: null, last_ok_at: Date.now() - 1000, ok_age_ms: 1000 } } } } });
+  const tab = (account) => ({ state: 'ready', account, unread: 0, busy: false, sending: false, sending_id: null, last_ok_at: Date.now() - 1000, ok_age_ms: 1000 });
+  const adrianSync = () => api('/api/agent/sync', { token: adrian.token, body: { version: '0.6.0', status: { channels: { whatsapp: tab(`${SHOP_NUMBER}@c.us`), tiktok: tab('adrian.rides') } } } });
   const first = await adrianSync();
   assert.equal(first.lanes['whatsapp:inbox'].role, 'active', 'Adrian’s laptop answers WhatsApp');
+  assert.equal(first.lanes['tiktok:inbox'].role, 'other_account', 'Adrian’s TikTok is on his own account: it stays out');
   adrianTimer = setInterval(() => { adrianSync().catch(() => {}); }, 15_000);
   const { pairing_string: pairing } = await api('/api/devices/pair-code', { body: {} });
   log(`backend up at ${base}; Adrian’s laptop answers WhatsApp`);
@@ -197,13 +209,19 @@ async function main() {
   await dash.click('.side [data-person]:has-text("Sam")');
   await dash.waitForSelector('.dialog--people[open] .pcard');
   const panelText = await dash.textContent('.dialog--people');
-  for (const want of ['Sam’s laptop', 'This laptop', 'Laptop connected', `+${SHOP_NUMBER}`, 'Standing by for Adrian’s laptop', 'Answering']) assert.ok(panelText.includes(want), `the People panel says "${want}"`);
+  for (const want of ['Sam’s laptop', 'This laptop', 'Laptop connected', `+${SHOP_NUMBER}`, 'Standing by for Adrian’s laptop', 'Answers here', 'Connected', 'Make this the main laptop']) assert.ok(panelText.includes(want), `the People panel says "${want}"`);
+  const samCard = await dash.textContent('.dialog--people .pcard');
+  assert.doesNotMatch(samCard, /Connected to another account|Account not confirmed|Problem|Signed out/, 'nothing about Sam’s laptop looks broken');
   assert.doesNotMatch(panelText, /[–—]/, 'no dashes in the panel');
   await dash.click('.dialog--people [data-switch]:has-text("Adrian")');
   await dash.waitForFunction(() => document.querySelector('.dialog--people .dialog__title')?.textContent === 'Adrian');
-  assert.ok((await dash.textContent('.dialog--people')).includes('Adrian’s laptop'), 'the other person shows their own laptop');
+  const adrianText = await dash.textContent('.dialog--people');
+  for (const want of ['Adrian’s laptop', 'Main laptop', 'Connected to another account', '@adrian.rides']) assert.ok(adrianText.includes(want), `Adrian’s panel says "${want}"`);
+  assert.doesNotMatch(adrianText, /[–—]/, 'no dashes in the panel');
   await dash.click('.dialog--people [data-close].btn--primary');
-  pass('pairing asked whose laptop it is; Sam and Adrian next to the logo; the panel shows each laptop, its channels and the WhatsApp number');
+  // Live: TikTok is Connected (this laptop's), not judged by Adrian's TikTok on his own account.
+  await until('Live shows TikTok connected', async () => (await dash.textContent('#channels'))?.includes('TikTok') && (await dash.$$eval('#channels .chcard', (els) => els.find((e) => e.textContent.includes('TikTok'))?.querySelector('.pill')?.textContent)) === 'Connected');
+  pass('pairing asked whose laptop it is; Sam and Adrian next to the logo; the panel shows each laptop, its channels and the WhatsApp number; Adrian’s TikTok is "Connected to another account"');
 
   // ---- 2. standing by: no reading, no sync on every page change -------------------------------------------------
   // The first look at Gmail and TikTok (which this laptop answers) is over first: the seeds hold mail it reads once.
@@ -274,6 +292,39 @@ async function main() {
   const [ev] = await sql(`SELECT message FROM events WHERE type = 'failover' AND channel = 'whatsapp' ORDER BY id DESC LIMIT 1`);
   assert.equal(ev.message, 'Sam’s laptop took over WhatsApp. Adrian’s laptop is offline.');
   pass('Adrian’s laptop went offline: Sam’s laptop took WhatsApp over and answered the waiting customer once');
+
+  // ---- 6. Adrian's laptop (the main one) is back and ready: the lane goes back to it -------------------------
+  // It was quiet for over 90 s (step 5), so its first check in starts its "ready since" again.
+  const backFirst = await adrianSync();
+  assert.equal(backFirst.lanes['whatsapp:inbox'].role, 'standby', 'just back: it waits until it has been ready for 2 minutes');
+  // Ready for 3 minutes (as if it had been checking in all along): it asks for WhatsApp back.
+  await sql(`UPDATE devices SET status = json_set(status, '$.channels.whatsapp.state_since', ?) WHERE id = ?`, [Date.now() - 3 * 60_000, adrian.device_id]);
+  const asking = await adrianSync();
+  assert.equal(asking.lanes['whatsapp:inbox'].role, 'standby');
+  const [lane] = await sql(`SELECT device_id, handover_at FROM lane_leaders WHERE lane = 'whatsapp:inbox'`);
+  assert.ok(lane.handover_at > 0, 'the hand back is asked for');
+  // This laptop stands by at its next sync, and its grant names Adrian's laptop.
+  await until('Sam’s laptop to stand by on WhatsApp', async () => {
+    const g = await sw.evaluate(() => chrome.storage.local.get('lanes').then((o) => o.lanes));
+    return g?.['whatsapp:inbox']?.role === 'standby' && g['whatsapp:inbox'].leader?.person === 'Adrian';
+  }, { poke: true, timeout: 45_000 });
+  const handing = await samDevice();
+  assert.equal(handing.channels.whatsapp.role, 'handing_back');
+  // A new customer writes while the lane goes back: this laptop leaves the chat alone.
+  const late = '447700901700';
+  await waMock('receive', `+${late}`, 'hello is anyone there');
+  await sleep(8000);
+  assert.equal((await waMock('sent')).filter((s) => s.jid === `${late}@c.us`).length, 0, 'not answered while handing back');
+  assert.equal((await sql('SELECT COUNT(*) AS n FROM conversations WHERE external_thread_id = ?', [`${late}@c.us`]))[0].n, 0, 'not even read');
+  // 70 s later Adrian's laptop takes it; this one stays a standby.
+  await sql(`UPDATE lane_leaders SET handover_at = ? WHERE lane = 'whatsapp:inbox'`, [Date.now() - 71_000]);
+  const taken = await adrianSync();
+  assert.equal(taken.lanes['whatsapp:inbox'].role, 'active', 'the main laptop answers WhatsApp again');
+  const [back] = await sql(`SELECT message FROM events WHERE type = 'failover' AND channel = 'whatsapp' ORDER BY id DESC LIMIT 1`);
+  assert.equal(back.message, 'Adrian’s laptop took over WhatsApp. Sam’s laptop handed it back.');
+  await until('Sam’s laptop to stand by for Adrian’s', async () => (await samDevice())?.channels?.whatsapp?.role === 'standby', { poke: true, timeout: 45_000 });
+  assert.equal((await waMock('sent')).filter((s) => s.jid === `${late}@c.us`).length, 0, 'still not answered by this laptop');
+  pass('Adrian’s laptop came back: Sam’s laptop stood by at once, left the new customer alone, and Adrian’s laptop took WhatsApp back');
 
   assert.deepEqual(pageErrors, [], 'no errors on the dashboard pages');
   log('ALL PASSED');

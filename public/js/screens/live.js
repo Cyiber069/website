@@ -5,8 +5,11 @@ import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, ago, clock, num
 import { agentStatus, overviewStale, urgentCount } from '../app.js';
 import { allLaptops, openTab } from '../people.js';
 
-/** The laptop whose tab a channel is judged by: the one answering it, else the best one online (src/pipeline/leader.ts). */
-const laptopFor = (ov, ch) => ov.lanes?.[ch]?.device ?? ov.device;
+/**
+ * The laptop whose tab a channel is judged by: the one answering it, else the main laptop, never a laptop
+ * on another account (src/pipeline/leader.ts teamView). An older server sends no lanes: its one laptop.
+ */
+export const laptopFor = (ov, ch) => (ov.lanes ? ov.lanes[ch]?.device ?? null : ov.device);
 
 const STATE_TEXT = {
   ready: ['Connected', 'pill--live', 'dot--live'], loading: ['Loading', 'pill--wait', 'dot--wait'], no_tab: ['Tab not open', 'pill--wait', 'dot--wait'],
@@ -19,6 +22,8 @@ export function channelState(ov, ch) {
   const device = laptopFor(ov, ch);
   if (!device) return { text: 'No laptop', pill: 'pill--wait', dot: 'dot--wait', mode, hint: MODE_TEXT[mode] };
   if (!device.online) return { text: 'Laptop offline', pill: 'pill--down', dot: 'dot--down', mode, hint: MODE_TEXT[mode] };
+  // The owner set the shop's account to one the main laptop is not on: say so, it is not a broken page.
+  if (ov.lanes?.[ch]?.role === 'other_account') return { text: 'Connected to another account', pill: 'pill--wait', dot: 'dot--wait', mode, hint: 'Sign in to the shop’s account there, or change it on the People panel' };
   const st = device.status?.channels?.[ch];
   if (!st) return { text: 'Tab not open', pill: 'pill--wait', dot: 'dot--wait', mode, hint: `Open ${chName(ch)} in Chrome on the laptop` };
   const [text, pill, dot] = STATE_TEXT[st.state] || ['Checking', 'pill--pause', 'dot--pause'];
@@ -158,6 +163,7 @@ export default {
       const answeredBy = (c) => {
         if (!many || ov.channels?.[c]?.mode === 'off') return '';
         const l = ov.lanes?.[c]?.leader;
+        if (l && ov.lanes[c].handing_back) return `Going back to ${ov.main?.label || 'the main laptop'}`;
         return l ? `${l.label} answers${l.online ? '' : '. It is offline'}` : 'No laptop answers it yet';
       };
       setHTML($('#channels', view), html`

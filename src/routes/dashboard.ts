@@ -11,7 +11,7 @@ import { DAY, HOUR, MIN, londonTime, nextLondonHour } from '../lib/time';
 import { cancelAgentJobs, cancelForOptOut, cancelJob, emptyTarget, enqueue } from '../pipeline/outbox';
 import { processConversation } from '../pipeline/inbound';
 import { answerUrgent, answerUrgentWithNote, dismissUrgent, sendUrgentDraft } from '../pipeline/urgent';
-import { currentDevice, pairingCodeRow, selectorPack } from './agent';
+import { currentDevice, listDevices, pairingCodeRow, selectorPack } from './agent';
 import { checkDiscountPatch } from '../discounts/rules';
 import { checkVisionPatch } from '../vision';
 import { monitorRows } from '../pipeline/monitor';
@@ -126,10 +126,12 @@ function reviewView(row: OutboxRow, conv: ConversationRow | null, lastInbound: s
 async function overview(env: Env, db: D1Database, now: number) {
   const settings = await getSettings(db);
   const day = startOfLondonDay(now);
-  const [devices, hints, mon, today, kb] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db), todayStats(db, day, now), kbTotals(env)]);
-  // People, their laptops and which one answers each channel (src/pipeline/leader.ts). One query more.
-  const team = await teamView(db, devices, settings);
-  const device = team.device ?? devices[0] ?? null;
+  const [list, hints, mon, today, kb] = await Promise.all([listDevices(db, now), secretHints(db), monitorRows(db), todayStats(db, day, now), kbTotals(env)]);
+  const devices = list.devices;
+  // People, their laptops and which one answers each channel (src/pipeline/leader.ts), from the same query.
+  // The hero talks about a laptop that answers, else the main laptop: never one on another account.
+  const team = teamView(devices, list.leaders, list.main, settings);
+  const device = team.device;
   const [urgentOpen, reviewPending, queued] = await Promise.all([
     count(db, `SELECT COUNT(*) AS n FROM urgent WHERE status = 'open'`),
     count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status = 'review'`),
@@ -147,6 +149,7 @@ async function overview(env: Env, db: D1Database, now: number) {
     device,
     people: team.people,
     lanes: team.lanes,
+    main: team.main,
     channels: settings.channels,
     // Channel problems, chats waiting with no reply and AI failures found by the every minute check.
     monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
@@ -238,8 +241,8 @@ function llmUsageDay(db: D1Database, now: number): Promise<unknown[]> {
 /** The Health screen: the last day of problems, the laptop, the monitor and today's reply times. */
 async function healthView(db: D1Database, now: number) {
   const since = now - DAY;
-  const [devices, misses, failed, errors, usage, sel, mon, today] = await Promise.all([
-    currentDevice(db, now),
+  const [list, misses, failed, errors, usage, sel, mon, today, settings] = await Promise.all([
+    listDevices(db, now),
     all(db, `SELECT id, ts, channel, kind, data FROM diagnostics WHERE ts > ? ORDER BY id DESC LIMIT 60`, since),
     all<OutboxRow>(db, `SELECT * FROM outbox WHERE status IN ('failed', 'expired') AND created_at > ? ORDER BY created_at DESC LIMIT 30`, since),
     all(db, `SELECT id, ts, type, channel, message FROM events WHERE level = 'error' AND ts > ? ORDER BY id DESC LIMIT 30`, since),
@@ -247,10 +250,15 @@ async function healthView(db: D1Database, now: number) {
     selectorPack(db),
     monitorRows(db),
     todayStats(db, startOfLondonDay(now), now),
+    getSettings(db),
   ]);
+  // The laptop the Health summary talks about, and the one each channel is judged by, as on Live.
+  const team = teamView(list.devices, list.leaders, list.main, settings);
   return {
     now,
-    devices,
+    devices: list.devices,
+    device: team.device,
+    lanes: team.lanes,
     monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
     // Rows this Worker used today, counted in the Worker itself. An estimate: see src/lib/usage.ts.
     d1_usage: usageToday(mon.usage, now),
@@ -486,7 +494,8 @@ export function register(r: Router): void {
     // The Gmail inbox chosen here is the shop's Gmail account for the lane too (src/pipeline/leader.ts).
     // Cleared, the lane forgets the one it learned and takes the next laptop's.
     if (group === 'gmail' && 'account' in patch) {
-      await run(c.db, `UPDATE lane_leaders SET account = ? WHERE lane = 'gmail:inbox'`, normAccount('gmail', (next as Settings['gmail']).account));
+      const account = normAccount('gmail', (next as Settings['gmail']).account);
+      await run(c.db, `UPDATE lane_leaders SET account = ?, account_src = ? WHERE lane = 'gmail:inbox'`, account, account ? 'owner' : '');
     }
     return json({ ok: true, [group]: next });
   });

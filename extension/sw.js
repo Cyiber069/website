@@ -228,13 +228,14 @@ let myDeviceId = ''; // this laptop's id on the server (auth.device_id), set by 
 /** Another laptop answers this grant's lane. */
 const otherLeads = (g) => Boolean(g && g.leader && g.leader.device_id && g.leader.device_id !== myDeviceId);
 /**
- * Another laptop answers this lane, or this tab is on another account: this one only probes it. Not a
- * lane that waits only because its tab was not ready at the last sync (nobody answers it yet).
+ * Another laptop answers this lane, or this tab is on another account (or one the server cannot confirm):
+ * this one only probes it. Not a lane that waits only because its tab was not ready at the last sync
+ * (nobody answers it yet).
  */
 function standsBy(lane) {
   const g = laneGrants && laneGrants[lane.id];
   if (!g || g.role === 'active') return false;
-  return g.role === 'other_account' || g.role === 'off' || otherLeads(g);
+  return g.role === 'other_account' || g.role === 'unconfirmed' || g.role === 'off' || otherLeads(g);
 }
 
 /** True when the lane may scan, read and send right now. */

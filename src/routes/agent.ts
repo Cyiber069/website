@@ -16,7 +16,11 @@ import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } fro
 import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
 import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
 import { SYNC_SECONDS, budget, syncSeconds } from '../lib/budget';
-import { cleanName, electLanes, inlineAllowed, laneContext, laneLeader, normAccount } from '../pipeline/leader';
+import {
+  LEADERS_SQL, MAIN_SQL, TAKEOVER_OFFLINE_MS, cleanName, electLanes, gmailFromDetail, inboundGate, laneContext, laneInfo, normAccount, parseLeaders, shopAccount,
+  type InboundGate, type ListedDevice,
+} from '../pipeline/leader';
+import type { LaneLeaderRow } from '../types';
 import { parseCommandResults, planCommands, type CommandResult } from '../pipeline/commands';
 
 export const ONLINE_WINDOW_MS = 100_000;
@@ -136,7 +140,8 @@ export function parseStatus(raw: unknown, now: number): DeviceStatus {
       last_error: text(o.last_error, 160),
       recoveries: typeof o.recoveries === 'number' && Number.isFinite(o.recoveries) ? Math.min(100_000, Math.max(0, Math.round(o.recoveries))) : 0,
       version: text(o.version, 20),
-      account: normAccount(ch, o.account),
+      // Builds before 0.6.0 send no account; their Gmail status names the inbox in its detail.
+      account: normAccount(ch, o.account) || (ch === 'gmail' ? gmailFromDetail(o.detail) : ''),
       state_since: now,
       active_since: activeMs !== null ? Math.max(1, Math.round(now - activeMs)) : 0,
       ...(o.sending_id === null || typeof o.sending_id === 'string' ? { sending_id: typeof o.sending_id === 'string' ? o.sending_id.slice(0, 40) : null } : {}),
@@ -146,12 +151,19 @@ export function parseStatus(raw: unknown, now: number): DeviceStatus {
   return { channels, paused_locally: src.paused_locally === true, reported_at: now, ...(results.length ? { command_results: results } : {}) };
 }
 
-/** The time each channel went into its state: kept from the stored status while the state is the same. */
-export function carryStateSince(status: DeviceStatus, before: DeviceStatus): void {
+/**
+ * The time each channel went into its state: kept from the stored status while the state is the same, and
+ * started again when the laptop comes back after it was offline (`afterGap`), so "ready for 2 minutes"
+ * means 2 minutes checking in. The account a ready page could not read this once (a compose window in
+ * Gmail) is kept from the stored status while the page stays ready.
+ */
+export function carryStateSince(status: DeviceStatus, before: DeviceStatus, afterGap = false, sameBuild = true): void {
   for (const ch of CHANNELS) {
     const st = status.channels[ch];
     const was = before?.channels?.[ch];
-    if (st && was && was.state === st.state) st.state_since = was.state_since || before.reported_at || st.state_since;
+    if (!st || !was || was.state !== st.state) continue;
+    if (!afterGap) st.state_since = was.state_since || before.reported_at || st.state_since;
+    if (!st.account && was.account && st.state === 'ready' && sameBuild) st.account = was.account;
   }
 }
 
@@ -203,6 +215,13 @@ function requireDevice(c: Ctx): DeviceRow {
   return c.device;
 }
 
+/** May this laptop's reports of a channel be stored (src/pipeline/leader.ts inboundGate)? One query (the settings are cached). */
+async function reportGate(db: D1Database, device: DeviceRow, ch: Channel): Promise<InboundGate> {
+  const [info, settings] = await Promise.all([laneInfo(db, ch), getSettings(db)]);
+  const account = parseJson<DeviceStatus>(device.status, { channels: {}, paused_locally: false, reported_at: 0 }).channels?.[ch]?.account ?? '';
+  return inboundGate(device.id, account, shopAccount(ch, settings, info), info);
+}
+
 export function register(r: Router): void {
   // Exchange a one-time pairing code from the dashboard for a long lived device token.
   r.post('/api/agent/pair', 'public', async (c) => {
@@ -241,7 +260,7 @@ export function register(r: Router): void {
     // One small UPDATE, and only when something the owner sees changed or a minute has passed:
     // this runs every 20 s and the free plan allows 100,000 rows written a day.
     const before = parseJson<DeviceStatus>(device.status, { channels: {}, paused_locally: false, reported_at: 0 });
-    carryStateSince(status, before);
+    carryStateSince(status, before, !device.last_seen_at || c.now - device.last_seen_at > TAKEOVER_OFFLINE_MS, version === device.version);
     // Commands from the dashboard (open a tab) wait on this same row until the laptop says it ran them
     // (src/pipeline/commands.ts). Their list changes ride on the status write when there is one.
     const cmd = planCommands(device, status, version, c.now);
@@ -257,7 +276,8 @@ export function register(r: Router): void {
     }
     if (wasOffline) {
       await logEvent(c.db, { level: 'good', type: 'device_online', message: `${device.name} is back online.` });
-      await setState(c.db, 'offline_alerted', false);
+      // The offline alert names one laptop (src/pipeline/monitor.ts): only that one coming back ends it.
+      await run(c.db, `UPDATE settings SET value = 'false', updated_at = ? WHERE key = 'state:offline_alerted' AND value IN ('true', ?)`, c.now, JSON.stringify(device.id));
     }
 
     const settings = await getSettings(c.db);
@@ -299,9 +319,15 @@ export function register(r: Router): void {
     // Room for up to 3 photos of 260 KB of base64 each next to the messages.
     const payload = parseInbound(await c.body(1_200_000));
     return ndjsonStream(c.exec, async (send, isOpen) => {
-      // Jobs are only handed over while the extension is still listening, and only to the laptop that answers
-      // this lane (src/pipeline/leader.ts); otherwise they wait for the next sync of the one that does.
-      const mine = inlineAllowed(device.id, await laneLeader(c.db, payload.channel));
+      // A tab on another account, or one the server cannot confirm, is not the shop's: nothing is stored
+      // (src/pipeline/leader.ts inboundGate). Jobs are only handed over while the extension is still
+      // listening, and only to the laptop that answers this lane; otherwise they wait for its next sync.
+      const gate = await reportGate(c.db, device, payload.channel);
+      if (!gate.store) {
+        await send({ type: 'decision', conversation_id: null, action: 'none', reason: gate.reason, jobs: [], new_inbound: 0, final: true, retry_after_ms: null, jobs_pending: false });
+        return;
+      }
+      const mine = gate.inline;
       const live = () => mine && isOpen() && !c.req.signal?.aborted;
       const outcome = await handleInbound(c.env, device, payload, (o) => { void send({ type: 'accepted', ...o }); }, { live, startedAt: c.now });
       const delivered = await Promise.race([send({ type: 'decision', ...outcome }), new Promise<boolean>((r) => setTimeout(() => r(true), 10_000))]);
@@ -313,13 +339,18 @@ export function register(r: Router): void {
 
   // One customer video, before the report that names it. The bytes go straight through to Google
   // (src/vision receiveVideo): nothing is stored here but a small row saying where it is.
+  // A laptop whose reports are not stored (another account, not confirmed) sends no videos either.
   r.post('/api/agent/media/video', 'device', async (c) => {
     const device = requireDevice(c);
+    const ch = c.url.searchParams.get('channel') as Channel;
+    if (CHANNELS.includes(ch) && !(await reportGate(c.db, device, ch)).store) throw new HttpError(409, 'not_shop_account', 'This tab is not on the shop’s account');
     return json(await receiveVideo(c.env, await getSettings(c.db), c.req, c.url, device.id));
   });
   // Asked first: a video already described or held by Google is not pulled out of the tab or sent again.
   r.get('/api/agent/media/video', 'device', async (c) => {
-    requireDevice(c);
+    const device = requireDevice(c);
+    const ch = c.url.searchParams.get('channel') as Channel;
+    if (CHANNELS.includes(ch) && !(await reportGate(c.db, device, ch)).store) return json({ ok: true, upload: false, ref: null, described: false, why: 'not_shop_account' });
     return json(await videoCheck(c.env, await getSettings(c.db), c.url));
   });
 
@@ -357,21 +388,37 @@ export function register(r: Router): void {
   r.get('/api/agent/selectors', 'device', async (c) => json(await selectorPack(c.db)));
 }
 
-/** Latest live device with its parsed status, for the dashboard. */
-export async function currentDevice(db: D1Database, now: number) {
-  // Only what the dashboard shows (never the token hash), newest first.
-  const rows = await all<Pick<DeviceRow, 'id' | 'name' | 'version' | 'last_seen_at' | 'status' | 'person'>>(db,
-    // Through the partial index devices_live_seen (migration 0013): five rows, not every laptop ever paired.
-    'SELECT id, name, person, version, last_seen_at, status FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5');
-  return rows.map((d) => ({
-    id: d.id,
-    name: d.name,
-    person: d.person ?? '',
-    version: d.version,
-    last_seen_at: d.last_seen_at,
-    online: d.last_seen_at !== null && now - d.last_seen_at < ONLINE_WINDOW_MS,
-    status: parseJson<DeviceStatus>(d.status, { channels: {}, paused_locally: false, reported_at: 0 }),
-  }));
+/** The paired laptops the dashboard and the health check look at, the lane rows and the main laptop. */
+export interface DeviceList { devices: ListedDevice[]; leaders: LaneLeaderRow[]; main: string }
+
+/**
+ * One query: the five laptops seen last (through the partial index devices_live_seen, migration 0013, so
+ * never every laptop ever paired) and the main laptop if it is not among them, newest first, with the
+ * lane rows and the main laptop's id. Only what the dashboard shows (never the token hash).
+ */
+export async function listDevices(db: D1Database, now: number): Promise<DeviceList> {
+  const rows = await all<Pick<DeviceRow, 'id' | 'name' | 'version' | 'last_seen_at' | 'status' | 'person'> & { leaders: string | null; main: string | null }>(db,
+    `SELECT id, name, person, version, last_seen_at, status, ${LEADERS_SQL} AS leaders, ${MAIN_SQL} AS main FROM devices
+     WHERE id IN (SELECT id FROM (SELECT id FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5) UNION SELECT ${MAIN_SQL})
+     ORDER BY last_seen_at DESC`);
+  return {
+    devices: rows.map((d) => ({
+      id: d.id,
+      name: d.name,
+      person: d.person ?? '',
+      version: d.version,
+      last_seen_at: d.last_seen_at,
+      online: d.last_seen_at !== null && now - d.last_seen_at < ONLINE_WINDOW_MS,
+      status: parseJson<DeviceStatus>(d.status, { channels: {}, paused_locally: false, reported_at: 0 }),
+    })),
+    leaders: parseLeaders(rows[0]?.leaders ?? '[]'),
+    main: rows[0]?.main ?? '',
+  };
+}
+
+/** The laptops with their parsed status, newest first, for the dashboard. */
+export async function currentDevice(db: D1Database, now: number): Promise<ListedDevice[]> {
+  return (await listDevices(db, now)).devices;
 }
 
 export async function pairingCodeRow(db: D1Database, codeHash: string, now: number, person = ''): Promise<void> {
