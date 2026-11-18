@@ -13,7 +13,7 @@ import sales from './screens/sales.js';
 import connections from './screens/connections.js';
 import health from './screens/health.js';
 import more from './screens/more.js';
-import { nextRefreshIn, refreshOnWake } from './poll.js';
+import { isStale, nextRefreshIn, refreshOnWake } from './poll.js';
 
 const SCREENS = { live, urgent, inbox, knowledge, voice, recovery, sales, discounts, connections, health, more };
 const NAV = [
@@ -22,16 +22,18 @@ const NAV = [
 ];
 const TABS = [['live', 'Live', 'i-live'], ['inbox', 'Inbox', 'i-inbox'], ['urgent', 'Urgent', 'i-urgent'], ['recovery', 'Recovery', 'i-recovery'], ['more', 'More', 'i-more']];
 const UNDER_MORE = ['knowledge', 'voice', 'sales', 'discounts', 'connections', 'health', 'more'];
-// How often the page refreshes (every 30 s while in use, 2 min behind another window, never hidden or idle): poll.js.
+// How often the page refreshes (every 30 s while in use, every 2 min behind another window or idle, never hidden): poll.js.
 
 const root = $('#root');
-const state = { overview: null, overviewError: null, signedIn: false, current: null, route: '', timer: null, shell: false };
+// overviewAt: when the last good overview arrived (this browser's clock), so a screen can say it is out of date.
+const state = { overview: null, overviewError: null, overviewAt: 0, signedIn: false, current: null, route: '', timer: null, shell: false };
 const overviewListeners = new Set();
 
 // ---- Shared context handed to every screen ----------------------------------------------------------
 export const ctx = {
   get overview() { return state.overview; },
   get overviewError() { return state.overviewError; },
+  get overviewAt() { return state.overviewAt; },
   refreshOverview,
   onOverview(fn) { overviewListeners.add(fn); return () => overviewListeners.delete(fn); },
   setAgent,
@@ -43,6 +45,11 @@ export const ctx = {
 
 export function urgentCount(ov = state.overview) {
   return ov ? (ov.counts?.urgent_open || 0) + (ov.counts?.review_pending || 0) : 0;
+}
+
+/** True when the screen shows what the server said over 5 min ago (refreshes failing, or the computer slept). */
+export function overviewStale(now = Date.now()) {
+  return isStale({ now, lastGoodAt: state.overviewAt });
 }
 
 export function agentStatus(ov = state.overview) {
@@ -75,7 +82,7 @@ async function boot() {
 function showAuth(mode, note) {
   stopPolling();
   if (state.current?.destroy) state.current.destroy();
-  state.current = null; state.shell = false; state.overview = null;
+  state.current = null; state.shell = false; state.overview = null; state.overviewAt = 0;
   document.title = 'ACX Agent';
   authScreen.mount(root, { mode, note, onDone: startApp });
 }
@@ -139,9 +146,11 @@ function paintShell() {
   const s = agentStatus(ov);
   const pill = $('#top-status');
   if (pill) {
-    pill.className = `pill ${s.pill} top__status`;
-    pill.firstElementChild.className = `dot ${s.dot}`;
-    pill.lastElementChild.textContent = state.overviewError && !ov ? 'No connection' : s.label;
+    // Out of date: do not keep saying Online when nothing new came for minutes.
+    const stale = ov && overviewStale();
+    pill.className = `pill ${stale ? 'pill--pause' : s.pill} top__status`;
+    pill.firstElementChild.className = `dot ${stale ? 'dot--pause' : s.dot}`;
+    pill.lastElementChild.textContent = state.overviewError && !ov ? 'No connection' : stale ? 'Not up to date' : s.label;
   }
   const sw = $('#side-agent');
   if (sw && ov) {
@@ -157,7 +166,7 @@ let overviewInFlight = null;
 export function refreshOverview() {
   if (overviewInFlight) return overviewInFlight;
   overviewInFlight = get('/api/overview').then((ov) => {
-    state.overview = ov; state.overviewError = null;
+    state.overview = ov; state.overviewError = null; state.overviewAt = Date.now();
   }).catch((err) => {
     if (err.name !== 'AuthError') state.overviewError = err;
   }).finally(() => {
@@ -249,13 +258,13 @@ function markNav(name) {
 
 window.addEventListener('hashchange', route);
 
-// ---- Polling: only while the page is visible and in use -----------------------------------------------------
+// ---- Polling: while the page is visible (slower behind another window or when nobody uses it) -------------
 let lastActive = Date.now();
 let lastTick = 0;
 let lastMove = 0;
 const focused = () => (typeof document.hasFocus === 'function' ? document.hasFocus() : true);
 const pollState = () => ({ now: Date.now(), lastTick, lastActive, hidden: document.hidden, focused: focused(), budgetSeconds: state.overview?.budget?.poll_seconds });
-/** Plan the next refresh: none while hidden, signed out or idle. */
+/** Plan the next refresh: none while hidden or signed out. */
 function schedule() {
   stopPolling();
   if (!state.signedIn) return;
@@ -264,14 +273,15 @@ function schedule() {
 }
 async function tick() {
   state.timer = null;
-  if (!state.signedIn || nextRefreshIn({ ...pollState(), lastTick: 0 }) === null) return; // hidden or idle: stopped until someone is back
+  if (!state.signedIn || nextRefreshIn({ ...pollState(), lastTick: 0 }) === null) return; // hidden: stopped until it is shown again
   lastTick = Date.now();
+  // The next one is planned first: a request that hangs never stops the refreshing.
+  schedule();
   refreshOverview();
   try { await state.current?.tick?.(); } catch (err) { if (err?.name !== 'AuthError') console.warn('refresh failed', err?.message); }
   refreshTimes();
-  schedule();
 }
-/** Someone is here: refresh at once if the page had stopped, else keep the plan (sooner when focused). */
+/** Someone is here: refresh at once if the page had stopped (hidden), else plan again (sooner when in use). */
 function wake() {
   const stopped = !state.timer;
   lastActive = Date.now();
@@ -281,7 +291,7 @@ function wake() {
 }
 function startPolling() { lastActive = Date.now(); lastTick = Date.now(); schedule(); }
 function stopPolling() { if (state.timer) clearTimeout(state.timer); state.timer = null; }
-// Only real input counts: a refresh that repaints (and scrolls) the page is not someone using it.
+// Only real input counts as someone using the page: a refresh that repaints (and scrolls) it is not.
 for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) window.addEventListener(ev, wake, { passive: true, capture: true });
 window.addEventListener('pointermove', () => { const now = Date.now(); if (now - lastMove > 5000) { lastMove = now; wake(); } }, { passive: true, capture: true });
 window.addEventListener('focus', wake);

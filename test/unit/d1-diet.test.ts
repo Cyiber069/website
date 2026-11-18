@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SETTINGS_CACHE_MS, cachedState, getSettings, noteSettingsRev, patchSettings } from '../../src/lib/settings';
 import { bumpDashboard, cachedAnswer, resetCaches } from '../../src/lib/cache';
-import { budgetFrom, levelFor } from '../../src/lib/budget';
+import { budgetFrom, levelFor, syncSeconds } from '../../src/lib/budget';
 import { brainBackoffMs } from '../../src/pipeline/inbound';
 // @ts-expect-error plain JS dashboard module
-import { BLURRED_MS, FOCUSED_MS, IDLE_MS, nextRefreshIn, refreshOnWake } from '../../public/js/poll.js';
+import { BLURRED_MS, FOCUSED_MS, IDLE_MS, STALE_MS, isStale, nextRefreshIn, refreshOnWake } from '../../public/js/poll.js';
 
 // The knowledge base bundles the seed documents (.md imports), which only the Worker build can load.
 vi.mock('../../src/kb', () => ({
@@ -140,6 +140,14 @@ describe('budget levels', () => {
     // Yesterday's count does not count: a new UTC day starts at normal.
     expect(budgetFrom({ day: '2026-11-16', read: 4_900_000, written: 0, updated_at: now }, now).level).toBe('normal');
   });
+
+  it('the laptop syncs every 20 s, and a build from 0.4.0 every 30 s only at the critical level', () => {
+    // Builds before 0.4.0 read new customer messages on the sync beat: never slower.
+    for (const level of ['normal', 'high', 'critical'] as const) expect(syncSeconds(level, true)).toBe(20);
+    expect(syncSeconds('normal', false)).toBe(20);
+    expect(syncSeconds('high', false)).toBe(20);
+    expect(syncSeconds('critical', false)).toBe(30);
+  });
 });
 
 describe('brain backoff', () => {
@@ -180,11 +188,33 @@ describe('dashboard refresh cadence', () => {
     expect(nextRefreshIn({ ...base, focused: false })).toBe(120_000);
     expect(nextRefreshIn({ ...base, now: base.now + 10_000 })).toBe(20_000);
   });
-  it('stops while hidden and after 5 minutes with nobody using it', () => {
+  it('stops only while hidden: with nobody using it for 5 minutes it keeps going every 2 min', () => {
     expect(nextRefreshIn({ ...base, hidden: true })).toBeNull();
     expect(IDLE_MS).toBe(300_000);
-    expect(nextRefreshIn({ ...base, now: base.now + IDLE_MS + 1 })).toBeNull();
+    // Live left open beside the WhatsApp window or on the phone, nobody touching it.
+    const idle = { ...base, now: base.now + IDLE_MS + 1, lastTick: base.now + IDLE_MS + 1 - 10_000 };
+    expect(nextRefreshIn(idle)).toBe(110_000);
+    expect(nextRefreshIn({ ...idle, focused: false })).toBe(110_000);
+    // A whole idle day: a refresh every 2 min, never none.
+    let tick = base.now;
+    for (let i = 0; i < 720; i++) {
+      const wait = nextRefreshIn({ ...base, now: tick, lastTick: tick, lastActive: base.now });
+      expect(wait).not.toBeNull();
+      expect(wait!).toBeLessThanOrEqual(BLURRED_MS);
+      tick += wait!;
+    }
+    // Someone is back: 30 s again (the next one comes within a second when the last was over 30 s ago).
+    expect(nextRefreshIn({ ...base, now: tick + 1000, lastTick: tick - 60_000, lastActive: tick + 1000 })).toBe(1000);
     expect(nextRefreshIn({ ...base, now: base.now + IDLE_MS - 1000 })).toBe(1000);
+  });
+  it('says the screen is out of date when the last good refresh is over 5 min old', () => {
+    expect(STALE_MS).toBe(300_000);
+    expect(isStale({ now: 1_000_000 + STALE_MS, lastGoodAt: 1_000_000 })).toBe(false);
+    expect(isStale({ now: 1_000_001 + STALE_MS, lastGoodAt: 1_000_000 })).toBe(true);
+    // Two slow refreshes in a row are still fine.
+    expect(isStale({ now: 1_000_000 + 2 * BLURRED_MS + 5000, lastGoodAt: 1_000_000 })).toBe(false);
+    // Nothing loaded yet: the screen says it is loading instead.
+    expect(isStale({ now: 1_000_000, lastGoodAt: 0 })).toBe(false);
   });
   it('every 2 min at least when the day is busy, and at once when someone comes back', () => {
     expect(nextRefreshIn({ ...base, budgetSeconds: 120 })).toBe(120_000);

@@ -2,9 +2,16 @@
 // the owner, and the reply times. Counting them from scratch read every row of the day on every refresh
 // (about 1,600 rows on a busy evening, every 15 s). Here each isolate counts the day once, then only
 // reads what is new since its last look, with a 2 minute overlap so a row written a little late is
-// never missed. Rows are remembered by id, so the overlap never counts one twice. Every counted row
-// stays in its set for the day: message status, a sent reply's sent_at and a chat's last_inbound_at
-// only ever move forward.
+// never missed. Rows are remembered by id, so the overlap never counts one twice.
+//
+// "What is new" is always picked by a time the server wrote: messages.created_at, outbox.sent_at,
+// urgent.created_at and conversations.updated_at. Never by a time the page gave: a chat's
+// last_inbound_at is the customer's message time on WhatsApp or Gmail, which can be far older than the
+// moment it was stored (the laptop woke with a backlog, a busy tab reached the chat late, an email was
+// read late). A chat counts as today's when its last_inbound_at is in today (as the full count had it),
+// and it is looked at when its updated_at moved, which storeInbound sets to the server's now whenever it
+// stores a new customer message. Every counted row stays in its set for the day: message status, a sent
+// reply's sent_at and a chat's last_inbound_at only ever move forward.
 import type { Channel } from '../types';
 import { all } from '../lib/db';
 import { onReset } from '../lib/cache';
@@ -46,7 +53,8 @@ async function refresh(db: D1Database, day: number, now: number): Promise<void> 
   const [msgs, sent, convs, urgent] = await Promise.all([
     all<{ id: string }>(db, `SELECT id FROM messages WHERE created_at >= ? AND direction = 'in' AND status = 'received'`, since),
     all<SentRow>(db, `SELECT id, source, channel, conversation_id, sent_at, reply_to_ts, target FROM outbox WHERE status = 'sent' AND sent_at >= ?`, since),
-    all<{ id: string }>(db, 'SELECT id FROM conversations WHERE last_inbound_at >= ?', since),
+    // Through the updated_at index: the chats that changed since the last look, not every chat of the day.
+    all<{ id: string }>(db, 'SELECT id FROM conversations INDEXED BY conversations_updated WHERE updated_at >= ? AND last_inbound_at >= ?', since, day),
     all<{ id: string }>(db, 'SELECT id FROM urgent WHERE created_at >= ?', since),
   ]);
   if (acc !== a) return; // reset meanwhile

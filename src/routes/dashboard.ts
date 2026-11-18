@@ -205,8 +205,8 @@ async function conversationView(db: D1Database, id: string, now: number) {
   };
 }
 
-/** Rows in the Inbox list. */
-const CONVERSATION_LIST_LIMIT = 50;
+/** Rows in the Inbox list (the screen has no paging: the owner searches for older chats). */
+const CONVERSATION_LIST_LIMIT = 80;
 
 /**
  * AI calls of the last 24 hours by model, for Health. It reads every call of the day (about 600 rows on a
@@ -350,7 +350,7 @@ export function register(r: Router): void {
       const params: (string | number)[] = [];
       if (ch) { where.push('cv.channel = ?'); params.push(ch); }
       if (q) { where.push('(cv.title LIKE ? OR cv.last_preview LIKE ? OR ct.display_name LIKE ?)'); const like = `%${q.replace(/[%_]/g, '')}%`; params.push(like, like, like); }
-      // Only the columns the list shows, the newest 50 (conversations_updated, or conversations_channel_updated for one channel).
+      // Only the columns the list shows, the newest 80 (conversations_updated, or conversations_channel_updated for one channel).
       const rows = await all<Pick<ConversationRow, 'id' | 'channel' | 'title' | 'subject' | 'status' | 'last_preview' | 'last_direction' | 'updated_at' | 'paused_until'> & { display_name: string; opted_out: number }>(
         c.db,
         `SELECT cv.id, cv.channel, cv.title, cv.subject, cv.status, cv.last_preview, cv.last_direction, cv.updated_at, cv.paused_until, ct.display_name, ct.opted_out

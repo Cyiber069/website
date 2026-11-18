@@ -2,7 +2,7 @@
 import { get, post } from '../api.js';
 import { toast } from '../ui.js';
 import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, ago, clock, num, syncList, unavailable, timeTag, plural, span } from '../ui.js';
-import { agentStatus, urgentCount } from '../app.js';
+import { agentStatus, overviewStale, urgentCount } from '../app.js';
 
 const STATE_TEXT = {
   ready: ['Connected', 'pill--live', 'dot--live'], loading: ['Loading', 'pill--wait', 'dot--wait'], no_tab: ['Tab not open', 'pill--wait', 'dot--wait'],
@@ -88,6 +88,7 @@ export default {
         </div>
         <svg class="signal" viewBox="0 0 600 44" preserveAspectRatio="none" aria-hidden="true"><path class="signal__base" pathLength="100" d="M0 38 L600 38"/><path class="signal__pulse" pathLength="100" d="M0 38 L600 38"/></svg>
       </section>
+      <button type="button" class="banner banner--wait banner--action" id="stale" hidden>${icon('i-dot')}<span id="stale-text"></span></button>
       <section class="stack" id="warnings" hidden></section>
       <section class="chgrid" aria-label="Laptop and channels" id="channels"></section>
       <section class="grid grid--stats grid--stats5" aria-label="Today" id="stats">
@@ -107,7 +108,24 @@ export default {
     $('#hero-switch', view).addEventListener('change', (e) => ctx.setAgent(e.target.checked));
     $('#panic', view).addEventListener('click', () => ctx.panic());
 
+    // Nothing new from the server for over 5 min (refreshes failing, or the computer slept): say so, and
+    // grey out the laptop and channel status instead of showing an old Online as if it were now.
+    function paintStale() {
+      const stale = Boolean(ctx.overview) && overviewStale();
+      const btn = $('#stale', view);
+      if (stale) {
+        const text = `Not updated since ${clock(ctx.overviewAt)}. Tap to refresh.`;
+        const t = $('#stale-text', view);
+        if (t.textContent !== text) t.textContent = text;
+      }
+      if (btn.hidden === stale) btn.hidden = !stale;
+      $('#hero', view).classList.toggle('is-stale', stale);
+      $('#channels', view).classList.toggle('is-stale', stale);
+    }
+    $('#stale', view).addEventListener('click', () => { ctx.refreshOverview(); loadEvents(); loadTakeovers(); });
+
     function paint(ov, err) {
+      paintStale();
       if (!ov) {
         if (err) { $('#hero-state', view).textContent = 'No connection.'; $('#hero-sub', view).textContent = 'Could not reach the server. Trying again every few seconds.'; }
         return;
@@ -242,6 +260,7 @@ export default {
     const reloadedFor = new Set();
     const timer = setInterval(() => {
       if (!view.isConnected) { clearInterval(timer); return; }
+      paintStale();
       let ended = false;
       for (const el of view.querySelectorAll('[data-until]')) {
         const until = Number(el.dataset.until);

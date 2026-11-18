@@ -381,6 +381,8 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
     const preview = clip(last.body || placeholderFor(last.kind), 140);
     // Every message of this report is stored now: the same report again needs no message lookups (quickRepeat).
     const key = await reportKey(p);
+    // updated_at is the server's now whenever a new customer message is stored: Live's count of today's
+    // chats finds changed chats by it (src/pipeline/today.ts), never by last_inbound_at, the page's time.
     await run(
       db,
       `UPDATE conversations SET last_preview = ?, last_direction = ?, last_inbound_at = COALESCE(?, last_inbound_at), updated_at = ?,

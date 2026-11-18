@@ -52,7 +52,7 @@ This file is the contract between the parts. Keep it true when you change code.
 | `seed/knowledge/` | starter knowledge exported from the store | bundled into the Worker |
 | `test/` | unit tests (vitest) and end to end (Playwright) | in test mode every API response carries `x-acx-d1-queries`; `test/api/limits.test.ts` keeps heavy paths under 50 |
 
-### Monitoring (`src/pipeline/monitor.ts`, every minute in cron)
+### Monitoring (`src/pipeline/monitor.ts`, every minute in cron, every 5th minute when the day's database use is high)
 
 Alerts the owner once per problem (push, throttled in `alertOwner`) and logs a good event when it is fixed:
 a channel not switched off with no good scan for 10 min while the laptop is online (`channel_down` / `channel_ok`),
@@ -85,7 +85,11 @@ test mode headers:
     action, a new message or a sync that changed the laptop's status shows at once. Takeovers and the Inbox list work out
     what has ended with the request's own clock. Health's AI usage summary is kept 5 min.
   * Today's numbers on Live and Health (`src/pipeline/today.ts`): counted once per isolate and London day, then only the
-    rows since the last look, with a 2 minute overlap; rows are kept by id so nothing counts twice.
+    rows since the last look, with a 2 minute overlap; rows are kept by id so nothing counts twice. "Since the last look"
+    is always a time the server wrote (`messages.created_at`, `outbox.sent_at`, `urgent.created_at`, and for chats
+    `conversations.updated_at`, which storing a new customer message sets to the server's now), never
+    `last_inbound_at`: that is the customer's page time and can be far older than when the chat was stored. A chat
+    counts when its `last_inbound_at` is in today, as the full count had it.
   * Knowledge (`src/kb/cache.ts`): the documents and chunks with their text, loaded once per `state:kb_version` (every
     knowledge write adds one in the same batch, `kbVersionStatement`) or after 30 min; search results for the same
     words 5 min. The full text index only ranks: `rank MATCH 'bm25(6.0, 3.0, 1.0)' ORDER BY rank LIMIT n` reads about one
@@ -100,17 +104,21 @@ test mode headers:
 * A chat whose brain keeps failing waits longer each time (`conversations.brain_fails`, `brainBackoffMs`).
 * Indexes from `migrations/0012_d1_diet.sql`: `conversations (channel, updated_at DESC)` for the Inbox list of one
   channel, `recovery_runs (started_at DESC)` for the last run on Live.
-* The dashboard refreshes every 30 s while visible and focused, every 2 min while visible behind another window, never
-  while hidden, and not after 5 min with no click, key, touch, wheel or mouse move; it refreshes at once on focus or
-  activity (`public/js/app.js`). A refresh that repaints or scrolls the page is not activity.
+* The dashboard refreshes every 30 s while visible, focused and in use, and every 2 min while visible behind another
+  window or after 5 min with no click, key, touch, wheel or mouse move (the owner keeps Live open beside WhatsApp or on
+  the phone, about 70 rows a refresh, about 50,000 a day if left open all day). Never while hidden; at once when shown
+  again, and within a second of activity after a slow spell (`public/js/poll.js`, `public/js/app.js`). A refresh that
+  repaints or scrolls the page is not activity. When nothing new came from the server for over 5 min (refreshes failing,
+  or the computer slept) Live says "Not updated since 19:42. Tap to refresh." and greys out the laptop and channel status,
+  and the top pill says "Not up to date".
 
 Budget guard (`src/lib/budget.ts`), from the usage estimate (the stored count plus this isolate's own rows):
 
 | Level | From | What changes |
 |---|---|---|
 | normal | | everything as usual |
-| high | 70% of the reads or the writes | sync `poll_seconds` 60; overview and health say `budget { level, poll_seconds: 120 }` and the dashboard refreshes every 2 min; cron runs the store sync, sales follow ups, old video tidy, health check and cleanup only in every 5th minute; the owner gets one alert a UTC day, "Database use is high today. The agent is slowing down background work so it keeps replying." |
-| critical | 90% | only customer replies and sends: cron runs the outbox sweep and the conversation sweeper (and the usage alert check); no checkout reminder run, no background work; diagnostics are not kept |
+| high | 70% of the reads or the writes | sync `poll_seconds` stays 20 (replies never wait for the guard); overview and health say `budget { level, poll_seconds: 120 }` and the dashboard refreshes every 2 min; cron runs the store sync, sales follow ups, old video tidy, health check and cleanup only in every 5th minute; the owner gets one alert a UTC day, "Database use is high today. The agent is slowing down background work so it keeps replying." |
+| critical | 90% | customer replies, sends and the health check: cron runs the outbox sweep and the conversation sweeper every minute and the health check (laptop offline, channel down, customers waiting, AI failing) every 5th minute, the usage alert check in the other minutes; no checkout reminder run, sales follow ups, store sync, old video tidy or cleanup; diagnostics are not kept; sync `poll_seconds` 30 for a build from 0.4.0, 20 for older builds (they read new customer messages on that beat) |
 
 The level follows the UTC day of the count, so it is normal again at 00:00 UTC.
 
@@ -166,7 +174,7 @@ Errors are `{ "error": "<code>", "message": "<human text>" }` with a 4xx/5xx sta
 // response
 { "server_time": 0,
   "config": { "enabled": true, "channels": { "whatsapp": { "mode": "auto" } },
-              "pacing": { "settle_seconds": 4, "typing_cps": 11 }, "poll_seconds": 20,   // 60 when the day's database use is high
+              "pacing": { "settle_seconds": 4, "typing_cps": 11 }, "poll_seconds": 20,   // 30 for a build from 0.4.0 when the day's database use is critical
               "selectors_version": "1.0", "dashboard_url": "https://...",
               "vision": { "active": true, "whole_videos": true } },   // Google AI Studio on; whole videos may still go today
   "jobs": [ AgentJob ],            // up to 3 due jobs per ready channel, most urgent first (urgent and
@@ -494,7 +502,8 @@ Conversions: `recordOrder` (orders/create) and checkouts seen completed (webhook
    never send two holding lines or alert twice. Answering on Urgent cancels a one part holding line that has not gone out.
    A chat whose brain call failed there waits 5 min or more (`retry_at`, `brainBackoffMs`) so it never holds up the chats
    behind it; the health check still counts it as waiting. From 70% of the day's database budget the background work
-   waits for every 5th minute, from 90% only the outbox sweep and this sweeper run (`src/lib/budget.ts`).
+   waits for every 5th minute, from 90% only the outbox sweep, this sweeper and the health check (every 5th minute) run
+   (`src/lib/budget.ts`).
 
 Urgent: `answerUrgent` calls `brain.polishOwnerAnswer` (owner's rough words to a customer ready reply
 in the customer's tone), queues it, and stores a reusable fact through `kb.addLearnedFact`.

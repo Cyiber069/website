@@ -15,7 +15,7 @@ import { handleInbound, parseInbound } from '../pipeline/inbound';
 import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } from '../pipeline/outbox';
 import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
 import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
-import { SYNC_SECONDS, budget } from '../lib/budget';
+import { SYNC_SECONDS, budget, syncSeconds } from '../lib/budget';
 
 export const ONLINE_WINDOW_MS = 100_000;
 
@@ -79,7 +79,7 @@ function clientConfig(settings: Settings, selectorsVersion: string, origin: stri
     // Builds before 0.4.0 have no newer_message re-read: a short settle would let them answer the
     // first of two quick messages and lose the second, so they keep the long quiet wait they had.
     pacing: { settle_seconds: legacy ? Math.max(settings.pacing.settle_seconds, LEGACY_SETTLE_SECONDS) : settings.pacing.settle_seconds, typing_cps: settings.pacing.typing_cps },
-    // 20 s, or 60 s when the day's database use is high (src/lib/budget.ts). Every build reads it (8 to 60).
+    // 20 s, or 30 s for a build from 0.4.0 when the day's database use is critical (src/lib/budget.ts). Every build reads it (8 to 60).
     poll_seconds: pollSeconds,
     selectors_version: selectorsVersion,
     dashboard_url: origin,
@@ -230,7 +230,7 @@ export function register(r: Router): void {
     const [sel, vision, cancelled, guard] = await Promise.all([selectorPack(c.db), visionState(c.db, settings, c.now), droppedJobs(c.db, held), budget(c.db, c.now)]);
     return json({
       server_time: c.now,
-      config: clientConfig(settings, sel.version, c.url.origin, vision, legacy, SYNC_SECONDS[guard.level]),
+      config: clientConfig(settings, sel.version, c.url.origin, vision, legacy, syncSeconds(guard.level, legacy)),
       jobs,
       cancelled,
       selectors: body.selectors_version === sel.version ? null : sel,

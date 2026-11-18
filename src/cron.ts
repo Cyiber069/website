@@ -52,12 +52,17 @@ async function dailyStoreSync(env: Env): Promise<boolean> {
 /**
  * The daily database budget (src/lib/budget.ts) decides what runs. Normal: everything. High (70%):
  * customer replies, sends and the checkout reminders every minute, the rest of the background work
- * every 5th minute. Critical (90%): only customer replies and sends.
+ * every 5th minute. Critical (90%): customer replies, sends and the health check (every 5th minute);
+ * no checkout reminders, sales follow ups, store sync, video tidy or cleanup.
  */
 export async function runCron(env: Env, opts: { now?: number } = {}): Promise<void> {
   const now = opts.now ?? Date.now();
   const { level } = await budget(env.DB, now).catch(() => ({ level: 'normal' as const }));
-  const background = level === 'normal' || (level === 'high' && Math.floor(now / MIN) % SLOW_CRON_EVERY_MIN === 0);
+  const fifth = Math.floor(now / MIN) % SLOW_CRON_EVERY_MIN === 0;
+  const background = level === 'normal' || (level === 'high' && fifth);
+  // The health check is the owner's only warning that replies stopped (laptop offline, a channel down,
+  // customers waiting, the AI failing), so it keeps running at every level. A quiet run reads a few rows.
+  const health = level === 'normal' || fifth;
   await safely('outbox', () => sweepOutbox(env.DB));
   // One cron run may make 50 D1 queries and fetches on the free plan. A brain call for a chat takes
   // about 20, so the sweeper answers one chat a minute, and none in the minute a daily job runs.
@@ -70,7 +75,7 @@ export async function runCron(env: Env, opts: { now?: number } = {}): Promise<vo
   if (!busy && background) await safely('sales', () => salesTick(env));
   // Customer videos Google still holds that nothing described: deleted a few at a time (a few fetches).
   if (!busy && background) await safely('vision-files', () => tidyVisionFiles(env));
-  if (background) await safely('health', () => watchHealth(env));
+  if (health) await safely('health', () => watchHealth(env));
   // The owner hears once that the agent is slowing down, even in the minutes the health check waits.
   else await safely('usage', () => watchUsageOnly(env));
   if (!busy && background) await safely('cleanup', () => cleanup(env));

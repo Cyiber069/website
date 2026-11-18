@@ -24,6 +24,8 @@ const setUsage = (pct: number, day = new Date().toISOString().slice(0, 10)) =>
   sql(`INSERT INTO settings (key, value, updated_at) VALUES ('state:d1_usage', ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     [JSON.stringify({ day, read: Math.round((pct / 100) * 5_000_000), written: 0, updated_at: Date.now() }), Date.now()]);
 const clearUsage = () => sql(`DELETE FROM settings WHERE key IN ('state:d1_usage', 'state:monitor')`);
+/** A sync from a given extension build, with WhatsApp ready. */
+const syncAs = (version: string) => api('/api/agent/sync', { as: 'device', body: { version, status: { channels: { whatsapp: { state: 'ready', unread: 0, busy: false } } } } });
 
 function londonDayStart(now: number): number {
   const lt = londonTime(now);
@@ -149,6 +151,34 @@ describe('dashboard answers from memory', () => {
     expect(end).toMatchObject({ inbound_today: full.inbound, sent_today: full.sent, auto_today: full.auto, conversations_today: full.convs, escalated_today: full.escalated });
   });
 
+  it("counts a new chat whose message time is older than the overlap (a laptop backlog, an email read late)", async () => {
+    // The running count is set up first, so the chats below are found by what changed since then (no test
+    // write until the end: /api/test/sql writes drop the count and it would be counted again from scratch).
+    await api('/api/overview');
+    const now = Date.now();
+    const late = [10, 30, 0].map((ago) => ({ t: wa(), ago }));
+    const convIds: string[] = [];
+    for (const { t, ago } of late) {
+      const r = await inbound('whatsapp', t, [{ external_id: unique('lt'), direction: 'in', body: 'is the 1000w kit in stock', ts: now - ago * MIN }]);
+      expect(r.new_inbound).toBe(1);
+      convIds.push(r.conversation_id!);
+    }
+    // The page time was kept: the chats really do carry a time older than the 2 minute overlap.
+    const stored = (await sql(`SELECT last_inbound_at FROM conversations WHERE external_thread_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(late.map((l) => l.t))])).data.results;
+    expect(stored.filter((r: any) => r.last_inbound_at < Date.now() - 5 * MIN)).toHaveLength(2);
+    const counts = (await api('/api/overview')).data.counts;
+    const day = londonDayStart(Date.now());
+    const full = (await sql(`SELECT (SELECT COUNT(*) FROM conversations WHERE last_inbound_at >= ?1) AS convs,
+      (SELECT COUNT(*) FROM messages WHERE direction = 'in' AND status = 'received' AND created_at >= ?1) AS inbound`, [day])).data.results[0];
+    expect(counts.conversations_today).toBe(full.convs);
+    expect(counts.inbound_today).toBe(full.inbound);
+    // Health reads the same running count.
+    expect((await api('/api/health')).status).toBe(200);
+    // Only now a write from the test (it drops the running count). Their replies are never sent: a reply to
+    // a 30 minute old message would be today's slowest (test/api/speed.test.ts).
+    await sql(`UPDATE outbox SET status = 'cancelled' WHERE status IN ('pending', 'leased') AND conversation_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(convIds)]);
+  });
+
   it('takeovers always carry the clock of the request, also from memory', async () => {
     const one = await api('/api/takeovers');
     await new Promise((r) => setTimeout(r, 1100));
@@ -157,16 +187,26 @@ describe('dashboard answers from memory', () => {
     expect(two.data.now - one.data.now).toBeGreaterThanOrEqual(1000);
   });
 
-  it('the Inbox list reads the newest 50 chats, only the columns it shows, through an index', async () => {
+  it('the Inbox list shows the newest 80 chats (it has no paging), only the columns it shows, through an index', async () => {
     const idx = (await sql(`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('conversations_channel_updated', 'recovery_runs_started')`)).data.results.map((r: any) => r.name).sort();
     expect(idx).toEqual(['conversations_channel_updated', 'recovery_runs_started']);
-    await fetch(`${BASE()}/api/test/bust`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'dashboard' }) });
-    const list = await api('/api/conversations?channel=whatsapp');
-    expect(list.status).toBe(200);
-    expect(list.data.conversations.length).toBeLessThanOrEqual(50);
-    expect(Object.keys(list.data.conversations[0]).sort()).toEqual(['channel', 'customer', 'id', 'last_direction', 'opted_out', 'paused', 'preview', 'status', 'subject', 'updated_at']);
-    // One row for the chat and one for its contact, plus the session.
-    expect(list.rows).toBeLessThanOrEqual(list.data.conversations.length * 2 + 25);
+    // More chats than the list shows, all older than everything else.
+    const old = Date.now() - 400 * 86_400_000;
+    await sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 90) INSERT INTO contacts (id, channel, external_id, display_name, created_at, updated_at) SELECT 'ibx_ct'||i, 'whatsapp', 'ibx'||i, 'Old '||i, ?1, ?1 FROM n`, [old]);
+    await sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 90) INSERT INTO conversations (id, channel, contact_id, external_thread_id, title, created_at, updated_at) SELECT 'ibx_cv'||i, 'whatsapp', 'ibx_ct'||i, 'ibx'||i, 'Old '||i, ?1, ?1 + i FROM n`, [old]);
+    try {
+      await fetch(`${BASE()}/api/test/bust`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope: 'dashboard' }) });
+      const list = await api('/api/conversations?channel=whatsapp');
+      expect(list.status).toBe(200);
+      expect(list.data.conversations).toHaveLength(80);
+      expect(Object.keys(list.data.conversations[0]).sort()).toEqual(['channel', 'customer', 'id', 'last_direction', 'opted_out', 'paused', 'preview', 'status', 'subject', 'updated_at']);
+      // One row for the chat and one for its contact, plus the session.
+      expect(list.rows).toBeLessThanOrEqual(list.data.conversations.length * 2 + 25);
+      expect((await api('/api/conversations')).data.conversations).toHaveLength(80);
+    } finally {
+      await sql(`DELETE FROM conversations WHERE id LIKE 'ibx_cv%'`);
+      await sql(`DELETE FROM contacts WHERE id LIKE 'ibx_ct%'`);
+    }
   });
 });
 
@@ -336,14 +376,15 @@ describe('budget guard', () => {
     expect((await api('/api/overview')).data.budget).toMatchObject({ level: 'normal', poll_seconds: 30 });
   });
 
-  it('from 70%: the laptop syncs every 60 s, the dashboard every 2 min, and the owner is told once', async () => {
+  it('from 70%: the laptop still syncs every 20 s, the dashboard refreshes every 2 min, and the owner is told once', async () => {
     await clearUsage();
     await setUsage(72);
+    // Replies never wait for the guard: 0.3.2 reads new messages on this beat, newer builds get their
+    // sweeper replies, approved drafts and owner sends on it.
     const s = await sync(['whatsapp']);
-    expect(s.data.config.poll_seconds).toBe(60);
-    // The old build (0.3.2) reads the same field.
-    const old = await api('/api/agent/sync', { as: 'device', body: { version: '0.3.2', status: { channels: { whatsapp: { state: 'ready', unread: 0, busy: false } } } } });
-    expect(old.data.config.poll_seconds).toBe(60);
+    expect(s.data.config.poll_seconds).toBe(20);
+    expect((await syncAs('0.3.2')).data.config.poll_seconds).toBe(20);
+    expect((await syncAs('0.5.2')).data.config.poll_seconds).toBe(20);
     expect((await api('/api/overview')).data.budget).toMatchObject({ level: 'high', poll_seconds: 120 });
     expect((await api('/api/health')).data.budget.level).toBe('high');
     await cronAt(minuteAt(false));
@@ -372,7 +413,7 @@ describe('budget guard', () => {
     expect((await sql(`SELECT value FROM settings WHERE key = 'state:cleanup_at'`)).data.results).toHaveLength(1);
   });
 
-  it('from 90%: only customer replies and sends keep running', async () => {
+  it('from 90%: only customer replies, sends and the health check keep running', async () => {
     await setUsage(92);
     expect((await api('/api/overview')).data.budget.level).toBe('critical');
     // Diagnostics are answered but not kept.
@@ -394,7 +435,37 @@ describe('budget guard', () => {
     const queued = (await sql(`SELECT parts FROM outbox WHERE conversation_id = ? AND status = 'pending'`, [r.conversation_id])).data.results;
     expect(queued.map((q: any) => q.parts).join(' ')).toContain('bath');
     await sql(`UPDATE outbox SET status = 'cancelled' WHERE conversation_id = ? AND status = 'pending'`, [r.conversation_id]);
-    expect((await sync(['whatsapp'])).data.config.poll_seconds).toBe(60);
+    // A build from 0.4.0 syncs every 30 s; 0.3.2 reads new customer messages on its sync beat, so it stays at 20 s.
+    expect((await sync(['whatsapp'])).data.config.poll_seconds).toBe(30);
+    expect((await syncAs('0.5.2')).data.config.poll_seconds).toBe(30);
+    expect((await syncAs('0.3.2')).data.config.poll_seconds).toBe(20);
+  });
+
+  it('from 90%: the owner is still told the laptop went offline (the health check runs every 5th minute)', async () => {
+    await setUsage(92);
+    await sql(`DELETE FROM events WHERE type = 'device_offline'`);
+    await sql(`INSERT INTO settings (key, value, updated_at) VALUES ('state:offline_alerted', 'false', 0) ON CONFLICT(key) DO UPDATE SET value = 'false'`);
+    await sql('UPDATE devices SET last_seen_at = ? WHERE revoked_at IS NULL', [Date.now() - 30 * MIN]);
+    try {
+      // Not in the other minutes: those only check the database use.
+      await cronAt(minuteAt(false));
+      expect((await sql(`SELECT COUNT(*) AS n FROM events WHERE type = 'device_offline'`)).data.results[0].n).toBe(0);
+      await cronAt(minuteAt(true));
+      const ev = (await sql(`SELECT message FROM events WHERE type = 'device_offline'`)).data.results;
+      expect(ev).toHaveLength(1);
+      expect(ev[0].message).toContain('gone quiet');
+      // Live's monitor banners keep updating too: a customer waiting over 15 min is seen.
+      const r = await inbound('whatsapp', wa(), [msg('h1', 'hello')]);
+      for (const j of r.jobs) await finish(j.id);
+      // Waiting 20 min, with its next try later (a failing brain), so the sweeper leaves it alone this minute.
+      await sql('UPDATE conversations SET needs_reply_since = ?, processing_until = NULL, retry_at = ? WHERE id = ?', [Date.now() - 20 * MIN, Date.now() + 10 * MIN, r.conversation_id]);
+      await cronAt(minuteAt(true));
+      const monitor = JSON.parse((await sql(`SELECT value FROM settings WHERE key = 'state:monitor'`)).data.results[0].value);
+      expect(monitor.stuck).toContain(r.conversation_id);
+      await sql('UPDATE conversations SET needs_reply_since = NULL, retry_at = NULL WHERE id = ?', [r.conversation_id]);
+    } finally {
+      await sync(['whatsapp']); // back online
+    }
   });
 
   it('starts again at 00:00 UTC', async () => {

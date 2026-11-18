@@ -84,6 +84,12 @@ select.input { appearance: none; -webkit-appearance: none; padding-right: 36px; 
 .banner--down { background: var(--danger-soft); border-color: var(--danger-line); } .banner--down > svg { color: var(--danger); }
 .banner--info { background: var(--info-soft); border-color: var(--info-line); } .banner--info > svg { color: var(--info); }
 .banner--ok { background: var(--success-soft); border-color: var(--success-line); } .banner--ok > svg { color: var(--success); }
+/* A banner you press (Live's "Not updated since"). */
+.banner--action { width: 100%; text-align: left; font: inherit; cursor: pointer; }
+.banner--action:hover { border-color: var(--warning); }
+/* Live when nothing new came from the server for minutes: the status shown is old. */
+.hero.is-stale .hero__words, .chgrid.is-stale .chcard { opacity: 0.55; filter: grayscale(1); }
+.hero.is-stale .signal__pulse { animation: none; opacity: 0; }
 .notice { display: grid; gap: var(--sp-3); justify-items: start; color: var(--text-2); }
 
 /* Dialog */
