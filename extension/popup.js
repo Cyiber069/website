@@ -76,7 +76,9 @@ async function render() {
     const grant = st.lanes && st.lanes[`${name}:inbox`];
     const other = grant?.leader?.device_id && grant.leader.device_id !== st.auth?.device_id;
     const leader = grant?.leader?.person ? `${grant.leader.person}’s laptop` : 'Another laptop';
-    const role = grant && grant.role === 'standby' && other ? `Ready. ${leader} answers it` : grant && grant.role === 'other_account' ? 'Ready. Signed in to another account, so it stays idle' : '';
+    const role = grant && grant.role === 'standby' && other ? `Ready. ${leader} answers it`
+      : grant && grant.role === 'other_account' ? 'Connected to another account, so it stays idle'
+      : grant && grant.role === 'unconfirmed' ? 'Account not confirmed, so it stays idle' : '';
     detail.textContent = mode === 'off' ? 'Switched off' : ch.state === 'ready' ? role || `${mode === 'review' ? 'Working, asks you first' : 'Working'}${name === 'gmail' && (ch.detail || '').includes('@') ? ` (${ch.detail})` : ''}` : (ch.detail || STATE_TEXT[ch.state] || ch.state);
     li.append(dot, nm, detail);
     const show = document.createElement('button');

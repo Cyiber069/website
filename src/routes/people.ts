@@ -4,12 +4,12 @@ import type { Channel } from '../types';
 import { HttpError, bad, json, type Router } from '../lib/http';
 import { one, run } from '../lib/db';
 import { logEvent } from '../lib/events';
-import { getSettings, patchSettings } from '../lib/settings';
+import { getSettings, patchSettings, setState } from '../lib/settings';
 import { cachedAnswer } from '../lib/cache';
 import { budget } from '../lib/budget';
-import { CHANNEL_NAME, channelOf, cleanName, leaveDevice, normAccount, showAccount, teamView } from '../pipeline/leader';
+import { CHANNEL_NAME, channelOf, cleanName, deviceLabel, leaveDevice, normAccount, showAccount, teamView } from '../pipeline/leader';
 import { addCommand, commandState, laneFor } from '../pipeline/commands';
-import { currentDevice } from './agent';
+import { listDevices } from './agent';
 
 export function register(r: Router): void {
   // The extension on a laptop was disconnected (the popup): that laptop is removed, so it no longer counts
@@ -25,10 +25,22 @@ export function register(r: Router): void {
   r.get('/api/people', 'owner', async (c) => {
     const level = (await budget(c.db, c.now)).level;
     const team = await cachedAnswer('people', level === 'normal' ? 20_000 : 60_000, c.now, async () => {
-      const devices = await currentDevice(c.db, c.now);
-      return teamView(c.db, devices, await getSettings(c.db));
+      const list = await listDevices(c.db, c.now);
+      return teamView(list.devices, list.leaders, list.main, await getSettings(c.db));
     });
-    return json({ now: c.now, people: team.people, lanes: team.lanes });
+    return json({ now: c.now, people: team.people, lanes: team.lanes, main: team.main });
+  });
+
+  // The main laptop: the shop's own. Its WhatsApp and TikTok accounts are the shop's (unless the owner set
+  // one), and a lane goes back to it once it is ready again. The People panel.
+  r.put('/api/people/main', 'owner', async (c) => {
+    const body = await c.body<{ device_id?: unknown }>();
+    const id = typeof body.device_id === 'string' ? body.device_id : '';
+    const d = id ? await one<{ id: string; name: string; person: string }>(c.db, 'SELECT id, name, person FROM devices WHERE id = ? AND revoked_at IS NULL', id) : null;
+    if (!d) throw new HttpError(404, 'not_found', 'That laptop is not paired any more');
+    await setState(c.db, 'main_device', d.id);
+    await logEvent(c.db, { level: 'info', type: 'main_laptop', message: `${deviceLabel(d)} is the main laptop now.` });
+    return json({ ok: true, main: { device_id: d.id, label: deviceLabel(d) } });
   });
 
   // Rename a laptop or say whose it is. The People panel and Connections.
@@ -62,8 +74,8 @@ export function register(r: Router): void {
   // Asked a few times after a command: waiting, sent (the laptop has it), done or failed (it said so).
   r.get('/api/devices/:id/commands/:cid', 'owner', async (c) => json(await commandState(c.db, c.params.id!, c.params.cid!, c.now)));
 
-  // The shop's account for a lane: a laptop on any other account stays out of it. Empty forgets it, and the
-  // next laptop that answers the lane sets it again. For Gmail it is the inbox chosen in Connections.
+  // The shop's account for a lane: a laptop on any other account stays out of it, and no laptop replaces it.
+  // Empty forgets it: the main laptop's account is used again. For Gmail it is the inbox chosen in Connections.
   r.put('/api/lanes/:lane/account', 'owner', async (c) => {
     const ch: Channel | null = channelOf(c.params.lane!);
     if (!ch) throw new HttpError(404, 'not_found', 'No such lane');
@@ -74,11 +86,11 @@ export function register(r: Router): void {
     // For Gmail it is also the inbox chosen in Connections (the tabs open it). The lane row is set the same
     // way for every channel: an empty value forgets what the lane learned, so the next laptop's account counts.
     if (ch === 'gmail') await patchSettings(c.db, 'gmail', { account });
-    await run(c.db, `INSERT INTO lane_leaders (lane, account, device_id, epoch, since, reason, prev_device) VALUES (?, ?, '', 0, ?, 'account', '')
-      ON CONFLICT(lane) DO UPDATE SET account = excluded.account`, c.params.lane!, account, c.now);
+    await run(c.db, `INSERT INTO lane_leaders (lane, account, account_src, device_id, epoch, since, reason, prev_device) VALUES (?, ?, ?, '', 0, ?, 'account', '')
+      ON CONFLICT(lane) DO UPDATE SET account = excluded.account, account_src = excluded.account_src`, c.params.lane!, account, account ? 'owner' : '', c.now);
     await logEvent(c.db, {
       level: 'info', type: 'shop_account', channel: ch,
-      message: account ? `The agent now uses ${showAccount(ch, account)} on ${CHANNEL_NAME[ch]}.` : `The agent will use the ${CHANNEL_NAME[ch]} account of the next laptop that answers it.`,
+      message: account ? `The agent now uses ${showAccount(ch, account)} on ${CHANNEL_NAME[ch]}.` : `The agent will use the ${CHANNEL_NAME[ch]} account of the main laptop.`,
     });
     return json({ ok: true, lane: c.params.lane, account, account_shown: showAccount(ch, account) });
   });

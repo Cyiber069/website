@@ -2,12 +2,12 @@
 // 24 hours. It holds what is needed to find a fault (laptop and channel health, page notes, errors,
 // job outcomes, AI timings) and leaves out what customers wrote: no message text, no previews, no
 // phone numbers or email addresses of customers. One link at a time; making a new one ends the old.
-import { all } from '../lib/db';
+import { all, one } from '../lib/db';
 import { randomToken, sha256Hex, timingSafeEqual } from '../lib/crypto';
 import { HttpError, json, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
 import { replyTimes } from '../pipeline/replytime';
-import { LANES, channelOf, deviceLabel, maskAccount } from '../pipeline/leader';
+import { LANES, MAIN_SQL, channelOf, deviceLabel, maskAccount } from '../pipeline/leader';
 import type { LaneLeaderRow } from '../types';
 
 const HOUR = 3_600_000;
@@ -31,15 +31,22 @@ function eventMessage(e: Record<string, unknown>): string {
   if (ERROR_EVENTS.has(String(e.type))) return scrub(cut(msg.slice(msg.indexOf(': ') + 2), 300));
   return '';
 }
-/** A laptop's stored status with each channel's account masked (src/pipeline/leader.ts maskAccount). */
+/**
+ * A laptop's stored status with each channel's account masked (src/pipeline/leader.ts maskAccount), and
+ * any address or number in its words scrubbed (an older Gmail build names the inbox in its detail).
+ */
 function maskStatus(st: unknown): unknown {
   if (!st || typeof st !== 'object') return st;
   const s = st as { channels?: Record<string, Record<string, unknown>> };
   if (!s.channels) return st;
   const channels: Record<string, Record<string, unknown>> = {};
   for (const [ch, c] of Object.entries(s.channels)) {
-    channels[ch] = c && typeof c === 'object' && typeof c.account === 'string' && channelOf(`${ch}:inbox`)
-      ? { ...c, account: maskAccount(channelOf(`${ch}:inbox`)!, c.account) } : c;
+    if (!c || typeof c !== 'object') { channels[ch] = c; continue; }
+    const lane = channelOf(`${ch}:inbox`);
+    const out: Record<string, unknown> = { ...c };
+    if (typeof c.account === 'string' && lane) out.account = maskAccount(lane, c.account);
+    for (const k of ['detail', 'last_error']) if (typeof c[k] === 'string') out[k] = scrub(c[k] as string);
+    channels[ch] = out;
   }
   return { ...s, channels };
 }
@@ -50,7 +57,7 @@ const initial = (s: unknown): string => { const t = String(s ?? '').trim(); retu
 export async function buildReport(db: D1Database, now: number): Promise<Record<string, unknown>> {
   const since = now - 24 * HOUR;
   const settings = await getSettings(db);
-  const [devices, diagnostics, events, jobs, jobCounts, conversations, messageCounts, urgent, llm, override, replies, leaders] = await Promise.all([
+  const [devices, diagnostics, events, jobs, jobCounts, conversations, messageCounts, urgent, llm, override, replies, leaders, mainRow] = await Promise.all([
     all<Record<string, unknown>>(db, 'SELECT id, name, person, created_at, last_seen_at, status, version, revoked_at FROM devices ORDER BY last_seen_at DESC LIMIT 10'),
     all<Record<string, unknown>>(db, 'SELECT ts, device_id, channel, kind, data FROM diagnostics WHERE ts >= ? ORDER BY ts DESC LIMIT 80', since),
     all<Record<string, unknown>>(db, 'SELECT ts, level, type, channel, conversation_id, message, data FROM events WHERE ts >= ? ORDER BY ts DESC LIMIT 80', since),
@@ -67,7 +74,9 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
     getState<{ rev?: number } | null>(db, 'selectors_override', null),
     replyTimes(db, since),
     all<LaneLeaderRow>(db, 'SELECT * FROM lane_leaders'),
+    one<{ main: string | null }>(db, `SELECT ${MAIN_SQL} AS main`),
   ]);
+  const mainId = String(mainRow?.main ?? '');
   // Who answers each lane and each laptop's account there, masked (enough to tell two apart).
   const byId = new Map(devices.map((d) => [String(d.id), d]));
   const laneLeaders = LANES.map((lane) => {
@@ -78,6 +87,7 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
       lane, account: maskAccount(ch, row?.account ?? ''), device_id: row?.device_id || null,
       leader: d ? deviceLabel({ person: String(d.person ?? ''), name: String(d.name ?? '') }) : null,
       epoch: row?.epoch ?? 0, since: row?.since ?? null, reason: row?.reason ?? '', prev_device: row?.prev_device || null,
+      account_src: row?.account_src ?? '', handover_at: row?.handover_at || null,
     };
   });
   const people = devices.filter((d) => !d.revoked_at).map((d) => {
@@ -89,7 +99,7 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
       lanes[lane] = { state: c?.state ?? 'no_tab', account: maskAccount(ch, c?.account ?? ''), answers: laneLeaders.some((l) => l.lane === lane && l.device_id === d.id) };
     }
     return {
-      device_id: d.id, person: d.person || null, name: d.name, version: d.version,
+      device_id: d.id, person: d.person || null, name: d.name, version: d.version, main: d.id === mainId,
       online: typeof d.last_seen_at === 'number' && now - d.last_seen_at < ONLINE_MS, paused: st.paused_locally === true, lanes,
     };
   });

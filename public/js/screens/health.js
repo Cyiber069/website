@@ -36,7 +36,9 @@ export default {
     function paint() {
       if (!data) { setHTML(view, unavailable('The health check', error)); return; }
       const ov = ctx.overview;
-      const dev = data.devices?.[0];
+      // The laptop the summary talks about: one that answers, else the main laptop (never one on another account).
+      const dev = data.device ?? data.devices?.[0];
+      const devName = dev ? (dev.person ? `${dev.person}’s laptop` : dev.name || 'Laptop') : 'Laptop';
       const failed = data.failed_jobs || [];
       const errors = data.errors || [];
       const diags = data.diagnostics || [];
@@ -68,10 +70,10 @@ export default {
 
         <section class="card stack" aria-labelledby="hl-h">
           <div class="card__head"><h2 class="eyebrow" id="hl-h">Laptop</h2>${dev ? html`<span class="pill ${dev.online ? 'pill--live' : 'pill--down'}"><span class="dot ${dev.online ? 'dot--live' : 'dot--down'}" aria-hidden="true"></span>${dev.online ? 'Online' : 'Offline'}</span>` : html`<span class="pill pill--wait"><span class="dot dot--wait" aria-hidden="true"></span>Not paired</span>`}</div>
-          ${dev ? html`<p class="muted">${dev.name || 'Laptop'} ${dev.last_seen_at ? `last checked in ${ago(dev.last_seen_at, data.now)}` : 'has not checked in yet'}.${dev.online ? '' : ' Open the laptop, make sure Chrome is running and it has internet.'}${dev.status?.paused_locally ? ' It is paused from the extension on the laptop.' : ''}</p>`
+          ${dev ? html`<p class="muted">${devName} ${dev.last_seen_at ? `last checked in ${ago(dev.last_seen_at, data.now)}` : 'has not checked in yet'}.${dev.online ? '' : ' Open the laptop, make sure Chrome is running and it has internet.'}${dev.status?.paused_locally ? ' It is paused from the extension on the laptop.' : ''}</p>`
             : html`<p class="muted">No laptop is paired, so the agent cannot read or send anything.</p><div><a class="btn btn--primary" href="#/connections">Pair this laptop</a></div>`}
           ${ov ? html`<ul class="rows">${CHANNELS.map((c) => {
-            const st = channelState(ov, c); const cs = dev?.status?.channels?.[c]; const un = cs?.unread; const seen = st.seen;
+            const st = channelState(ov, c); const cs = ((data.lanes ? data.lanes[c]?.device : null) ?? dev)?.status?.channels?.[c]; const un = cs?.unread; const seen = st.seen;
             const facts = [seen ? seen.text : '', un ? plural(un, 'unread chat') : '', cs?.recoveries ? `fixed itself ${plural(cs.recoveries, 'time')} today` : '', seen?.stuck ? `${plural(seen.stuck, 'chat')} waiting with no reply` : ''].filter(Boolean).map((f) => f[0].toUpperCase() + f.slice(1));
             return html`<li class="rowline">${chBadge(c)}<span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span><span class="meta">${seen?.reason || st.hint}${facts.length ? html`<span class="rowline__sub ${seen && seen.level !== 'ok' ? `seen--${seen.level}` : ''}">${facts.join('. ')}</span>` : ''}${cs?.last_error && cs.last_error !== seen?.reason ? html`<span class="rowline__sub break">Last problem: ${cs.last_error}</span>` : ''}</span></li>`;
           })}</ul>` : ''}
@@ -142,7 +144,7 @@ export default {
     async function load() {
       try { data = await get('/api/health'); error = null; }
       catch (err) { if (err.name === 'AuthError') return; if (!data) error = err; else return; }
-      const sig = JSON.stringify([{ ...data, now: 0, devices: (data.devices || []).map((d) => [d.id, d.online, d.status]) }, ctx.overview?.channels, Math.floor(Date.now() / 60000)]);
+      const sig = JSON.stringify([{ ...data, now: 0, devices: (data.devices || []).map((d) => [d.id, d.online, d.status]), device: data.device?.id ?? null, lanes: Object.entries(data.lanes || {}).map(([c, l]) => [c, l.device?.id, l.role]) }, ctx.overview?.channels, Math.floor(Date.now() / 60000)]);
       if (sig !== lastSig) { lastSig = sig; paint(); }
     }
     async function loadShare() {
