@@ -177,7 +177,7 @@ async function main() {
     return d && ['whatsapp', 'gmail', 'tiktok'].every((c) => d.channels[c].state === 'ready') && d.channels.whatsapp.role === 'standby' ? d : null;
   }, { poke: true });
   assert.equal(sam.label, 'Sam’s laptop');
-  assert.equal(sam.version, '0.6.0');
+  assert.equal(sam.version, JSON.parse(readFileSync(new URL('../../extension/manifest.json', import.meta.url), 'utf8')).version);
   assert.equal(sam.channels.whatsapp.account_shown, `+${SHOP_NUMBER}`, 'the WhatsApp number comes from the page');
   assert.equal(sam.channels.gmail.role, 'active');
   assert.equal(sam.channels.tiktok.role, 'active');
