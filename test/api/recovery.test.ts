@@ -107,11 +107,12 @@ beforeEach(async () => {
   await sql(`UPDATE outbox SET status = 'cancelled' WHERE status IN ('pending', 'leased', 'review')`);
   await sql(`UPDATE contacts SET opted_out = 0`);
   await setRecovery({
-    enabled: true, daily_cap: 5, cooldown_days: 30, min_age_minutes: 60, max_age_hours: 48, countries: [], consent_mode: 'all',
+    enabled: true, daily_cap: 5, cooldown_days: 30, min_age_minutes: 60, max_age_hours: 48, countries: [],
     spacing_seconds: [120, 300], window_minutes: 90, personalize: false, include_link: false, opt_out_line: true,
   });
   await saveTemplate({ text: TEMPLATE, approved: false });
-  await sql(`UPDATE settings SET value = json_set(value, '$.consent_confirmed', json('false')) WHERE key = 'recovery'`);
+  // Who gets it is chosen only when the message is approved (PUT /api/settings/recovery drops consent_mode): set it here.
+  await sql(`UPDATE settings SET value = json_set(value, '$.consent_confirmed', json('false'), '$.consent_mode', 'all') WHERE key = 'recovery'`);
   await setRecovery({}); // drops the settings cache after the direct edit above
 });
 
@@ -327,7 +328,8 @@ describe('who gets a reminder', () => {
     expect(view.eligible.map((e: any) => e.id).sort()).toEqual([gb, consented].sort());
     expect(view.skipped.find((s: any) => s.id === de).code).toBe('country');
 
-    await setRecovery({ countries: [], consent_mode: 'opted_in' });
+    await setRecovery({ countries: [] });
+    await sql(`UPDATE settings SET value = json_set(value, '$.consent_mode', 'opted_in') WHERE key = 'recovery'`);
     view = await overview();
     expect(view.eligible.map((e: any) => e.id)).toEqual([consented]);
     expect(view.skipped.filter((s: any) => s.code === 'no_consent').map((s: any) => s.id).sort()).toEqual([gb, de].sort());

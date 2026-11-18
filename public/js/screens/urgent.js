@@ -18,7 +18,7 @@ function urgentCard(u) {
       <p class="ucard__q">${quote(u.customer_message || u.question)}</p>
       <div class="queued"><span class="eyebrow">${u._sent.dismissed ? 'Closed' : 'This is what the agent will send'}</span>
         ${u._sent.dismissed ? html`<p class="muted">Closed with no reply.</p>` : html`<div class="thread">${u._sent.parts.map((p) => html`<div class="msg msg--agent"><div class="bubble">${p}</div></div>`)}</div>
-        <p class="meta">${u._sent.learned ? 'Saved to Knowledge so the agent knows next time. ' : ''}Your laptop sends it in a moment.</p>`}
+        <p class="meta">${u._sent.learned ? 'Saved to Knowledge so the agent knows next time. ' : u._sent.kbLocked ? 'Not saved to Knowledge because it is locked. ' : ''}Your laptop sends it in a moment.</p>`}
       </div>
     </article>`;
   }
@@ -215,9 +215,9 @@ export default {
           : await post(`/api/urgent/${encodeURIComponent(id)}/answer`, { answer: text, learn: form.elements.learn.checked });
         btn.classList.replace('is-sending', 'is-sent'); btn.querySelector('.btn__label').textContent = 'Queued';
         navigator.vibrate && navigator.vibrate(12);
-        toast('Reply queued. Your laptop sends it in a moment.');
+        toast(res.knowledge_locked ? 'Reply queued. Not saved to Knowledge because it is locked.' : 'Reply queued. Your laptop sends it in a moment.');
         box.dataset.dirty = '0';
-        setTimeout(() => { delete card.dataset.busy; holdSent(item, { parts: res.parts?.length ? res.parts : [text], learned: Boolean(res.learned) }); }, 500);
+        setTimeout(() => { delete card.dataset.busy; holdSent(item, { parts: res.parts?.length ? res.parts : [text], learned: Boolean(res.learned), kbLocked: Boolean(res.knowledge_locked) }); }, 500);
       } catch (err) {
         delete card.dataset.busy;
         btn.classList.remove('is-sending'); btn.querySelector('.btn__label').textContent = 'Send reply';
@@ -242,9 +242,9 @@ export default {
         const res = await post(`/api/urgent/${encodeURIComponent(id)}/note`, { note, remember: form.elements.remember.checked });
         btn.classList.replace('is-sending', 'is-sent'); btn.querySelector('.btn__label').textContent = 'Done';
         navigator.vibrate && navigator.vibrate(12);
-        toast(!res.parts?.length ? 'Noted. The agent is not replying for now.' : res.queued_as === 'review' ? 'The agent wrote a reply. It waits for your OK below.' : 'The agent wrote the reply. Your laptop sends it in a moment.');
+        toast(`${!res.parts?.length ? 'Noted. The agent is not replying for now.' : res.queued_as === 'review' ? 'The agent wrote a reply. It waits for your OK below.' : 'The agent wrote the reply. Your laptop sends it in a moment.'}${res.knowledge_locked ? ' Not saved to Knowledge because it is locked.' : ''}`);
         box.dataset.dirty = '0';
-        setTimeout(() => { delete card.dataset.busy; holdSent(item, res.parts?.length ? { parts: res.parts, learned: Boolean(res.learned) } : { dismissed: true, parts: [] }); }, 500);
+        setTimeout(() => { delete card.dataset.busy; holdSent(item, res.parts?.length ? { parts: res.parts, learned: Boolean(res.learned), kbLocked: Boolean(res.knowledge_locked) } : { dismissed: true, parts: [] }); }, 500);
       } catch (err) {
         delete card.dataset.busy;
         btn.classList.remove('is-sending'); btn.querySelector('.btn__label').textContent = 'Let the agent reply';

@@ -385,7 +385,8 @@ unless a doc with that title exists; a state flag per note keeps a deleted note 
 * `POST /api/recovery/teach { rough }` -> `{ suggestion }` (not saved)
 * `PUT /api/recovery/template { text, approved, consent_mode? }` saves the message. `approved: true` with a `consent_mode` also sets `consent_confirmed`.
 * `POST /api/recovery/run { dry_run }` -> `{ run }`; `POST /api/recovery/refresh` pulls checkouts now; `POST /api/recovery/checkouts/:id/skip`
-* Other options through `PUT /api/settings/recovery`.
+* Other options through `PUT /api/settings/recovery`. It drops `template`, `consent_confirmed` and `consent_mode`: who gets the message is
+  chosen only when it is approved (`PUT /api/recovery/template`).
 
 Template variables: `{first_name}` `{product}` `{total}` `{checkout_link}` `{shop}`.
 
@@ -452,11 +453,16 @@ The owner locks a settings box with a PIN so it cannot be changed, on every devi
   `section` and `locks { pin, locked }`. Reads are never refused. `NEVER_LOCKED` is checked first: the agent switch and `POST /api/panic`,
   `PUT /api/settings/agent`, Urgent, review, Inbox sends, pauses and opt outs, the Urgent Approve code, the support link, setup, login,
   logout, password, the lock routes, `/api/agent/*`, hooks, test helpers and the Test buttons. The agent's own work never goes through it.
+* An Urgent answer or note with learn or remember on is still sent while `knowledge` is locked, but nothing is learned
+  (`learnUnlessLocked`); the answer says `knowledge_locked: true` and Urgent shows "Not saved to Knowledge because it is locked".
+* "Notify this device" (`public/js/push.js`) asks `GET /api/locks` before it touches the browser's subscription, undoes a subscription the
+  server refused, and switches off on the server first, so the switch never disagrees with the server.
 * Every owner answer carries `x-acx-locks: {"pin":true,"locked":["voice"]}` (`withLockHeader`), so an open dashboard follows a lock made
   on another device at its next refresh. `api.js` hands it and every 423 to `locks.js`.
 * State: `state:locks` `{ pin, sections: { id: locked_at } }` is in `BUNDLED_STATE` (read with the settings, cached 30 s). A lock change
   writes it and `state:settings_rev` in one batch, so other isolates drop their cached copy on their next signed in request.
-  `state:lock_pin` `{ hash, salt, iterations, set_at }` is PBKDF2 only. `state:lock_fails` `{ fails, until }`: every PIN check takes a try
+  `state:lock_pin` `{ hash, salt, iterations, set_at }` is PBKDF2 only, 10,000 rounds for a new PIN (`PIN_ITERATIONS`: changing the PIN
+  checks the old one and hashes the new one in one request, inside the free plan's CPU; a stored hash is checked with its own count). `state:lock_fails` `{ fails, until }`: every PIN check takes a try
   first in one statement (parallel guesses all count), a right PIN sets it to 0, the 5th wrong one blocks every PIN check for 15 min.
 * Dashboard: a screen marks a box `data-lock="<id>"` (button at the top right and the Locked pill) or `data-lock-part="<id>"` (governed, a
   short Locked line once a page); `data-lock-keep` keeps a control usable. Copy, Try again and Test buttons always stay usable. A locked

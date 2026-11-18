@@ -1,8 +1,9 @@
 // Settings locks against the local Worker: set a PIN, lock, every lockable box's change routes refused with 423
 // (reads still work), the never lockable routes and the laptop untouched while everything is locked, unlock,
 // wrong PIN counting and the 15 minute block, changing the PIN.
+import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { BASE, api, cron, inbound, sql, sync, unique } from '../helpers/client';
+import { BASE, api, cron, finish, inbound, sql, sync, unique } from '../helpers/client';
 
 const PIN = '2468';
 const SECTIONS = ['voice', 'brain', 'vision', 'shopify', 'alerts', 'channels', 'gmail', 'pacing', 'laptops', 'recovery_message', 'recovery_settings', 'discounts', 'sales', 'knowledge'];
@@ -242,5 +243,68 @@ describe('settings locks', () => {
     expect((await api('/api/locks')).data).toMatchObject({ pin_set: false, locked: [] });
     expect((await api('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 4 } })).status).toBe(200);
     expect((await api('/api/locks/pin', { body: { pin: PIN } })).status).toBe(200);
+  });
+
+  it('hashes a new PIN with 10,000 rounds and still takes an older hash with its own count', async () => {
+    const stored = JSON.parse((await sql(`SELECT value FROM settings WHERE key = 'state:lock_pin'`)).data.results[0].value);
+    expect(stored.iterations).toBe(10_000);
+    // A hash made with 40,000 rounds (the first build) keeps working.
+    const salt = randomBytes(16);
+    const b64url = (b: Buffer) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const old = { hash: b64url(pbkdf2Sync('97531', salt, 40_000, 32, 'sha256')), salt: b64url(salt), iterations: 40_000, set_at: 1 };
+    await sql(`UPDATE settings SET value = ? WHERE key = 'state:lock_pin'`, [JSON.stringify(old)]);
+    await resetFails();
+    expect((await lock('sales', true, '97531')).status).toBe(200);
+    expect((await lock('sales', false, '97531')).status).toBe(200);
+    // Changing it hashes the new one with the cheaper count.
+    expect((await api('/api/locks/pin', { body: { pin: PIN, old_pin: '97531' } })).status).toBe(200);
+    expect(JSON.parse((await sql(`SELECT value FROM settings WHERE key = 'state:lock_pin'`)).data.results[0].value).iterations).toBe(10_000);
+  });
+
+  it('with the reminder message locked, who gets it cannot change through the reminder settings either', async () => {
+    const before = (await api('/api/settings')).data.settings.recovery;
+    const other = before.consent_mode === 'all' ? 'opted_in' : 'all';
+    expect((await lock('recovery_message', true)).status).toBe(200);
+    const res = await api('/api/settings/recovery', { method: 'PUT', body: { consent_mode: other, enabled: before.enabled } });
+    expect(res.status).toBe(200); // the reminder settings box is not locked
+    expect(res.data.recovery.consent_mode).toBe(before.consent_mode);
+    expect((await api('/api/settings')).data.settings.recovery.consent_mode).toBe(before.consent_mode);
+    expect((await lock('recovery_message', false)).status).toBe(200);
+    // Unlocked too: who gets it is only ever chosen when the message is approved (PUT /api/recovery/template).
+    expect((await api('/api/settings/recovery', { method: 'PUT', body: { consent_mode: other } })).data.recovery.consent_mode).toBe(before.consent_mode);
+  });
+
+  it('with Knowledge locked an Urgent answer or note still goes out, but nothing is saved to Knowledge', async () => {
+    await api('/api/agent-toggle', { body: { enabled: true } });
+    const escalated = async () => {
+      const res = await inbound('whatsapp', `${unique('4479')}@c.us`, [{ external_id: unique('m'), direction: 'in', body: 'unknown-question can I get a refund' }]);
+      expect(res.action).toBe('escalate');
+      for (const job of res.jobs) await finish(job.id, { status: 'sent' });
+      return (await sql(`SELECT id FROM urgent WHERE conversation_id = ? AND status = 'open'`, [res.conversation_id])).data.results[0].id as string;
+    };
+    const learnedFor = async (id: string) => (await sql(`SELECT id FROM kb_docs WHERE source = 'learned' AND source_ref = ?`, [id])).data.results;
+    const docs = async () => (await sql(`SELECT COUNT(*) AS n FROM kb_docs`)).data.results[0].n as number;
+    expect((await lock('knowledge', true)).status).toBe(200);
+    const before = await docs();
+
+    const a = await escalated();
+    const answered = await api(`/api/urgent/${a}/answer`, { body: { answer: 'Refunds take 5 working days once the parcel is back with us', learn: true } });
+    expect(answered.status).toBe(200);
+    expect(answered.data).toMatchObject({ ok: true, learned: false, knowledge_locked: true });
+    expect((await sql(`SELECT COUNT(*) AS n FROM outbox WHERE source = 'urgent' AND ref_id = ?`, [a])).data.results[0].n).toBe(1);
+
+    const b = await escalated();
+    const noted = await api(`/api/urgent/${b}/note`, { body: { note: 'the 72v batteries are back in stock on Friday', remember: true } });
+    expect(noted.status).toBe(200);
+    expect(noted.data).toMatchObject({ ok: true, learned: false, kb_doc_id: null, knowledge_locked: true });
+    expect(noted.data.parts.length).toBeGreaterThan(0);
+
+    expect(await learnedFor(a)).toEqual([]);
+    expect(await learnedFor(b)).toEqual([]);
+    expect(await docs()).toBe(before);
+    // Not asked to remember: nothing to say.
+    const c = await escalated();
+    expect((await api(`/api/urgent/${c}/answer`, { body: { answer: 'Yes we can', learn: false } })).data.knowledge_locked).toBe(false);
+    expect((await lock('knowledge', false)).status).toBe(200);
   });
 });

@@ -164,6 +164,16 @@ export async function assertUnlocked(db: D1Database, method: string, pathname: s
   if (s.sections[section]) throw new HttpError(423, 'locked', LOCKED_MESSAGE, { section, locks: lockSummary(s) });
 }
 
+/**
+ * An Urgent answer or note is never refused, but with "Remember this" it would also write to Knowledge. While
+ * Knowledge is locked the reply still goes out and nothing is learned; `knowledge_locked` tells the owner why.
+ */
+export async function learnUnlessLocked(db: D1Database, want: boolean): Promise<{ learn: boolean; knowledge_locked: boolean }> {
+  if (!want) return { learn: false, knowledge_locked: false };
+  const locked = Boolean((await lockState(db)).sections.knowledge);
+  return { learn: !locked, knowledge_locked: locked };
+}
+
 /** Every owner answer says what is locked, so a lock made on another device shows at the next refresh. */
 export async function withLockHeader(db: D1Database, res: Response): Promise<Response> {
   let value: string;
@@ -207,6 +217,12 @@ export async function setLocked(db: D1Database, id: LockSectionId, locked: boole
 export const PIN_RE = /^\d{4,8}$/;
 export const MAX_PIN_FAILS = 5;
 export const PIN_BLOCK_MS = 15 * MIN;
+/**
+ * PBKDF2 rounds for a new PIN hash. Changing the PIN checks the old one and hashes the new one in one request, and
+ * the free plan allows about 10 ms of CPU: 40,000 rounds twice is over it. A PIN of 4 to 8 digits is guarded by the
+ * 5 try limit, not by the rounds. A stored hash is always checked with its own count, so older hashes keep working.
+ */
+export const PIN_ITERATIONS = 10_000;
 
 /** A PIN from a request: text of 4 to 8 digits, nothing else. */
 export function pinValue(v: unknown, field = 'pin'): string {
@@ -315,7 +331,7 @@ export async function setPin(db: D1Database, pin: string, oldPin: string | null,
     throw new HttpError(409, 'pin_exists', 'A PIN is already set. Enter it to change it.', { locks: lockSummary(await lockState(db)) });
   }
   if (existing) await verifyPin(db, oldPin!, now);
-  const { hash, salt, iterations } = await hashPassword(pin);
+  const { hash, salt, iterations } = await hashPassword(pin, undefined, PIN_ITERATIONS);
   const record = JSON.stringify({ hash, salt, iterations, set_at: now });
   const write = existing
     ? stmt(db, 'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', record, now, PIN_KEY)

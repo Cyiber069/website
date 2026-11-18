@@ -98,7 +98,7 @@ select.input { appearance: none; -webkit-appearance: none; padding-right: 36px; 
 .dialog__body { display: grid; gap: var(--sp-3); padding: var(--sp-6); }
 .dialog__title { font: 600 var(--fs-20)/1.15 var(--font-display); letter-spacing: 0.04em; text-transform: uppercase; }
 .dialog__actions { display: flex; gap: var(--sp-2); justify-content: flex-end; flex-wrap: wrap; margin-top: var(--sp-2); }
-@media (max-width: 479px) { .dialog__actions .btn { flex: 1 1 100%; min-height: 48px; } .dialog__actions { flex-direction: column-reverse; } }
+@media (max-width: 479px) { .dialog__actions .btn { flex: 0 0 auto; width: 100%; min-height: 48px; } .dialog__actions { flex-direction: column-reverse; } }
 
 /* Generic rows, folds, section heads */
 .lead { font-size: var(--fs-15); }

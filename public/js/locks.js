@@ -141,7 +141,7 @@ const COPY = {
 };
 
 function pinDialog({ id, mode, note = '' }) {
-  if (document.querySelector('.lockdlg')) return;
+  if (document.querySelector('.lockdlg[open]')) return;
   const label = LOCK_LABELS[id];
   const locked = state.locked.has(id);
   const copy = COPY[mode](label, locked);
@@ -162,7 +162,8 @@ function pinDialog({ id, mode, note = '' }) {
     const f = focus && form.elements[focus];
     if (f) { f.focus(); f.select(); }
   };
-  const reopen = (nextMode, why) => { d.close(); pinDialog({ id, mode: nextMode, note: why }); };
+  // The close event (which drops the dialog) comes a task later: drop it now, so the next dialog can open.
+  const reopen = (nextMode, why) => { d.close(); d.remove(); pinDialog({ id, mode: nextMode, note: why }); };
 
   d.addEventListener('close', () => d.remove());
   d.addEventListener('click', (e) => {
@@ -194,7 +195,7 @@ function pinDialog({ id, mode, note = '' }) {
       } catch (err) {
         if (err.name === 'AuthError') { d.close(); return; }
         if (err.extra?.locks) applyLocks(err.extra.locks);
-        if (err.code === 'pin_exists' && mode === 'set') return reopen(locked ? 'unlock' : 'lock', friendly(err));
+        if (err.code === 'pin_exists' && mode === 'set') return reopen(state.locked.has(id) ? 'unlock' : 'lock', 'A PIN is already set. Enter that PIN.');
         if (err.code === 'no_pin' && mode !== 'set') return reopen('set', 'There is no PIN yet. Pick one first.');
         const field = err.code === 'wrong_pin' ? (mode === 'change' ? 'old_pin' : 'pin') : null;
         if (field && form.elements[field]) form.elements[field].value = '';
@@ -208,7 +209,7 @@ function pinDialog({ id, mode, note = '' }) {
 
 /** The lock button: ask the server first (a PIN may have been set on another device), then the right dialog. */
 async function openLock(id, btn) {
-  if (btn.dataset.busy === '1' || document.querySelector('.lockdlg')) return;
+  if (btn.dataset.busy === '1' || document.querySelector('.lockdlg[open]')) return;
   await busy(btn, async () => {
     try { applyLocks(await get('/api/locks')); } catch (err) { if (err.name === 'AuthError') return; /* go on with what is known */ }
   });

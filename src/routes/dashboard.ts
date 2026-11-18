@@ -20,6 +20,7 @@ import { todayStats } from '../pipeline/today';
 import { cachedAnswer, onReset } from '../lib/cache';
 import { DASHBOARD_SECONDS, budget, type Budget, type BudgetLevel } from '../lib/budget';
 import { kbTotals } from '../kb/cache';
+import { learnUnlessLocked } from '../lib/locks';
 
 const count = async (db: D1Database, sql: string, ...p: (string | number)[]) => (await one<{ n: number }>(db, sql, ...p))?.n ?? 0;
 
@@ -298,16 +299,18 @@ export function register(r: Router): void {
   r.post('/api/urgent/:id/answer', 'owner', async (c) => {
     const body = await c.body<{ answer?: unknown; learn?: unknown }>();
     const answer = str(body.answer, 'answer', { max: 2000 });
-    const res = await answerUrgent(c.env, c.params.id!, answer, bool(body.learn, true));
-    return json({ ok: true, parts: res.parts, learned: res.learned, status: res.urgent.status });
+    const kb = await learnUnlessLocked(c.db, bool(body.learn, true)); // settings locks: sent, but not learned while Knowledge is locked
+    const res = await answerUrgent(c.env, c.params.id!, answer, kb.learn);
+    return json({ ok: true, parts: res.parts, learned: res.learned, status: res.urgent.status, knowledge_locked: kb.knowledge_locked });
   });
 
   // "Tell the agent what's going on": the agent writes and sends the reply itself from the owner's note.
   r.post('/api/urgent/:id/note', 'owner', async (c) => {
     const body = await c.body<{ note?: unknown; remember?: unknown }>();
     const note = str(body.note, 'note', { max: 2000 });
-    const res = await answerUrgentWithNote(c.env, c.params.id!, note, bool(body.remember, true));
-    return json({ ok: true, parts: res.parts, queued_as: res.status, outbox_id: res.outbox_id, learned: res.learned, kb_doc_id: res.kb_doc_id, status: res.urgent.status });
+    const kb = await learnUnlessLocked(c.db, bool(body.remember, true)); // settings locks: as above
+    const res = await answerUrgentWithNote(c.env, c.params.id!, note, kb.learn);
+    return json({ ok: true, parts: res.parts, queued_as: res.status, outbox_id: res.outbox_id, learned: res.learned, kb_doc_id: res.kb_doc_id, status: res.urgent.status, knowledge_locked: kb.knowledge_locked });
   });
 
   r.post('/api/urgent/:id/send-draft', 'owner', async (c) => {
@@ -464,8 +467,9 @@ export function register(r: Router): void {
     const group = c.params.group!;
     if (!isSettingsGroup(group)) throw new HttpError(404, 'unknown_group');
     const patch = await c.body<Record<string, unknown>>(64_000);
-    // The recovery message is changed through /api/recovery so approval is always deliberate.
-    if (group === 'recovery') { delete patch.template; delete patch.consent_confirmed; }
+    // The recovery message is changed through /api/recovery so approval is always deliberate. Who gets it (consent) is
+    // step 3 of that message: chosen only when it is approved, so a lock on the message covers it too.
+    if (group === 'recovery') { delete patch.template; delete patch.consent_confirmed; delete patch.consent_mode; }
     const clean = group === 'discounts' ? checkDiscountPatch(patch) : group === 'vision' ? checkVisionPatch(patch) : patch;
     const next = await patchSettings(c.db, group, clean as Partial<Settings[typeof group]>);
     return json({ ok: true, [group]: next });

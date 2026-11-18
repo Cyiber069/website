@@ -80,7 +80,7 @@ Open your site address in the phone browser, sign in, add it to the home screen,
 
 Every settings box has a lock button at its top right. Press it and pick a PIN of 4 to 8 numbers the first time. The box is then locked on every device, your phone and your laptop. Nobody can change it until it is unlocked with the PIN. You need the PIN to lock as well as to unlock. To change the PIN press any lock button, then **Change PIN**.
 
-Locks never stop the agent working. These always work, even with everything locked: the agent switch, **Stop everything**, answering Urgent, sending and approving replies, the report link for Claude, and signing in and out.
+Locks never stop the agent working. These always work, even with everything locked: the agent switch, **Stop everything**, answering Urgent, sending and approving replies, the report link for Claude, and signing in and out. While **Knowledge** is locked an answer on Urgent still goes to the customer, but it is not saved to Knowledge.
 
 After 5 wrong PINs the PIN does not work for 15 minutes on any device.
 
