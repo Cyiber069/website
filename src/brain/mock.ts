@@ -89,6 +89,11 @@ export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesIm
     const queued = input.history.filter((m) => m.pending).map((m) => m.body);
     return { ...base, parts: [`Mock saw ${queued.length} queued: ${queued.join(' + ').slice(0, 120) || 'none'}`] };
   }
+  // What earlier voice notes said reaches the brain while the chat goes on (src/pipeline/inbound.ts heardMessage).
+  if (text.includes('show-voice')) {
+    const heard = input.history.filter((m) => m.direction === 'in' && m.voice_text).map((m) => m.voice_text);
+    return { ...base, parts: [`Mock heard ${heard.length} voice note${heard.length === 1 ? '' : 's'}: ${heard.join(' + ').slice(0, 120) || 'none'}`] };
+  }
   // What the brain is told about an open Urgent question: is the quoted customer content labelled as such?
   if (text.includes('show-urgent-note')) {
     const note = input.context_notes.find((n) => /waiting on an answer from the owner|The owner is checking this/.test(n)) ?? '';

@@ -10,7 +10,7 @@ import { getSettings, getState, patchSettings, secretHints, setSecret } from '..
 import { clearTokenCache, normaliseShopDomain, testConnection } from '../shopify/client';
 import { VISION_MODELS, VISION_SECRET, checkVisionKey, checkVisionPatch, testVision, videosToday } from '../vision';
 import { aiState, allowanceOf, clearClaudeDown, routeClock } from '../brain/allowance';
-import { CLAUDE_MODELS, FREE_WINDOW_START_UTC, inFreeWindow, isModelSetting } from '../brain/route';
+import { CLAUDE_MODELS, FREE_WINDOW_START_UTC, allowanceLeft, inFreeWindow, isModelSetting, modelSetting, storedModel } from '../brain/route';
 import { SPEECH_MODEL } from '../speech';
 import type { Env } from '../types';
 import { EMPTY_WEBHOOK_STATE, WEBHOOK_STATE, type WebhookState } from './hooks';
@@ -25,14 +25,19 @@ export const AI_SPLIT: { ai: 'claude' | 'cloudflare' | 'google'; name: string; d
   { ai: 'google', name: 'Google AI Studio', does: 'Videos. Finding sponsors comes later.' },
 ];
 
-/** Today's free Workers AI allowance (an estimate the Worker keeps itself) and whether Claude is working. */
+/**
+ * Today's free Workers AI allowance (an estimate the Worker keeps itself) and whether Claude is working.
+ * `claude_down.covered`: the free Cloudflare AI is there with neurons left, so it answers while Claude is
+ * down (the same test as llm.ts workersFallback). Without it customers are not getting answers.
+ */
 async function aiView(env: Env) {
   const s = await aiState(env);
   const now = routeClock(env, s);
   const a = allowanceOf(s, now);
+  const covered = (env.ACX_TEST_MODE === '1' || Boolean(env.AI)) && allowanceLeft(a);
   return {
     allowance: { used: a.used, limit: a.limit, left: a.left, pct: a.pct, out: a.out, out_at: s.day === a.day ? s.out_at ?? null : null, resets_at: a.resets_at, estimate: true, window_from_utc: FREE_WINDOW_START_UTC, window_now: inFreeWindow(now) && !a.out },
-    claude_down: s.claude_down ? { at: s.claude_down.at, last_at: s.claude_down.last_at ?? s.claude_down.at, code: s.claude_down.code } : null,
+    claude_down: s.claude_down ? { at: s.claude_down.at, last_at: s.claude_down.last_at ?? s.claude_down.at, code: s.claude_down.code, covered } : null,
   };
 }
 
@@ -54,7 +59,10 @@ async function view(c: Ctx) {
   return {
     brain: {
       provider: settings.brain.provider,
-      model: settings.brain.model,
+      // The model setting as the form shows it: the mix id, or the plain model. The stored row keeps a
+      // real model id with mix true (an older Worker after a rollback still understands it).
+      model: modelSetting(settings.brain),
+      mix: settings.brain.mix,
       model_chosen: settings.brain.model_chosen,
       effort: settings.brain.effort,
       // A key set as a Worker variable also counts, but there is nothing of it to hint at.
@@ -122,7 +130,7 @@ export function register(r: Router): void {
       if (!isModelSetting(model)) throw bad('invalid_field', 'Pick one of the listed Claude models', { field: 'model' });
       // A model the owner picks is kept from now on (a default they never chose is moved to the mix).
       const current = (await getSettings(c.db, true)).brain;
-      if (model !== current.model || current.model_chosen) { patch.model = model; patch.model_chosen = true; }
+      if (model !== modelSetting(current) || current.model_chosen) Object.assign(patch, storedModel(model), { model_chosen: true });
     }
     if (Object.keys(patch).length) await patchSettings(c.db, 'brain', patch);
     return json({ ok: true, ...(await view(c)) });

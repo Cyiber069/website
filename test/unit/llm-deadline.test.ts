@@ -15,6 +15,17 @@ function fakeAi(steps: (() => Promise<unknown>)[]) {
 }
 
 describe('Workers AI inside a time limit', () => {
+  it('keeps the JSON repair inside the same limit, so the free window always leaves Claude its time', async () => {
+    // A bad answer after 300 ms, then a repair that hangs: the whole call still ends at its limit.
+    const ai = fakeAi([async () => { await sleep(300); return { response: 'not json at all' }; }, async () => { await sleep(10_000); return { response: '{"ok":true}' }; }]);
+    const t0 = Date.now();
+    await expect(callWorkersAi(ai.env, choice, input(6000))).rejects.toMatchObject({ code: 'timeout', retryable: true });
+    const took = Date.now() - t0;
+    expect(ai.calls()).toBe(2);
+    expect(took).toBeGreaterThanOrEqual(5900);
+    expect(took).toBeLessThan(6800);
+  });
+
   it('stops waiting when the time is up', async () => {
     const ai = fakeAi([async () => { await sleep(3000); return { response: '{"ok":true}' }; }]);
     const t0 = Date.now();

@@ -5,11 +5,13 @@
 // Which model answers is the owner's split (src/brain/route.ts): Claude by the model setting (in the
 // default mix Haiku, or Sonnet at low effort for a live sale or a complaint, and Sonnet once more when
 // Haiku would escalate or is unsure), Workers AI from 22:00 UTC while the free allowance lasts, without
-// a Claude key, and when Claude fails for credit, billing or key reasons.
+// a Claude key, and when Claude fails for credit, billing or key reasons. In that window Workers AI
+// only gets part of the request's time, so Claude can still answer in the same request when it fails or
+// is slow, and the next few minutes go to Claude.
 import type { Decision, DecideInput, DecideMedia, Env, LlmUsage, ToneProfile } from '../types';
 import { buildKnowledgeContext, type KnowledgeContext } from '../kb';
 import { getSettings } from '../lib/settings';
-import { noteClaudeDown } from './allowance';
+import { noteClaudeDown, noteWorkersFailing } from './allowance';
 import {
   LlmError, callJson, callTimeout, callWithin, canSeeImages, chooseProvider, deadlineError, isAccountError, isClaudeChoice, isWorkersChoice, knowledgeBudget,
   recordMockUsage, sonnetChoice, workersFallback, type CallBudget, type ProviderChoice,
@@ -58,6 +60,21 @@ const REWRITE_MIN_MS = 15_000;
 // Sonnet's one try after Haiku would escalate, and a second model after the first one could not answer
 // (Claude out of credit, the free allowance used up), only start with this much time left.
 const SECOND_MIN_MS = 15_000;
+// In the free window Workers AI gets at most this long, and always leaves Claude enough time to answer
+// after it in the same request: SECOND_MIN_MS, the 1 s every call keeps back, and 1 s of room.
+export const WINDOW_CAP_MS = 20_000;
+export const WINDOW_RESERVE_MS = SECOND_MIN_MS + 2_000;
+
+const inWindow = (choice: ProviderChoice): boolean => choice.route?.why === 'free_window';
+
+/**
+ * The first decide call's share of the request's time. Workers AI in the free window: at most 20 s and
+ * never the time Claude needs after it, and no second try (Claude answers instead). Exported for tests.
+ */
+export function firstBudget(choice: ProviderChoice, deadlineAt: number): CallBudget {
+  if (inWindow(choice)) return { deadlineAt, capMs: WINDOW_CAP_MS, minMs: DECIDE_MIN_MS, reserveMs: WINDOW_RESERVE_MS };
+  return { deadlineAt, capMs: DECIDE_CAP_MS, minMs: DECIDE_MIN_MS, retryQuickFailure: true };
+}
 
 /** The recent part of the chat is what the brain reads: fewer tokens on every call. */
 export const HISTORY_KEEP = 16;
@@ -243,8 +260,14 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
       return toDecision(enforceDecision(raw, ctx), tone, d.usage);
     };
 
+    // A call in the free window always has a limit, even without a request deadline (the playground).
+    const until = deadlineAt ?? (inWindow(choice) ? Date.now() + DECIDE_CAP_MS : undefined);
+    const first: CallBudget | null = until ? firstBudget(choice, until) : null;
+    const rewrite: CallBudget | null = until ? { deadlineAt: until, capMs: REWRITE_CAP_MS, minMs: REWRITE_MIN_MS } : null;
+
     if (choice.provider === 'mock') {
       await mockLatency(call, deadlineAt);
+      await mockWorkersTrouble(env, choice, call, purpose, first);
       await mockAccountFailure(env, choice, call, purpose);
       const m = mockDecide(call, tone, { seesImages: attach, tier: choice.route?.tier });
       await recordMockUsage(env, choice, purpose);
@@ -259,8 +282,6 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
     const prompt = buildDecidePrompt({ settings, input: call, tone, plan, toneNotes: promptToneNotes(analysis.notes, tone), knowledge, attachImages: attach });
     const allowedRefs = knowledge.docs.map((d) => d.id);
     let usage: Decision['usage'] = null;
-    const first: CallBudget | null = deadlineAt ? { deadlineAt, capMs: DECIDE_CAP_MS, minMs: DECIDE_MIN_MS, retryQuickFailure: true } : null;
-    const rewrite: CallBudget | null = deadlineAt ? { deadlineAt, capMs: REWRITE_CAP_MS, minMs: REWRITE_MIN_MS } : null;
     try {
       // fallback false: when Claude fails for an account reason, decide builds its own Workers AI request.
       const req = { purpose, system: prompt.system, user: prompt.user, images: prompt.images, schema: DECISION_SCHEMA, choice, fallback: false };
@@ -327,22 +348,30 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
   const timeForAnother = () => !deadlineAt || callTimeout({ deadlineAt, capMs: DECIDE_CAP_MS, minMs: SECOND_MIN_MS }) > 0;
 
   choice ??= await chooseProvider(env, settings, route);
+  // In the free window a customer never waits on Workers AI: with too little time left for it and for
+  // Claude after it (the code check, photos or a voice note took the rest), Claude answers at once.
+  if (inWindow(choice) && deadlineAt && callTimeout(firstBudget(choice, deadlineAt)) === 0) {
+    const c = await chooseProvider(env, settings, { ...route, avoidWorkers: true }).catch(() => null);
+    if (c && isClaudeChoice(c)) choice = c;
+  }
   let d: Decision;
   try {
     d = await answerWith(choice);
   } catch (err) {
     // Claude out of credit or its key refused: the owner was told (llm.ts), Workers AI answers when it
-    // has free neurons left. The free allowance used up in the window: back to Claude at once.
+    // has free neurons left. Workers AI used up, failing or too slow in the window: Claude at once.
     let next: ProviderChoice | null = null;
     let why = '';
     if (isAccountError(err) && isClaudeChoice(choice)) {
       next = await workersFallback(env, settings);
       why = 'Claude could not answer (account), the free Cloudflare AI answered';
-    } else if (err instanceof LlmError && choice.route?.why === 'free_window' && (err.code === 'allowance' || err.retryable)) {
-      // In the free window a customer never waits on Workers AI: used up (marked in llm.ts) or failing, Claude answers.
+    } else if (err instanceof LlmError && inWindow(choice)) {
+      // Used up is marked in llm.ts (out until 00:00 UTC). A failure or a slow answer sends the next few
+      // minutes to Claude too, so the retry and the sweeper do not wait on Workers AI again.
+      if (err.code !== 'allowance') await noteWorkersFailing(env);
       const c = await chooseProvider(env, settings, { ...route, avoidWorkers: true }).catch(() => null);
       next = c && isClaudeChoice(c) ? c : null;
-      why = err.code === 'allowance' ? 'the free Cloudflare AI ran out, Claude answered' : 'the free Cloudflare AI failed, Claude answered';
+      why = err.code === 'allowance' ? 'the free Cloudflare AI ran out, Claude answered' : err.code === 'timeout' ? 'the free Cloudflare AI was too slow, Claude answered' : 'the free Cloudflare AI failed, Claude answered';
     }
     if (!next) throw err;
     // No time left for the second model here: a fresh request goes straight to it.
@@ -369,6 +398,25 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
 }
 
 /**
+ * Test mode: Workers AI hanging (mock-workers-hang: it waits out all the time the call was given, then
+ * times out) or failing at once (mock-workers-nomodel, not worth a retry). Only the mock standing in for
+ * Workers AI is hit, so Claude can answer after it. Recorded as a failed call, as llm.ts does.
+ */
+async function mockWorkersTrouble(env: Env, choice: ProviderChoice, input: DecideInput, purpose: string, budget: CallBudget | null): Promise<void> {
+  if (choice.route?.provider !== 'workers_ai') return;
+  const last = [...input.history].reverse().find((m) => m.direction === 'in')?.body.toLowerCase() ?? '';
+  if (last.includes('mock-workers-hang')) {
+    await sleep(budget ? callTimeout(budget) : 0);
+    await recordMockUsage(env, choice, purpose, false);
+    throw new LlmError('timeout', 'Workers AI took too long to answer.', true);
+  }
+  if (last.includes('mock-workers-nomodel')) {
+    await recordMockUsage(env, choice, purpose, false);
+    throw new LlmError('not_found', 'Workers AI does not know that model name.');
+  }
+}
+
+/**
  * Test mode: a Claude account failure (mock-billing) or the free allowance used up (mock-workers-limit),
  * recorded the way llm.ts records the real ones, for the model the mock stands in for.
  */
@@ -376,7 +424,9 @@ async function mockAccountFailure(env: Env, choice: ProviderChoice, input: Decid
   const last = [...input.history].reverse().find((m) => m.direction === 'in')?.body.toLowerCase() ?? '';
   if (last.includes('mock-billing') && isClaudeChoice(choice)) {
     await recordMockUsage(env, choice, purpose, false);
-    await noteClaudeDown(env, await getSettings(env.DB), 'billing', 'Your credit balance is too low to access the Anthropic API (mock).');
+    const settings = await getSettings(env.DB);
+    const stand = await workersFallback(env, settings);
+    await noteClaudeDown(env, settings, 'billing', 'Your credit balance is too low to access the Anthropic API (mock).', stand !== null);
     throw new LlmError('billing', 'The Anthropic account has no credit left. Add credit at console.anthropic.com.');
   }
   if (last.includes('mock-workers-limit') && choice.route?.provider === 'workers_ai') {

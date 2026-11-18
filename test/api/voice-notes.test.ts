@@ -64,6 +64,23 @@ describe('voice notes', () => {
     expect(fake.requests.length).toBe(calls);
   });
 
+  it('keeps what an earlier voice note said when the customer writes again', async () => {
+    const thread = unique('vh');
+    const first = await inbound('whatsapp', thread, [voice('do you deliver the 1000W kit to Ireland')]);
+    expect(first.action).toBe('reply');
+    // The reply went out, then the customer types a follow up that only makes sense with the voice note.
+    await sql(`UPDATE outbox SET status = 'sent' WHERE conversation_id = ? AND status IN ('pending', 'leased')`, [first.conversation_id]);
+    await sql(`INSERT INTO messages (id, conversation_id, direction, author, external_id, body, kind, status, outbox_id, meta, ts, created_at) VALUES (?, ?, 'out', 'agent', ?, 'Yes we deliver to Ireland', 'text', 'sent', NULL, '{}', ?, ?)`,
+      [unique('mo'), first.conversation_id, unique('x'), Date.now(), Date.now()]);
+    const calls = fake.requests.length;
+    const r = await inbound('whatsapp', thread, [{ external_id: unique('m'), direction: 'in', body: 'show-voice and the 750?', ts: Date.now() + 1000 }]);
+    expect(r.action).toBe('reply');
+    expect(r.jobs[0]!.parts.join(' ')).toBe('Mock heard 1 voice note: do you deliver the 1000W kit to Ireland');
+    // Read from the stored message: not written out again, and no extra query for it.
+    expect(fake.requests.length).toBe(calls);
+    expect(r.queries!).toBeLessThanOrEqual(LIMIT);
+  });
+
   it('puts the transcript on the Urgent card when the owner has to answer', async () => {
     const thread = unique('vu');
     const r = await inbound('whatsapp', thread, [voice('unknown-question is the warranty valid on the moon')]);

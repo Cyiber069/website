@@ -3,6 +3,7 @@
 //
 //   { day: 'YYYY-MM-DD' (UTC), used: neurons today, out_at: when a daily limit error came back,
 //     claude_down: { at, last_at, code, message } while Claude fails for credit, billing or key reasons,
+//     workers_failing_until: Workers AI failed or was too slow in the free window, Claude answers until then,
 //     test_now: test mode only, the clock the routing rules read }
 //
 // Neurons are counted by the Worker itself from token counts (src/brain/route.ts rates): Cloudflare does
@@ -13,7 +14,7 @@ import { onReset } from '../lib/cache';
 import { logEvent } from '../lib/events';
 import { cachedState } from '../lib/settings';
 import { alertOwner } from '../pipeline/alerts';
-import { allowanceView, utcDay, type AllowanceView } from './route';
+import { WORKERS_REST_MS, allowanceView, utcDay, type AllowanceView } from './route';
 
 export interface ClaudeDown { at: number; last_at?: number; code: string; message: string }
 
@@ -22,6 +23,8 @@ export interface AiState {
   used?: number;
   out_at?: number | null;
   claude_down?: ClaudeDown | null;
+  /** Workers AI failed or was too slow in the free window: Claude answers until then (route clock). */
+  workers_failing_until?: number | null;
   /** Test mode only: the time the routing rules use (the free window, the allowance day). */
   test_now?: number | null;
 }
@@ -53,6 +56,7 @@ export async function aiState(env: Env): Promise<AiState> {
     day: a.day ?? stored.day,
     used: sameDay ? Math.max(Number(a.used) || 0, Number(stored.used) || 0) : a.day ? a.used : stored.used,
     out_at: sameDay ? (a.out_at ?? stored.out_at ?? null) : a.day ? a.out_at : stored.out_at,
+    workers_failing_until: Math.max(Number(a.workers_failing_until) || 0, Number(stored.workers_failing_until) || 0) || null,
     test_now: stored.test_now ?? a.test_now ?? null,
   };
 }
@@ -114,22 +118,55 @@ export async function addNeurons(env: Env, neurons: number, out = false): Promis
   }
 }
 
+/**
+ * Workers AI failed or was too slow in the free window: Claude answers the next few minutes
+ * (src/brain/route.ts WORKERS_REST_MS), so a retry does not wait on it again. One query. Never throws.
+ */
+export async function noteWorkersFailing(env: Env): Promise<void> {
+  try {
+    const until = routeClock(env, await aiState(env)) + WORKERS_REST_MS;
+    const res = await env.DB.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES ('${KEY}', json_object('workers_failing_until', ?1), ?2)
+       ON CONFLICT(key) DO UPDATE SET updated_at = ?2, value = json_set(CASE WHEN json_valid(settings.value) THEN settings.value ELSE '{}' END, '$.workers_failing_until', ?1)
+       RETURNING value`,
+    ).bind(until, Date.now()).all<{ value: string }>();
+    remember(res.results?.[0]?.value);
+  } catch (err) {
+    console.error('could not note that Workers AI is failing', err);
+  }
+}
+
+/** Until when Claude answers in the free window because Workers AI just failed there, or null. */
+export const workersFailingUntil = (s: AiState): number | null => Number(s.workers_failing_until) || null;
+
 // ---- Claude failing for account reasons ------------------------------------------------------------------
 
-const DOWN_TEXT: Record<string, string> = {
-  billing: 'Claude stopped answering because the Anthropic account has no credit left. The free Cloudflare AI is answering for now. Add credit at console.anthropic.com.',
-  auth: 'Claude stopped answering because the API key was refused. The free Cloudflare AI is answering for now. Check the key on Connections.',
+const WHY_DOWN: Record<string, string> = {
+  billing: 'Claude stopped answering because the Anthropic account has no credit left.',
+  auth: 'Claude stopped answering because the API key was refused.',
+};
+const FIX_DOWN: Record<string, string> = {
+  billing: 'Add credit at console.anthropic.com.',
+  auth: 'Check the key on Connections.',
 };
 
-/** The owner's words for a Claude account failure. */
-export const claudeDownText = (code: string): string => DOWN_TEXT[code] ?? DOWN_TEXT.auth!;
+/**
+ * The owner's words for a Claude account failure. `covered`: the free Cloudflare AI can answer instead
+ * (it is there and has neurons left today). Without it customers get no answers, and the text says so.
+ */
+export function claudeDownText(code: string, covered = true): string {
+  const c = code === 'billing' ? 'billing' : 'auth';
+  if (covered) return `${WHY_DOWN[c]} The free Cloudflare AI is answering for now. ${FIX_DOWN[c]}`;
+  return `${WHY_DOWN[c]} Customers are not getting answers until you ${c === 'billing' ? 'add credit at console.anthropic.com' : 'fix the key on Connections'}.`;
+}
 
 /**
  * Claude failed for credit, billing or key reasons. Remembered so the next calls go to Workers AI for a
  * while (src/brain/route.ts CLAUDE_RETRY_MS). The owner is told once per outage in plain words: only the
- * call that marks the change sends the alert. Never throws.
+ * call that marks the change sends the alert. `covered`: Workers AI has free neurons left to answer
+ * instead (llm.ts workersFallback), so the alert can say customers still get answers. Never throws.
  */
-export async function noteClaudeDown(env: Env, settings: Settings, code: 'billing' | 'auth', detail: string): Promise<void> {
+export async function noteClaudeDown(env: Env, settings: Settings, code: 'billing' | 'auth', detail: string, covered: boolean): Promise<void> {
   const now = Date.now();
   const down: ClaudeDown = { at: now, last_at: now, code, message: detail.slice(0, 200) };
   try {
@@ -144,7 +181,7 @@ export async function noteClaudeDown(env: Env, settings: Settings, code: 'billin
     const row = res.results?.[0];
     if (row) remember(row.value);
     if (!row || Number(row.claimed) !== 1) return;
-    const text = claudeDownText(code);
+    const text = claudeDownText(code, covered);
     await logEvent(env.DB, { level: 'error', type: 'claude_down', message: text });
     await alertOwner(env, settings, { kind: 'claude', title: 'Claude stopped working', body: text, path: '/#/connections' });
   } catch (err) {

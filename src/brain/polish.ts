@@ -4,7 +4,7 @@
 import type { Env, PolishInput, PolishResult } from '../types';
 import { clip } from '../lib/db';
 import { getSettings } from '../lib/settings';
-import { LlmError, callJson, chooseProvider } from './llm';
+import { LlmError, callJson, chooseProvider, recordMockUsage } from './llm';
 import { mockPolish } from './mock';
 import { POLISH_SCHEMA, buildPolishPrompt, claimsHuman, renderConversation, unsupportedNumbers } from './prompt';
 import { promptToneNotes, seriousTopic } from './rules';
@@ -45,9 +45,11 @@ export async function polishOwnerAnswer(env: Env, input: PolishInput): Promise<P
     usage: null,
   });
 
-  const choice = await chooseProvider(env, settings).catch(() => null);
+  // Polishing the owner's answers is Claude's job, also in the free Cloudflare window.
+  const choice = await chooseProvider(env, settings, { claudeOnly: true }).catch(() => null);
   if (!choice) return asWritten();
   if (choice.provider === 'mock') {
+    await recordMockUsage(env, choice, 'polish'); // which model would have polished it (tests)
     const r = mockPolish(input);
     r.parts = finalizeParts(r.parts, style);
     return r;

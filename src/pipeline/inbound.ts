@@ -483,13 +483,28 @@ interface ChatJob { id: string; source: string; status: string; parts: string; c
 interface Line { msg: MessageRow | null; job: ChatJob | null; history: HistoryMessage }
 
 /**
+ * A stored message for the brain. A customer voice note the speech model wrote out earlier (src/speech,
+ * meta.voice_text) keeps its words when the chat goes on: they are the customer's, labelled as a voice
+ * note transcript (prompt.ts conversationLines), never instructions. From the row itself, no extra query.
+ * Exported for tests.
+ */
+export function heardMessage(m: MessageRow): HistoryMessage {
+  const h: HistoryMessage = { direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts };
+  if (m.direction !== 'in' || !m.meta || !m.meta.includes('voice_text')) return h;
+  const heard = parseJson<MediaRef>(m.meta, {}).voice_text;
+  const text = typeof heard === 'string' ? heard.replace(/\s+/g, ' ').trim() : '';
+  if (!text) return h;
+  return m.kind === 'voice' ? { ...h, body: text, voice_text: text } : { ...h, voice_text: text };
+}
+
+/**
  * The chat for the brain: the stored messages, with every reply that is queued or out with the laptop
  * but not sent yet put right after the customer message it answers (marked pending). A second decision
  * then never says those again, and a customer message that came after them is still the one to answer.
  * Exported for tests.
  */
 export function buildTimeline(rows: MessageRow[], jobs: ChatJob[]): Line[] {
-  const lines: Line[] = rows.map((m) => ({ msg: m, job: null, history: { direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts } }));
+  const lines: Line[] = rows.map((m) => ({ msg: m, job: null, history: heardMessage(m) }));
   const pending = jobs.filter((j) => (j.status === 'pending' || j.status === 'leased') && j.source !== 'recovery' && j.source !== 'alert');
   for (const j of [...pending].sort((a, b) => a.created_at - b.created_at)) {
     // The message it answers: stored on the row, or in the dedupe key of a reply queued before that column existed.

@@ -57,7 +57,7 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
     note: 'Last 24 hours. Customer message text, previews, phone numbers and email addresses are left out.',
     settings: {
       channels: settings.channels,
-      brain: { provider: settings.brain.provider, model: settings.brain.model, effort: settings.brain.effort },
+      brain: { provider: settings.brain.provider, model: settings.brain.model, mix: settings.brain.mix, effort: settings.brain.effort },
       pacing: settings.pacing,
       voice: { commas: settings.voice.commas, mirror_level: settings.voice.mirror_level },
       selectors_override_rev: override?.rev ?? null,

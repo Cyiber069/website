@@ -9,8 +9,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Env, LlmUsage, Settings } from '../types';
 import { stmt } from '../lib/db';
 import { getSecret, getSettings } from '../lib/settings';
-import { aiState, allowanceOf, claudeDownAt, clearClaudeDown, countDay, neuronsStatement, noteClaudeDown, noteNeuronsResult, routeClock, windowClock } from './allowance';
-import { HAIKU_MODEL, MIX_MODEL, SONNET_MODEL, allowanceLeft, pickRoute, textNeurons, type Effort, type Route, type RouteOptions } from './route';
+import { aiState, allowanceOf, claudeDownAt, clearClaudeDown, countDay, neuronsStatement, noteClaudeDown, noteNeuronsResult, routeClock, windowClock, workersFailingUntil } from './allowance';
+import { HAIKU_MODEL, SONNET_MODEL, allowanceLeft, pickRoute, textNeurons, type Effort, type Route, type RouteOptions } from './route';
 
 export type ProviderName = 'anthropic' | 'workers_ai' | 'mock';
 
@@ -157,7 +157,7 @@ export async function chooseProvider(env: Env, settings: Settings, opts: RouteOp
       await getSecret(env.DB, 'anthropic_api_key'); // what the real choice reads
       const s = await aiState(env);
       const now = routeClock(env, s);
-      const r = pickRoute({ brain, claudeKey: true, workersAi: true, now, allowance: allowanceOf(s, now), claudeDownAt: claudeDownAt(s), windowClock: windowClock(env, s) }, opts);
+      const r = pickRoute({ brain, claudeKey: true, workersAi: true, now, allowance: allowanceOf(s, now), claudeDownAt: claudeDownAt(s), windowClock: windowClock(env, s), workersFailingUntil: workersFailingUntil(s) }, opts);
       return mockFor(r!);
     }
     if (brain.provider === 'workers_ai') return { provider: 'mock', model: MOCK_TEXT_MODEL, apiKey: null, route: { provider: 'workers_ai', model: brain.workers_ai_model, effort: null, why: 'forced_workers', mix: false, tier: 'workers' } };
@@ -166,7 +166,7 @@ export async function chooseProvider(env: Env, settings: Settings, opts: RouteOp
   const key = ((await getSecret(env.DB, 'anthropic_api_key')) ?? env.ANTHROPIC_API_KEY ?? '').trim();
   const s = await aiState(env);
   const now = routeClock(env, s);
-  const r = pickRoute({ brain, claudeKey: Boolean(key), workersAi: Boolean(env.AI), now, allowance: allowanceOf(s, now), claudeDownAt: claudeDownAt(s) }, opts);
+  const r = pickRoute({ brain, claudeKey: Boolean(key), workersAi: Boolean(env.AI), now, allowance: allowanceOf(s, now), claudeDownAt: claudeDownAt(s), workersFailingUntil: workersFailingUntil(s) }, opts);
   if (!r) {
     if (brain.provider === 'workers_ai') throw new LlmError('no_provider', 'Workers AI is selected but this Worker has no AI binding');
     if (brain.provider === 'anthropic') throw new LlmError('no_provider', 'Claude is selected but no API key is saved');
@@ -488,7 +488,7 @@ export async function workersFallback(env: Env, settings: Settings): Promise<Pro
   if (env.ACX_TEST_MODE !== '1' && !env.AI) return null;
   const s = await aiState(env);
   if (!allowanceLeft(allowanceOf(s, routeClock(env, s)))) return null;
-  const route: Route = { provider: 'workers_ai', model: settings.brain.workers_ai_model, effort: null, why: 'claude_down', mix: settings.brain.model === MIX_MODEL, tier: 'workers' };
+  const route: Route = { provider: 'workers_ai', model: settings.brain.workers_ai_model, effort: null, why: 'claude_down', mix: settings.brain.mix, tier: 'workers' };
   return env.ACX_TEST_MODE === '1' ? { provider: 'mock', model: MOCK_TEXT_MODEL, apiKey: null, route } : { provider: 'workers_ai', model: route.model, apiKey: null, route };
 }
 
@@ -524,11 +524,12 @@ export async function callJson<T = unknown>(env: Env, input: CallJsonInput): Pro
       provider: choice.provider, model: choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ...partial, ms: Date.now() - started,
     }, false, { workers, out: e.code === 'allowance' });
     // Claude fails for credit, billing or key reasons: the owner is told once and Workers AI answers
-    // this call and the next ones for a while, when it has free neurons left today.
+    // this call and the next ones for a while, when it has free neurons left today. The alert says
+    // whether it can (no free AI left: customers are not getting answers).
     if (choice.provider === 'anthropic' && isAccountError(e)) {
-      await noteClaudeDown(env, settings, e.code as 'billing' | 'auth', e.message);
-      const stand = input.fallback === false ? null : await workersFallback(env, settings);
-      if (stand) return callJson<T>(env, { ...input, choice: stand, fallback: false });
+      const stand = await workersFallback(env, settings);
+      await noteClaudeDown(env, settings, e.code as 'billing' | 'auth', e.message, stand !== null);
+      if (stand && input.fallback !== false) return callJson<T>(env, { ...input, choice: stand, fallback: false });
     }
     throw e;
   }

@@ -81,10 +81,13 @@ export default {
       if (a.out) return `Free Cloudflare AI today: used up. ${back}`;
       return `Free Cloudflare AI today: about ${a.pct}% used (an estimate). ${back}${a.window_now ? ' It is answering customers now.' : ''}`;
     }
-    function claudeDownLine(d) {
+    // Whether the free Cloudflare AI can answer while Claude is down: the server says (covered), else the allowance.
+    function claudeDownLine(d, w) {
       if (!d) return '';
       const why = d.code === 'billing' ? 'The Anthropic account has no credit left. Add credit at console.anthropic.com.' : 'The Claude API key was refused. Check it below.';
-      return html`<p class="banner banner--down">${icon('i-stop')}<span><b>Claude stopped working ${ago(d.at)}.</b> ${why} The free Cloudflare AI is answering for now.</span></p>`;
+      const covered = typeof d.covered === 'boolean' ? d.covered : Boolean(w?.available) && !w?.allowance?.out;
+      const now = covered ? 'The free Cloudflare AI is answering for now.' : 'Customers are not getting answers until this is fixed.';
+      return html`<p class="banner banner--down" id="claude-down">${icon('i-stop')}<span><b>Claude stopped working ${ago(d.at)}.</b> ${why} ${now}</span></p>`;
     }
     function paintBrain() {
       const box = $('#sec-brain', view);
@@ -94,7 +97,7 @@ export default {
       const w = b.workers_ai || {};
       setHTML(box, html`
         ${head('brain', 'i-brain', 'AI brain', 'The agent thinks with Claude. You pay Anthropic for what it uses.', savedTag(b.claude_key, 'Key saved', 'No key yet'))}
-        ${claudeDownLine(w.claude_down)}
+        ${claudeDownLine(w.claude_down, w)}
         ${b.split?.length ? html`<div class="stack"><h3 class="eyebrow">Which AI does what</h3>
           <ul class="rows" id="ai-split">${b.split.map((x) => html`<li class="rowline"><b>${x.name}</b><span class="meta">${x.does}</span></li>`)}</ul>
           ${w.allowance ? html`<p class="meta" id="ai-allowance">${allowanceLine(w.allowance)}</p>` : ''}</div>` : ''}

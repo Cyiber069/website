@@ -7,15 +7,18 @@
 //                       interested or ready, or a buying question) or a complaint, and gets one retry when
 //                       Haiku would escalate or is unsure (decide.ts) before the chat goes to the owner.
 //   Cloudflare Workers AI (free, 10,000 neurons a day, reset 00:00 UTC)
-//                       voice notes (src/speech), TikTok comments later (src/brain/free.ts), and every
-//                       call from 22:00 UTC while the free allowance lasts. Also the fallback when Claude
-//                       fails for credit, billing or key reasons, and the only brain without a Claude key.
+//                       voice notes (src/speech), TikTok comments later (src/brain/free.ts), and customer
+//                       replies from 22:00 UTC while the free allowance lasts (never the creator code check,
+//                       polishing the owner's answers or the key test: claudeOnly). After a failed or slow
+//                       call in that window Claude answers for a few minutes (workers_failing_until). Also
+//                       the fallback when Claude fails for credit, billing or key reasons, and the only
+//                       brain without a Claude key.
 //   Google AI Studio    videos (src/vision) and finding sponsors later. Never customer replies or photos.
 import type { BrainSettings, DecideInput, HistoryMessage, SalesStage, ToneProfile } from '../types';
-import { MIX_MODEL } from '../lib/settings';
+import { MIX_BASE_MODEL, MIX_MODEL } from '../lib/settings';
 
 export { MIX_MODEL };
-export const HAIKU_MODEL = 'claude-haiku-5-5';
+export const HAIKU_MODEL = MIX_BASE_MODEL;
 export const SONNET_MODEL = 'claude-sonnet-5-5';
 
 /** Models offered on Connections. Ids are exact API model ids, except the mix. */
@@ -28,6 +31,10 @@ export const CLAUDE_MODELS: { id: string; label: string; note: string }[] = [
 ];
 
 export const isModelSetting = (id: string): boolean => id === MIX_MODEL || /^claude-[a-z0-9.-]+$/.test(id);
+/** The model setting as Connections shows it: the mix id, or the plain model. */
+export const modelSetting = (b: Pick<BrainSettings, 'model' | 'mix'>): string => (b.mix ? MIX_MODEL : b.model);
+/** What a model setting from Connections stores: the mix keeps Haiku as its model (an older Worker still understands it). */
+export const storedModel = (id: string): Pick<BrainSettings, 'model' | 'mix'> => (id === MIX_MODEL ? { model: HAIKU_MODEL, mix: true } : { model: id, mix: false });
 
 // ---- the free Cloudflare allowance ------------------------------------------------------------------------
 
@@ -39,6 +46,8 @@ export const FREE_WINDOW_START_UTC = 22;
 export const NEURON_RESERVE = 60;
 /** After Claude failed for credit, billing or key reasons, it is tried again after this long. */
 export const CLAUDE_RETRY_MS = 15 * 60_000;
+/** After Workers AI failed or was too slow in the free window, Claude answers for this long. */
+export const WORKERS_REST_MS = 5 * 60_000;
 
 /**
  * Neurons per million tokens (Cloudflare pricing). An unknown model is counted at the dearest rate here,
@@ -155,6 +164,8 @@ export interface RouteFacts {
   claudeDownAt: number | null;
   /** Test mode without a test clock: the free window never applies, so tests do not depend on the hour. */
   windowClock?: number | null;
+  /** Workers AI failed or was too slow in the free window: until then (route clock) Claude answers. */
+  workersFailingUntil?: number | null;
 }
 
 export interface RouteOptions {
@@ -164,6 +175,14 @@ export interface RouteOptions {
   images?: boolean;
   /** Workers AI just failed in the free window: Claude answers this one. */
   avoidWorkers?: boolean;
+  /**
+   * Claude's jobs in the owner's split that the free window must not take: the creator code check (it
+   * makes real Shopify codes), polishing the owner's answers and the key test. A real Claude outage
+   * (claude_down) still falls back to Workers AI unless `noStandIn` is set too.
+   */
+  claudeOnly?: boolean;
+  /** Never Workers AI while a Claude key is saved, not even during a Claude outage (the key test). */
+  noStandIn?: boolean;
 }
 
 export interface Route {
@@ -179,12 +198,12 @@ export interface Route {
   tier: 'haiku' | 'sonnet' | 'set' | 'workers';
 }
 
-const workersRoute = (b: BrainSettings, why: RouteWhy): Route => ({ provider: 'workers_ai', model: b.workers_ai_model, effort: null, why, mix: b.model === MIX_MODEL, tier: 'workers' });
+const workersRoute = (b: BrainSettings, why: RouteWhy): Route => ({ provider: 'workers_ai', model: b.workers_ai_model, effort: null, why, mix: b.mix, tier: 'workers' });
 
 /** The Claude model for a tier. In the mix Sonnet always runs at low effort. */
 export function claudeRoute(b: BrainSettings, opts: RouteOptions = {}): Route {
   const tier = opts.tier ?? 'main';
-  if (b.model === MIX_MODEL) {
+  if (b.mix) {
     const strong = tier === 'strong' || (tier === 'main' && opts.chat?.matters === true);
     return strong
       ? { provider: 'anthropic', model: SONNET_MODEL, effort: 'low', why: tier === 'main' ? 'chat_matters' : 'claude', mix: true, tier: 'sonnet' }
@@ -198,8 +217,10 @@ export function claudeRoute(b: BrainSettings, opts: RouteOptions = {}): Route {
  * Who answers. Null when nothing can (the caller says why to the owner).
  *   1. Provider set to Workers AI: Workers AI.
  *   2. No Claude key: Workers AI, as before (null when Claude was forced).
- *   3. 22:00 to 00:00 UTC with free neurons left: Workers AI, unless the request has pictures only Claude can see.
- *   4. Claude failed for credit, billing or key reasons in the last 15 minutes and free neurons are left: Workers AI.
+ *   3. 22:00 to 00:00 UTC with free neurons left: Workers AI, unless the request has pictures only Claude can see,
+ *      is one of Claude's own jobs (claudeOnly), or Workers AI failed or was slow in the window a few minutes ago.
+ *   4. Claude failed for credit, billing or key reasons in the last 15 minutes and free neurons are left: Workers AI
+ *      (not for noStandIn).
  *   5. Otherwise Claude, by the model setting (the mix picks Haiku or Sonnet).
  */
 export function pickRoute(f: RouteFacts, opts: RouteOptions = {}): Route | null {
@@ -211,8 +232,10 @@ export function pickRoute(f: RouteFacts, opts: RouteOptions = {}): Route | null 
   }
   const free = f.workersAi && allowanceLeft(f.allowance) && !opts.avoidWorkers;
   const clock = f.windowClock === undefined ? f.now : f.windowClock;
-  if (free && clock !== null && inFreeWindow(clock) && !opts.images) return workersRoute(b, 'free_window');
-  if (free && f.claudeDownAt !== null && f.now - f.claudeDownAt < CLAUDE_RETRY_MS) return workersRoute(b, 'claude_down');
+  const resting = typeof f.workersFailingUntil === 'number' && f.now < f.workersFailingUntil;
+  const window = !opts.images && !opts.claudeOnly && !opts.noStandIn && opts.tier !== 'strong' && !resting;
+  if (free && window && clock !== null && inFreeWindow(clock)) return workersRoute(b, 'free_window');
+  if (free && !opts.noStandIn && f.claudeDownAt !== null && f.now - f.claudeDownAt < CLAUDE_RETRY_MS) return workersRoute(b, 'claude_down');
   return claudeRoute(b, opts);
 }
 

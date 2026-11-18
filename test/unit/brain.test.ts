@@ -526,8 +526,9 @@ describe('chooseProvider', () => {
     // The default model setting is the mix: Haiku answers a plain chat.
     expect(await chooseProvider(fakeEnv({ secret: 'sk-saved', ai: true }), settings())).toMatchObject({ provider: 'anthropic', model: 'claude-haiku-5-5', apiKey: 'sk-saved', route: { why: 'claude', mix: true, tier: 'haiku' } });
     expect((await chooseProvider(fakeEnv({ envKey: 'sk-env' }), settings())).apiKey).toBe('sk-env');
-    expect((await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings({}, { model: 'claude-haiku-5-5' }))).model).toBe('claude-haiku-5-5');
-    expect((await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings({}, { model: 'claude-opus-5-5' }))).model).toBe('claude-opus-5-5');
+    // A plain model the owner picked (mix off) answers everything.
+    expect((await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings({}, { model: 'claude-haiku-5-5', mix: false }))).model).toBe('claude-haiku-5-5');
+    expect((await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings({}, { model: 'claude-opus-5-5', mix: false }))).model).toBe('claude-opus-5-5');
     // A chat that matters gets Sonnet at low effort.
     expect(await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings(), { chat: { matters: true, why: 'sale' } })).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low' });
   });

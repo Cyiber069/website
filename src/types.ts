@@ -47,10 +47,15 @@ export interface BrainSettings {
   /** auto: Claude when an API key is saved, else Workers AI. */
   provider: 'auto' | 'anthropic' | 'workers_ai';
   /**
-   * A Claude model id, or 'mix-haiku-sonnet' (the default): Haiku answers, Sonnet at low effort answers the
-   * chats that matter (src/brain/route.ts).
+   * A Claude API model id, always (an older Worker after a rollback sends it as it is). With `mix` it is
+   * claude-haiku-5-5.
    */
   model: string;
+  /**
+   * "Haiku with Sonnet for the chats that matter" (the default): Haiku answers, Sonnet at low effort answers
+   * the chats that matter (src/brain/route.ts). Connections shows it as the model 'mix-haiku-sonnet'.
+   */
+  mix: boolean;
   /** The owner picked `model` themselves on Connections. A default they never chose is moved to the mix. */
   model_chosen: boolean;
   /** Version of the stored brain row (src/lib/settings.ts migrateBrain). Not shown to the owner. */
