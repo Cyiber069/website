@@ -350,8 +350,10 @@ Error codes: `thread_not_found`, `composer_missing`, `composer_busy`, `draft_in_
 `GET /api/media/:id` (the picture bytes, `cache-control: private`, owner session only; each message of `GET /api/conversations/:id` and each
 `recent` message of `GET /api/urgent` has `media: { id, kind, description? } | null`, `description` once Google AI Studio has looked),
 `POST /api/contacts/:id/opt-out {opted_out}`, `GET /api/settings`, `PUT /api/settings/:group`,
-`GET /api/devices`, `POST /api/devices/pair-code`, `DELETE /api/devices/:id`, `GET /api/health`,
-`GET /api/selectors`, `PUT /api/selectors {override}`.
+`GET /api/devices`, `POST /api/devices/pair-code {person?}`, `DELETE /api/devices/:id`, `GET /api/health`,
+`GET /api/selectors`, `PUT /api/selectors {override}`. People and laptops (`src/routes/people.ts`, see "People, laptops and
+failover" below): `GET /api/people`, `PATCH /api/devices/:id {person?, name?}`, `POST /api/devices/:id/commands {type: open_tab, lane}`,
+`GET /api/devices/:id/commands/:cid` (`waiting | sent | done | failed | expired`), `PUT /api/lanes/:lane/account {account}`.
 
 Reply time (`src/pipeline/replytime.ts`): `GET /api/overview` and `GET /api/health` return
 `reply_time { count, avg_ms, max_ms, slowest: { conversation_id, channel, customer, sent_at, ms } | null, by_channel }`
@@ -594,6 +596,48 @@ for the quick check), Shopify is the real client against a fake (`POST /api/test
 `test/helpers/fake-shopify.mjs`), a phone is subscribed to push and an owner WhatsApp number is set; the schema check and the
 usage flush (3) are added. Shopify reads its saved details once per request (`shopifyAuth`, one query); alert throttles are
 one query each (`claimSlot`); `leaseById` is one `UPDATE ... RETURNING`.
+
+### People, laptops and failover (`src/pipeline/leader.ts`, `src/pipeline/commands.ts`, `src/routes/people.ts`, `migrations/0013_people.sql`)
+
+* Each paired laptop belongs to a person (`devices.person`, asked on the Connections screen with the pairing line and
+  in the popup, changed later on the People panel or Connections). The sidebar shows one chip per person next to the
+  logo (the phone: in the top bar), with an online dot. A chip opens the People panel: that person's laptops, online or
+  not, and for each channel its state, its account (`+447700900123`, the Gmail address, `@handle`) and what it does.
+* One laptop answers each lane (`lane_leaders`, one row per lane: `whatsapp:inbox`, `gmail:inbox`, `tiktok:inbox`).
+  The sync elects (`electLanes`, rules in `elect`, unit tested): a ready laptop claims a lane nobody answers; another
+  laptop on the same account stands by (probes only, never opens a chat, gets no jobs) and takes over with a compare
+  and swap on the epoch when the one answering is offline for 90 s, not ready for 45 s, paused, removed, on another
+  account, or has worked the lane for 3 min (`active_ms`) without a good read. Signed out, blocked, no tab or paused:
+  the one answering gives the lane up at once. No fail back. Each takeover is a line on Live and a push (an hour
+  apart at most): "Adrian's laptop took over WhatsApp. Sam's laptop is offline."
+* Accounts: the adapters send the signed in account in each probe (Gmail from the title, TikTok from the page data
+  or the header profile link, WhatsApp from `last-wid-md` in the page's own storage, else the bridge's `me()`).
+  `normAccount` makes them one form; a WhatsApp hidden id (`@lid`) is not taken. The shop's account per lane is the
+  Gmail inbox chosen in Connections, else the first one learned; `PUT /api/lanes/:lane/account` changes or clears it.
+  A laptop on another account is "Other account": never given that lane, it stays idle there (its other lanes work
+  on their own). An account not known yet counts as the shop's, so two laptops can never both answer.
+* The sync answers `lanes: { [lane]: { role: active | standby | other_account | off, lease_ms, epoch, account, solo,
+  leader: { device_id, person, name } } }`. A 0.6.0 lane works only while `role` is active and inside `lease_ms`
+  (counted from when it sent the sync, at most 60 s and always 10 s before a standby may take over). `solo`: no
+  other laptop checked in today (partial index `devices_live_seen`), so it keeps working while the server is away.
+  On losing a lane it hands its queued jobs back (`stood_down`, no try used, only by the laptop that holds them).
+  Jobs a laptop held move when it cannot send them any more (`releasePlan`): paused at once (not the one it is
+  typing, `sending_id`), offline after 30 s for a 0.6.0 laptop that was not alone, and for an older build or one
+  told it was alone only once their job lease is over. Builds before 0.6.0 ignore `lanes`; they get jobs only for
+  the lanes they answer, and a report from a laptop that does not answer the lane is stored but its jobs wait for
+  the one that does (`inlineAllowed`, one leader row read per report).
+* Cost: a sync reads the leader rows and counts the laptops seen today in one query, reads the other laptops' rows
+  only while it could replace one, and writes only on a handover. The health check judges each channel from the
+  laptop answering it, never from a laptop on another account; when that laptop is offline and nobody took over,
+  the channel counts as down from its last good read.
+* The blue dot on each Live channel card (and each channel on the People panel) opens and pins that tab. On a
+  paired laptop `content/dashboard.js` (registered by the service worker for the paired server's address only,
+  `scripting` permission) relays `hello` and `open_tab` to the service worker, which answers only a top page of
+  that origin and never passes the token. Anywhere else (the phone, another laptop) the dashboard sends
+  `POST /api/devices/:id/commands`: the command waits on that laptop's row (`devices.commands`, at most 5, 2 minutes),
+  goes out with each sync until the laptop lists its result (`command_results`), and the screen says when it is open.
+  `POST /api/agent/leave` (the popup's Disconnect) removes the laptop at once. The support report lists `people`
+  and `lane_leaders` with accounts masked.
 
 ## 7. Style rules (owner requirements, enforced twice)
 

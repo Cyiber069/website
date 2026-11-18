@@ -146,6 +146,7 @@ function makeLane(def) {
     op: null, // the tab operation in progress: { op, since }
     job: null, // the queued job being sent
     lastScanAt: 0, scanWanted: 0, opOkAt: 0, timeouts: 0,
+    activeSince: 0, // when the lane started working without a break (sent as active_ms)
     readsSinceSend: 0, lastSendAt: 0, lastSendThread: null,
     inflight: new Map(), // key -> { since } of reads whose inbound call has not answered yet
     threadCalls: new Map(), // conversation -> inbound calls in flight
@@ -163,6 +164,7 @@ const queueKey = (lane) => `queue:${lane.name}`;
 function laneLoaded(lane) {
   if (!lane.loaded) {
     lane.loaded = (async () => {
+      await loadGrants();
       const seen = await store.sessionGet(seenKey(lane), {}).catch(() => ({}));
       lane.seen = seen && typeof seen === 'object' ? seen : {};
       const q = await store.sessionGet(queueKey(lane), []).catch(() => []);
@@ -192,11 +194,76 @@ let business = false; // the TikTok account is a business account (seen in Busin
 
 const settleMs = () => Math.max(0, Number(config?.pacing?.settle_seconds ?? 12) * 1000);
 
+// Which laptop answers each lane (the server's src/pipeline/leader.ts). Only the one that answers scans,
+// reads and sends; another laptop on the same account stands by: it only probes its tab, never opens a
+// chat (that marks it read for the whole account). undefined: not known yet (never synced with a 0.6.0
+// server since pairing: the first sync says). null: an older server that elects nobody, so every lane
+// works as before. Kept in chrome.storage.local (`lanes`, written by each sync) so it survives the
+// worker stopping and Chrome restarting: the only laptop paired (solo) keeps working before its first
+// sync, a laptop that stands by stays out, and a lease that ran out meanwhile stays over.
+let laneGrants;
+let grantsLoaded = null;
+function loadGrants() {
+  if (!grantsLoaded) {
+    grantsLoaded = store.get('lanes')
+      .then((g) => { if (laneGrants === undefined && g !== undefined) laneGrants = g; })
+      .catch(() => {});
+  }
+  return grantsLoaded;
+}
+/** Forget the grants (unpaired): the next pairing starts from its own first sync. */
+async function clearGrants() {
+  laneGrants = undefined;
+  grantsLoaded = Promise.resolve();
+  await chrome.storage.local.remove('lanes').catch(() => {});
+}
+/** This laptop answers the lane right now (and is inside its lease). */
+function roleActive(lane, now = Date.now()) {
+  if (laneGrants === null) return true;
+  if (!laneGrants) return false;
+  return core.grantActive(laneGrants[lane.id], now);
+}
+const laneRole = (lane) => (laneGrants === null ? 'active' : laneGrants?.[lane.id]?.role || 'unknown');
+let myDeviceId = ''; // this laptop's id on the server (auth.device_id), set by each sync
+/** Another laptop answers this grant's lane. */
+const otherLeads = (g) => Boolean(g && g.leader && g.leader.device_id && g.leader.device_id !== myDeviceId);
+/**
+ * Another laptop answers this lane, or this tab is on another account: this one only probes it. Not a
+ * lane that waits only because its tab was not ready at the last sync (nobody answers it yet).
+ */
+function standsBy(lane) {
+  const g = laneGrants && laneGrants[lane.id];
+  if (!g || g.role === 'active') return false;
+  return g.role === 'other_account' || g.role === 'off' || otherLeads(g);
+}
+
 /** True when the lane may scan, read and send right now. */
 function laneActive(lane) {
   if (!paired || paused || !config || config.enabled === false) return false;
   if (config.channels?.[lane.channel]?.mode === 'off') return false;
+  if (!roleActive(lane)) return false;
   return lane.probe.state === 'ready' && lane.tabId != null;
+}
+
+/**
+ * Another laptop answers this lane now: the jobs it holds go back to the server unsent (no try used),
+ * for the laptop that answers. A send already running finishes.
+ */
+function standDown(lane) {
+  if (!lane.queue.length) return;
+  const items = lane.queue;
+  lane.queue = [];
+  saveQueue(lane);
+  for (const it of items) {
+    deliverResult(it.job.id, { status: 'failed', error_code: 'stood_down', error: 'Another laptop answers this channel now. Nothing was typed.', retryable: true });
+  }
+}
+
+/** This laptop answers the lane from now: look at the tab at once, and over recent chats (the one before may have left some). */
+function promoted(lane) {
+  lane.lastScanAt = 0;
+  lane.scanWanted = Date.now();
+  patchHealth(lane, { sweep_at: 1 });
 }
 /** Stopped by the owner or the server (not by the page): queued replies must not go out later. */
 const laneStopped = (lane) => paused || config?.enabled === false || config?.channels?.[lane.channel]?.mode === 'off';
@@ -1016,6 +1083,8 @@ const recoveriesToday = (h) => (h.rec_day === today() ? h.rec_today || 0 : 0);
 function healthFields(h) {
   return {
     last_ok_at: h.last_ok_at || null,
+    // How long ago, on this laptop's own clock: a clock that is off cannot make a working tab look stalled.
+    ok_age_ms: h.last_ok_at ? Math.max(0, Date.now() - h.last_ok_at) : null,
     last_scan_at: h.last_scan_at || null,
     last_error: h.last_error || '',
     recoveries: recoveriesToday(h),
@@ -1358,7 +1427,7 @@ async function probeLane(lane, autoOpen, probeMs) {
     const stuck = (d.busy_ms || 0) > STUCK_OP_MS;
     if (lane.channel === 'tiktok' && d.business === true && !business) { business = true; await store.set({ tiktok_business: true }).catch(() => {}); }
     return {
-      st: { state, detail: joinDetail(stuck ? 'The page is stuck' : d.detail || '', dup), unread: d.unread || 0, busy: busyNow, tabs },
+      st: { state, detail: joinDetail(stuck ? 'The page is stuck' : d.detail || '', dup), unread: d.unread || 0, busy: busyNow, tabs, account: typeof d.account === 'string' ? d.account.slice(0, 120) : '' },
       info: { tabId: tab.id, answered: !stuck, probeOk: ALIVE_STATES.includes(state) && !stuck, answeredLoading: state === 'loading' && !stuck },
     };
   }
@@ -1400,7 +1469,18 @@ async function channelStatus() {
     // `busy` and `sending` are true only while a reply is being typed (older servers lease nothing
     // to a busy channel; reads no longer hold the channel).
     const sending = Boolean(lane?.job);
-    out[ch] = { ...st, busy: sending, sending, queued: lane ? lane.queue.length : 0, inbound: lane ? lane.inflight.size : 0, ...healthFields(lane ? await getHealth(lane) : {}) };
+    // How long the lane has worked without a break (scanning, reading, sending), measured here; nothing
+    // while it does not work. The server only calls a quiet page stalled once its lane has worked a while,
+    // so switching the agent or a channel on never looks like a stall.
+    const working = Boolean(lane && laneActive(lane));
+    if (lane) lane.activeSince = working ? lane.activeSince || Date.now() : 0;
+    out[ch] = {
+      ...st, busy: sending, sending, sending_id: lane?.job ? lane.job.job.id : null, queued: lane ? lane.queue.length : 0, inbound: lane ? lane.inflight.size : 0,
+      // The account the tab is signed in to (the server keeps laptops on other accounts out) and what this laptop does on the lane.
+      account: typeof st.account === 'string' ? st.account : '', role: lane ? laneRole(lane) : 'unknown',
+      ...(working ? { active_ms: Math.max(0, Date.now() - lane.activeSince) } : {}),
+      ...healthFields(lane ? await getHealth(lane) : {}),
+    };
   }
   return out;
 }
@@ -1474,6 +1554,7 @@ async function syncOnce() {
 
   const st = await store.get(['auth', 'paused', 'selectors', 'auto_open_tabs', 'config', 'tiktok_business']);
   paired = Boolean(st.auth?.token);
+  myDeviceId = String(st.auth?.device_id || '');
   paused = Boolean(st.paused);
   if (st.config) config = st.config;
   if (st.tiktok_business === true) business = true;
@@ -1507,12 +1588,15 @@ async function syncOnce() {
   const bo = await serverBackoff();
   let res = null;
   let lastError = '';
+  let sentAt = 0;
   if (Date.now() < bo.next_at) {
     lastError = `Cannot reach the server. Trying again in ${Math.ceil((bo.next_at - Date.now()) / 1000)} s`;
   } else {
     try {
-      const sentAt = Date.now();
-      res = await api.sync({ channels, paused_locally: paused, version: VERSION, held: heldJobs() }, st.selectors?.version ?? null, VERSION);
+      sentAt = Date.now();
+      // What the dashboard's commands did, newest last: the server takes them off this laptop's list.
+      const results = await store.sessionGet('command_results', []).catch(() => []);
+      res = await api.sync({ channels, paused_locally: paused, version: VERSION, held: heldJobs(), ...(Array.isArray(results) && results.length ? { command_results: results } : {}) }, st.selectors?.version ?? null, VERSION);
       if (res && Number.isFinite(res.server_time)) {
         // This laptop's clock against the server's, measured at the middle of the call, smoothed.
         const offset = Math.round((sentAt + Date.now()) / 2) - res.server_time;
@@ -1525,6 +1609,8 @@ async function syncOnce() {
         // The owner removed this laptop in the dashboard: forget the token so the popup asks to pair again.
         paired = false;
         await store.set({ auth: null, status: { channels, last_sync_at: Date.now(), last_error: 'Not paired any more', server_ok: false } });
+        await clearGrants();
+        await registerDashboardScript();
         await setBadge('SET', '#8a8f98');
         keepAwake(false);
         stopKeepAlive();
@@ -1539,10 +1625,24 @@ async function syncOnce() {
   if (res) {
     if (bo.fails) await store.sessionSet('server_backoff', { fails: 0, next_at: 0 }).catch(() => {});
     config = res.config || config;
-    const patch = { config: res.config, status: { channels, last_sync_at: Date.now(), last_error: '', server_ok: true } };
+    // Which lanes this laptop answers, and for how long (null from an older server: all of them).
+    await loadGrants();
+    const before = laneGrants;
+    laneGrants = core.readGrants(res.lanes, sentAt);
+    for (const lane of lanes) {
+      const prev = before?.[lane.id];
+      const change = before === undefined ? null : core.grantChange(prev, laneGrants?.[lane.id]);
+      if (change === 'stood_down') standDown(lane);
+      // Taken over from another laptop: look over recent chats at once. Not when this laptop simply
+      // starts answering a lane nobody answered (its tab was loading at the last sync, say).
+      else if (change === 'promoted' && otherLeads(prev)) promoted(lane);
+    }
+    const patch = { config: res.config, lanes: laneGrants, me: res.me || null, status: { channels, last_sync_at: Date.now(), last_error: '', server_ok: true } };
     if (res.selectors) patch.selectors = res.selectors;
     await store.set(patch);
     dropCancelled(res.cancelled);
+    // The dashboard asked this laptop to open a tab (from the phone or another laptop).
+    if (Array.isArray(res.commands) && res.commands.length) runCommands(res.commands).catch((err) => console.warn('[acx] command failed', err?.message || err));
     if (!paused && config?.enabled !== false) {
       for (const job of Array.isArray(res.jobs) ? res.jobs : []) {
         const lane = job && laneForJob(job);
@@ -1561,8 +1661,10 @@ async function syncOnce() {
 
   if (!res) { await setBadge('!', '#e5484d'); return; }
   if (paused || !config?.enabled) { await setBadge('OFF', '#8a8f98'); return; }
-  const ready = NAMES.filter((n) => primaryLane(n)?.probe?.state === 'ready').length;
-  await setBadge(ready ? 'ON' : '!', ready ? '#2563eb' : '#f5a524');
+  const ready = NAMES.filter((n) => primaryLane(n)?.probe?.state === 'ready');
+  // Ready but another laptop answers every one of them: on, standing by (grey).
+  const answering = ready.filter((n) => roleActive(primaryLane(n)));
+  await setBadge(ready.length ? 'ON' : '!', answering.length ? '#2563eb' : ready.length ? '#8a8f98' : '#f5a524');
 }
 
 async function ensureAlarm() {
@@ -1583,6 +1685,7 @@ async function boot() {
     }
     const st = await store.get(['auth', 'paused']);
     keepAwake(Boolean(st.auth?.token && !st.paused));
+    await registerDashboardScript();
   } catch (err) {
     console.warn('[acx] boot failed', err?.message || err);
   }
@@ -1636,6 +1739,9 @@ function laneForTab(tab) {
  */
 function nudgeLane(lane) {
   if (!laneActive(lane)) {
+    // Another laptop answers this lane and the tab is fine: nothing to do. Its page changes all the time
+    // (new messages, typing), and a sync on each would cost requests and rows all day for nothing.
+    if (standsBy(lane) && lane.probe.state === 'ready') return;
     if (Date.now() - nudgeSyncAt > 5000) { nudgeSyncAt = Date.now(); syncSoon(1000); }
     return;
   }
@@ -1687,6 +1793,133 @@ async function showTab(channel) {
   return { ok: true };
 }
 
+/**
+ * The blue dot on Live (or a command from the phone): open the lane's tab and pin it, as the agent does
+ * with the tabs it opens. A missing tab is opened, one that wandered off its page goes back. `focus`
+ * brings its window to the front too (the owner clicked on this laptop); a command from elsewhere only
+ * makes it the tab showing in its window, so whoever is using the laptop is not pulled away.
+ */
+async function openTab(lane, { focus = true } = {}) {
+  let tab = await findTab(lane);
+  const opened = await store.sessionGet('opened_tabs', {}).catch(() => ({}));
+  if (!tab && opened[lane.id]) { try { tab = await chrome.tabs.get(opened[lane.id]); } catch { tab = null; } }
+  if (!tab) {
+    tab = await chrome.tabs.create({ url: await homeUrl(lane), active: true, pinned: true });
+    opened[lane.id] = tab.id;
+    await store.sessionSet('opened_tabs', opened);
+    await store.sessionSet(`tab:${lane.id}`, tab.id);
+  } else {
+    const url = tab.url || tab.pendingUrl || '';
+    const away = !onLanePage(lane, url) || onAwayPage(lane, url);
+    await chrome.tabs.update(tab.id, { active: true, pinned: true, ...(away ? { url: await homeUrl(lane) } : {}) });
+    await store.sessionSet(`tab:${lane.id}`, tab.id).catch(() => {});
+  }
+  try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch { /* closed meanwhile */ }
+  if (focus) { try { await chrome.windows.update(tab.windowId, { focused: true }); } catch { /* window gone */ } }
+  syncSoon(1000); // the dashboard shows the tab as open on the next sync
+  return { ok: true, tab_id: tab.id };
+}
+
+const laneById = (id) => lanes.find((l) => l.id === id) || primaryLane(id) || null;
+
+/**
+ * Commands from the dashboard for this laptop, handed over by the sync (src/pipeline/commands.ts). Each
+ * runs once (the ids are remembered), even while paused: opening a tab sends nothing. The result goes
+ * back with the next syncs (command_results, the last 10), so the dashboard can say "Opened". The server
+ * hands a command over again until it sees its result, so a lost answer loses nothing.
+ */
+async function runCommands(list) {
+  const done = await store.sessionGet('commands_done', []).catch(() => []);
+  const seen = new Set(Array.isArray(done) ? done : []);
+  let ran = 0;
+  for (const c of list) {
+    if (!c || typeof c.id !== 'string' || seen.has(c.id)) continue;
+    seen.add(c.id);
+    await store.sessionSet('commands_done', [...seen].slice(-50)).catch(() => {});
+    let result;
+    try {
+      const lane = c.type === 'open_tab' ? laneById(String(c.lane || c.channel || '')) : null;
+      result = lane ? await openTab(lane, { focus: false }) : { ok: false, error: c.type === 'open_tab' ? 'unknown_lane' : 'unknown_command' };
+    } catch (err) {
+      result = { ok: false, error: String(err?.message || err).slice(0, 100) };
+    }
+    const results = await store.sessionGet('command_results', []).catch(() => []);
+    const list = (Array.isArray(results) ? results : []).filter((r) => r && r.id !== c.id);
+    list.push({ id: c.id, ok: Boolean(result.ok), at: Date.now(), error: result.error || '' });
+    await store.sessionSet('command_results', list.slice(-10)).catch(() => {});
+    ran++;
+  }
+  if (ran) syncSoon(800);
+}
+
+/**
+ * Disconnect in the popup: the server is told first (best effort, a few seconds at most), so this
+ * laptop stops counting as another laptop, its lanes are free at once and its jobs go to the next one.
+ * Then the token, the config, the lane grants and the dashboard bridge are forgotten.
+ */
+async function unpair() {
+  await api.leave().catch(() => {});
+  await store.set({ auth: null, config: null });
+  paired = false;
+  await clearGrants();
+  await registerDashboardScript();
+  await setBadge('SET', '#8a8f98');
+  keepAwake(false);
+  stopKeepAlive();
+}
+
+// ---- the dashboard in this browser ------------------------------------------------------------------------
+// content/dashboard.js runs on the paired server's pages only (registered below for that address). It
+// relays two questions from the dashboard: who is this laptop (hello), and open a lane's tab. Nothing else,
+// and never the token. The answer is only given to a page of the paired server's own origin.
+
+const DASH_SCRIPT = 'acx-dashboard';
+
+/** Register content/dashboard.js for the paired server (any address: workers.dev, a custom domain, localhost). */
+async function registerDashboardScript() {
+  if (!chrome.scripting?.registerContentScripts) return;
+  const auth = await store.get('auth');
+  try { await chrome.scripting.unregisterContentScripts({ ids: [DASH_SCRIPT] }); } catch { /* not registered */ }
+  const u = parseUrl(auth?.server_url);
+  if (!auth?.token || !u) return;
+  // A match pattern has no port: the script itself is only answered on the paired origin (dashMessage).
+  const match = `${u.protocol}//${u.hostname}/*`;
+  try {
+    await chrome.scripting.registerContentScripts([{ id: DASH_SCRIPT, matches: [match], js: ['content/dashboard.js'], runAt: 'document_start', persistAcrossSessions: true }]);
+  } catch (err) { console.warn('[acx] dashboard script', err?.message || err); return; }
+  // A dashboard already open gets it now too.
+  try {
+    for (const t of await chrome.tabs.query({ url: match })) {
+      if (parseUrl(t.url)?.origin === u.origin) chrome.scripting.executeScript({ target: { tabId: t.id }, files: ['content/dashboard.js'] }).catch(() => {});
+    }
+  } catch { /* no tabs */ }
+}
+
+/** A message from content/dashboard.js. Answered only for a top page of the paired server's origin. */
+async function dashMessage(msg, sender) {
+  const auth = await store.get('auth');
+  const server = parseUrl(auth?.server_url)?.origin || '';
+  const from = sender?.origin || parseUrl(sender?.url)?.origin || '';
+  if (!auth?.token || !server || from !== server || !sender?.tab || (sender.frameId ?? 0) !== 0) return { ok: false, error: 'not_the_dashboard' };
+  if (msg.op === 'hello') {
+    await loadGrants();
+    const me = await store.get('me').catch(() => null);
+    return {
+      ok: true,
+      data: {
+        device_id: auth.device_id || '', device_name: me?.name || auth.device_name || '', person: me?.person ?? auth.person ?? '', version: VERSION,
+        lanes: lanes.map((l) => ({ id: l.id, channel: l.channel, state: l.probe.state, role: laneRole(l), tab: l.tabId != null })),
+      },
+    };
+  }
+  if (msg.op === 'open_tab') {
+    const lane = laneById(String(msg.lane || ''));
+    if (!lane) return { ok: false, error: 'unknown_lane' };
+    return openTab(lane, { focus: true });
+  }
+  return { ok: false, error: 'unknown_op' };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   if (!msg || msg.acx !== true || !msg.type) return false;
   switch (msg.type) {
@@ -1721,13 +1954,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       return true;
     // ---- popup ----
     case 'pair':
-      api.pair(msg.pairing_string, msg.name || 'Laptop').then(
-        async (auth) => { paired = true; await boot(); respond({ ok: true, server_url: auth.server_url }); },
+      api.pair(msg.pairing_string, msg.name || 'Laptop', msg.person || '').then(
+        async (auth) => { paired = true; await clearGrants(); await boot(); respond({ ok: true, server_url: auth.server_url, person: auth.person || '' }); },
         (err) => respond({ ok: false, error: err.message || 'Pairing failed' }),
       );
       return true;
     case 'unpair':
-      store.set({ auth: null, config: null }).then(async () => { paired = false; await setBadge('SET', '#8a8f98'); keepAwake(false); stopKeepAlive(); respond({ ok: true }); }, () => respond({ ok: false }));
+      unpair().then(() => respond({ ok: true }), () => respond({ ok: false }));
       return true;
     case 'pause':
       store.set({ paused: Boolean(msg.paused) }).then(async () => { paused = Boolean(msg.paused); await boot(); respond({ ok: true }); }, () => respond({ ok: false }));
@@ -1741,6 +1974,10 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     case 'show_tab':
       if (!NAMES.includes(msg.channel)) { respond({ ok: false }); return false; }
       showTab(msg.channel).then(respond, (err) => respond({ ok: false, error: String(err?.message || err) }));
+      return true;
+    // ---- the dashboard (content/dashboard.js on the paired server's pages) ----
+    case 'dash':
+      dashMessage(msg, sender).then(respond, (err) => respond({ ok: false, error: String(err?.message || err).slice(0, 100) }));
       return true;
     case 'selftest':
       Promise.all(NAMES.map(async (channel) => [channel, await tabOp(primaryLane(channel), 'selftest', {}, 60_000)]))

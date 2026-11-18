@@ -34,7 +34,7 @@ function healthLine(ch, mode) {
 const send = (msg) => new Promise((resolve) => chrome.runtime.sendMessage({ acx: true, ...msg }, (res) => resolve(chrome.runtime.lastError ? null : res)));
 
 async function render() {
-  const st = await store.get(['auth', 'paused', 'config', 'status', 'trusted_input', 'auto_open_tabs']);
+  const st = await store.get(['auth', 'paused', 'config', 'status', 'trusted_input', 'auto_open_tabs', 'me', 'lanes']);
   const paired = Boolean(st.auth?.token);
   $('pair-view').hidden = paired;
   $('main-view').hidden = !paired;
@@ -49,7 +49,10 @@ async function render() {
   const state = err ? 'error' : st.paused || serverOff ? 'off' : 'on';
   document.body.dataset.state = state;
   $('pill').textContent = state === 'on' ? 'ON' : state === 'error' ? 'ERROR' : 'OFF';
-  $('sub').textContent = err ? err : st.paused ? 'Paused on this laptop' : serverOff ? 'Switched off in the dashboard' : new URL(st.auth.server_url).host;
+  // Whose laptop it is (named at pairing, changed on the dashboard), then the server.
+  const person = String(st.me?.person ?? st.auth?.person ?? '').trim();
+  const who = person ? `${person}’s laptop. ` : '';
+  $('sub').textContent = err ? err : st.paused ? 'Paused on this laptop' : serverOff ? 'Switched off in the dashboard' : `${who}${new URL(st.auth.server_url).host}`;
   $('server-error').hidden = !err;
   $('server-error').textContent = err;
   $('pause-btn').textContent = st.paused ? 'Resume' : 'Pause';
@@ -69,7 +72,12 @@ async function render() {
     nm.textContent = LABEL[name];
     const detail = document.createElement('span');
     detail.className = 'detail';
-    detail.textContent = mode === 'off' ? 'Switched off' : ch.state === 'ready' ? `${mode === 'review' ? 'Working, asks you first' : 'Working'}${name === 'gmail' && (ch.detail || '').includes('@') ? ` (${ch.detail})` : ''}` : (ch.detail || STATE_TEXT[ch.state] || ch.state);
+    // Another laptop answers this channel (or this tab is on another account): this one only keeps an eye on it.
+    const grant = st.lanes && st.lanes[`${name}:inbox`];
+    const other = grant?.leader?.device_id && grant.leader.device_id !== st.auth?.device_id;
+    const leader = grant?.leader?.person ? `${grant.leader.person}’s laptop` : 'Another laptop';
+    const role = grant && grant.role === 'standby' && other ? `Ready. ${leader} answers it` : grant && grant.role === 'other_account' ? 'Ready. Signed in to another account, so it stays idle' : '';
+    detail.textContent = mode === 'off' ? 'Switched off' : ch.state === 'ready' ? role || `${mode === 'review' ? 'Working, asks you first' : 'Working'}${name === 'gmail' && (ch.detail || '').includes('@') ? ` (${ch.detail})` : ''}` : (ch.detail || STATE_TEXT[ch.state] || ch.state);
     li.append(dot, nm, detail);
     const show = document.createElement('button');
     show.className = 'show';
@@ -112,7 +120,7 @@ $('pair-btn').addEventListener('click', async () => {
   if (!allowed) { errEl.textContent = 'Chrome needs your permission to talk to that address. Press Connect again and allow it.'; errEl.hidden = false; return; }
   $('pair-btn').disabled = true;
   $('pair-btn').textContent = 'Connecting';
-  const res = await send({ type: 'pair', pairing_string: line, name: $('device-name').value.trim() || 'My laptop' });
+  const res = await send({ type: 'pair', pairing_string: line, name: $('device-name').value.trim() || 'My laptop', person: $('person').value.trim() });
   $('pair-btn').disabled = false;
   $('pair-btn').textContent = 'Connect';
   if (!res?.ok) { errEl.textContent = res?.error || 'Could not connect. Check the pairing line and try again.'; errEl.hidden = false; return; }

@@ -82,6 +82,9 @@
   // ---- bridge to the page world (optional) -----------------------------------------------------------
 
   const TAG = 'acx-wa-bridge';
+  // Modules for the bridge's me() (which phone this WhatsApp is linked to), used when the selector pack
+  // names none. The pack's bridge.modules wins, so a rename is fixed from the dashboard as usual.
+  const BRIDGE_DEFAULTS = { meUser: 'WAWebUserPrefsMeUser', conn: 'WAWebConnModel' };
   const waiting = new Map();
   let bridgeSeq = 0;
   let bridgeDownUntil = 0;
@@ -105,7 +108,7 @@
       }, 1200);
       waiting.set(id, (res) => { clearTimeout(timer); waiting.delete(id); resolve(res ?? null); });
       try {
-        window.postMessage({ tag: TAG, dir: 'req', id, fn, args, modules: lookup('bridge.modules') || {} }, location.origin);
+        window.postMessage({ tag: TAG, dir: 'req', id, fn, args, modules: { ...BRIDGE_DEFAULTS, ...(lookup('bridge.modules') || {}) } }, location.origin);
       } catch { clearTimeout(timer); waiting.delete(id); resolve(null); }
     });
   }
@@ -230,6 +233,31 @@
     }
   }
 
+  // ---- which phone this WhatsApp is linked to ------------------------------------------------------------
+  // So the dashboard can show each laptop's number, and so a laptop linked to another number never
+  // answers the shop's chats (src/pipeline/leader.ts). Found once and kept for the page's life; '' while
+  // not known (the server then counts it as the shop's number, so two laptops can never both answer).
+  let ownId = '';
+  let ownTriedAt = 0;
+  const PHONE_ID = /^\d{6,16}(?::\d+)?@(c\.us|s\.whatsapp\.net)$/;
+  async function ownNumber() {
+    if (ownId || Date.now() - ownTriedAt < 60_000) return ownId;
+    ownTriedAt = Date.now();
+    // 1. What WhatsApp Web keeps in its own storage for the linked phone (same origin, no bridge needed).
+    for (const key of lookup('account.storageKeys') || ['last-wid-md', 'last-wid']) {
+      try {
+        let v = localStorage.getItem(String(key)) || '';
+        try { const parsed = JSON.parse(v); if (typeof parsed === 'string') v = parsed; } catch { /* stored as plain text */ }
+        v = String(v).trim();
+        if (PHONE_ID.test(v)) { ownId = v; return ownId; }
+      } catch { /* storage blocked */ }
+    }
+    // 2. Asked in the page world (whatsapp-main.js me()).
+    const me = await bridge('me');
+    if (typeof me === 'string' && PHONE_ID.test(me.trim())) ownId = me.trim();
+    return ownId;
+  }
+
   async function probe() {
     const unread = countUnread();
     // The chat list wins: a logged in page can never be "signed out", whatever else matches the QR selectors.
@@ -255,7 +283,7 @@
     if (open.includes('unknown')) return { state: 'blocked', detail: MSG.unknown, unread };
     // WhatsApp shows this when the phone has been offline too long. Chats on screen still work, new ones may be late.
     const paused = /syncing paused|open whatsapp on your phone to continue/i.test((document.querySelector('#main')?.textContent || '').slice(0, 2000) + ' ' + (document.querySelector('#side')?.textContent || '').slice(0, 2000));
-    return { state: 'ready', detail: paused ? 'WhatsApp says syncing is paused. Open WhatsApp on your phone' : '', unread };
+    return { state: 'ready', detail: paused ? 'WhatsApp says syncing is paused. Open WhatsApp on your phone' : '', unread, account: await ownNumber() };
   }
 
   // ---- chat list -----------------------------------------------------------------------------------------------

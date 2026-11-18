@@ -386,6 +386,9 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
   // A message that really went out is recorded whatever happened to the row meanwhile (cancelled by a
   // pause or an opt out while the laptop held it, or given up): the next read must know it is ours.
   if (row.status !== 'leased' && row.status !== 'pending' && result.status !== 'sent') return { ok: true, status: row.status };
+  // A failure from a laptop that no longer holds the job (another laptop answers the channel now and was
+  // handed it, src/pipeline/leader.ts) says nothing about it: the one that holds it reports for itself.
+  if (result.status !== 'sent' && row.status === 'leased' && row.lease_device && row.lease_device !== device.id) return { ok: true, status: row.status };
   const now = Date.now();
   const target = parseJson<JobTarget>(row.target, emptyTarget());
   const parts = parseJson<string[]>(row.parts, []);
@@ -487,9 +490,16 @@ export async function completeJob(env: Env, device: DeviceRow, id: string, resul
 
   // The laptop's own copy of the lease ran out before it could send (a long queue): nothing was typed.
   // Offered again at once, no try used.
-  if (code === 'lease_expired_local') {
-    await run(db, `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ? WHERE id = ?`, now, why, id);
-    return { ok: true, status: 'pending' };
+  // stood_down (0.6.0 and up): another laptop answers this channel now (src/pipeline/leader.ts), so this one
+  // handed the job back unsent. The same: offered again at once (to the one that answers), no try used.
+  // Only while this laptop still holds it (or held it last, when the sweeper already put it back): one
+  // handed to another laptop since, or moved back by a takeover, is left as it is, so it is never offered twice.
+  if (code === 'lease_expired_local' || code === 'stood_down') {
+    const moved = await run(db,
+      `UPDATE outbox SET status = 'pending', lease_until = NULL, not_before = ?, attempts = MAX(0, attempts - 1), last_error = ?
+       WHERE id = ? AND status IN ('leased', 'pending') AND lease_device = ?`, now, why, id, device.id);
+    if (moved) return { ok: true, status: 'pending' };
+    return { ok: true, status: (await one<{ status: string }>(db, 'SELECT status FROM outbox WHERE id = ?', id))?.status ?? row.status };
   }
 
   // The owner is typing in that tab or a draft is in the way: not the job's fault. Offered again soon

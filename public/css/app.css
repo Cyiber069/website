@@ -408,3 +408,57 @@ button.conv:hover { background: var(--surface-1); }
 @media (max-width: 1199px) { .grid--stats.grid--stats5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 899px) { .grid--stats.grid--stats5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .grid--stats.grid--stats5 > :last-child { grid-column: 1 / -1; } }
 .stat__value.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- People next to the logo, the People panel, the blue dot that opens a tab (public/js/people.js) ---------- */
+.people { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 var(--sp-2); margin: calc(var(--sp-2) * -1) 0 var(--sp-3); }
+.people:empty { display: none; }
+.people--top { display: none; }
+.pchip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; max-width: 100%; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-1); font: 500 var(--fs-12)/1 var(--font-ui); cursor: pointer; transition: border-color var(--dur-1) ease; }
+.pchip:hover { border-color: var(--border-strong); }
+.pchip .pchip__on { color: var(--success); }
+.pchip .pchip__off { color: var(--text-3); }
+.pchip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14ch; }
+.pchip__init { display: none; font-weight: 700; }
+.pchip[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+@media (max-width: 1099px) and (min-width: 768px) {
+  .people { flex-direction: column; align-items: center; padding: 0; margin-top: 0; }
+  .side .pchip { width: 40px; padding: 0; justify-content: center; position: relative; }
+  .side .pchip__name { display: none; }
+  .side .pchip__init { display: inline; }
+  .side .pchip .dot { position: absolute; top: 2px; right: 2px; }
+}
+@media (max-width: 767px) {
+  .people--top { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0; padding: 0; min-width: 0; overflow: hidden; }
+  .people--top .pchip { min-height: 32px; padding: 0 8px; }
+  .people--top .pchip__name { max-width: 7ch; }
+}
+.dialog--people { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.ppl__tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.pcard { display: grid; gap: var(--sp-2); padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-2); min-width: 0; }
+.pcard__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+.pcard__head b { flex: 1 1 auto; min-width: 0; }
+.plist { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
+.plist li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px var(--sp-2); min-width: 0; }
+.plist li .pill { grid-column: 2 / 3; justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.plist__name { font-weight: 600; min-width: 0; }
+.plist__meta { grid-column: 2 / 3; overflow-wrap: anywhere; }
+.plist li .tabdot--inline { grid-column: 3; grid-row: 1 / span 3; }
+.plist--lanes li { grid-template-columns: auto auto minmax(0, 1fr); }
+.pick { justify-content: flex-start; gap: var(--sp-2); }
+.pick .meta { margin-left: auto; }
+.rename { grid-column: 1 / -1; width: 100%; padding-top: var(--sp-2); }
+
+/* Live: each channel card names its laptop, and its blue dot opens and pins that tab. */
+.chcard { position: relative; }
+.chcard__link { color: inherit; text-decoration: none; padding-right: 30px; }
+.chcard__link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.chcard__link:hover { color: inherit; }
+.chcard:has(.chcard__link:hover) { border-color: var(--border-strong); }
+.chcard__who { grid-column: 1 / -1; font-size: var(--fs-12); line-height: 1.35; color: var(--text-2); }
+.tabdot { position: absolute; top: 6px; right: 6px; z-index: 1; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.tabdot::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--brand-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-blue) 28%, transparent); transition: transform var(--dur-1) ease; }
+.tabdot:hover::before, .tabdot:focus-visible::before { transform: scale(1.2); }
+.tabdot[aria-busy="true"]::before { animation: acx-breathe 1s ease-in-out infinite; }
+.tabdot--inline { position: static; }
+@media (hover: none), (pointer: coarse) { .tabdot { width: 44px; height: 44px; top: 0; right: 0; } }
+@media (prefers-reduced-motion: reduce) { .tabdot[aria-busy="true"]::before { animation: none; opacity: 0.6; } }

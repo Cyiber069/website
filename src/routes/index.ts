@@ -4,6 +4,7 @@ import * as auth from './auth';
 import * as connections from './connections';
 import * as dashboard from './dashboard';
 import * as discounts from './discounts';
+import * as people from './people';
 import * as hooks from './hooks';
 import * as kb from './kb';
 import * as recovery from './recovery';
@@ -18,6 +19,7 @@ export function buildRouter(): Router {
   auth.register(r);
   agent.register(r);
   dashboard.register(r);
+  people.register(r);
   kb.register(r);
   voice.register(r);
   recovery.register(r);

@@ -10,7 +10,7 @@
     "db:local": "wrangler d1 migrations apply acx-agent --local",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "node test/e2e/whatsapp.e2e.mjs && node test/e2e/gmail.e2e.mjs && node test/e2e/tiktok.e2e.mjs && node test/e2e/lanes.e2e.mjs"
+    "test:e2e": "node test/e2e/whatsapp.e2e.mjs && node test/e2e/gmail.e2e.mjs && node test/e2e/tiktok.e2e.mjs && node test/e2e/lanes.e2e.mjs && node test/e2e/people.e2e.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest"

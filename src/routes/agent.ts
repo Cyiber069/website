@@ -16,6 +16,8 @@ import { completeJob, droppedJobs, leaseDue, releaseLeases, type JobResult } fro
 import { LEGACY_SETTLE_SECONDS, isLegacyExtension } from '../lib/version';
 import { VIDEOS_TODAY_SQL, VISION_SECRET, londonDayStart, receiveVideo, videoCheck } from '../vision';
 import { SYNC_SECONDS, budget, syncSeconds } from '../lib/budget';
+import { cleanName, electLanes, inlineAllowed, laneContext, laneLeader, normAccount } from '../pipeline/leader';
+import { parseCommandResults, planCommands, type CommandResult } from '../pipeline/commands';
 
 export const ONLINE_WINDOW_MS = 100_000;
 
@@ -35,12 +37,26 @@ export interface ChannelStatus {
   last_error: string;    // short text of the last problem
   recoveries: number;    // self heal actions today
   version: string;       // extension or content script version for this channel
+  /** The account the tab is signed in to (src/pipeline/leader.ts normAccount), '' when it cannot be told. */
+  account: string;
+  /** Server time the channel went into `state` (kept from the stored row while the state is the same). */
+  state_since: number;
+  /**
+   * Server time the lane started working on the laptop (scanning, reading, sending): from `active_ms`,
+   * which 0.6.0 sends only while the lane works. 0 when it does not work or the build does not say.
+   * A page is only judged stalled once its lane has worked a while (src/pipeline/leader.ts).
+   */
+  active_since: number;
+  /** 0.6.0: the job being typed right now (null for none). undefined from an older build. */
+  sending_id?: string | null;
 }
 
 export interface DeviceStatus {
   channels: Partial<Record<Channel, ChannelStatus>>;
   paused_locally: boolean;
   reported_at: number;
+  /** The dashboard commands the laptop ran lately (0.6.0 and up), newest last: the dashboard shows "Opened". */
+  command_results?: CommandResult[];
 }
 
 /** Write the device row at least this often even when nothing changed (the online window is 100 s). */
@@ -104,6 +120,10 @@ export function parseStatus(raw: unknown, now: number): DeviceStatus {
     const c = chans[ch];
     if (!c || typeof c !== 'object') continue;
     const o = c as Record<string, unknown>;
+    // Newer builds say how long ago the last good read was, and how long the lane has worked (their own
+    // clock cannot shift either).
+    const okAge = typeof o.ok_age_ms === 'number' && Number.isFinite(o.ok_age_ms) && o.ok_age_ms >= 0 ? o.ok_age_ms : null;
+    const activeMs = typeof o.active_ms === 'number' && Number.isFinite(o.active_ms) && o.active_ms >= 0 ? o.active_ms : null;
     channels[ch] = {
       state: typeof o.state === 'string' ? o.state.slice(0, 30) : 'unknown',
       detail: typeof o.detail === 'string' ? o.detail.slice(0, 200) : '',
@@ -111,14 +131,28 @@ export function parseStatus(raw: unknown, now: number): DeviceStatus {
       busy: o.busy === true,
       sending: typeof o.sending === 'boolean' ? o.sending : null,
       checked_at: now,
-      last_ok_at: msTime(o.last_ok_at, now),
+      last_ok_at: okAge !== null && o.last_ok_at ? Math.max(1, Math.round(now - okAge)) : msTime(o.last_ok_at, now),
       last_scan_at: msTime(o.last_scan_at, now),
       last_error: text(o.last_error, 160),
       recoveries: typeof o.recoveries === 'number' && Number.isFinite(o.recoveries) ? Math.min(100_000, Math.max(0, Math.round(o.recoveries))) : 0,
       version: text(o.version, 20),
+      account: normAccount(ch, o.account),
+      state_since: now,
+      active_since: activeMs !== null ? Math.max(1, Math.round(now - activeMs)) : 0,
+      ...(o.sending_id === null || typeof o.sending_id === 'string' ? { sending_id: typeof o.sending_id === 'string' ? o.sending_id.slice(0, 40) : null } : {}),
     };
   }
-  return { channels, paused_locally: src.paused_locally === true, reported_at: now };
+  const results = parseCommandResults(src.command_results, src.last_command, now);
+  return { channels, paused_locally: src.paused_locally === true, reported_at: now, ...(results.length ? { command_results: results } : {}) };
+}
+
+/** The time each channel went into its state: kept from the stored status while the state is the same. */
+export function carryStateSince(status: DeviceStatus, before: DeviceStatus): void {
+  for (const ch of CHANNELS) {
+    const st = status.channels[ch];
+    const was = before?.channels?.[ch];
+    if (st && was && was.state === st.state) st.state_since = was.state_since || before.reported_at || st.state_since;
+  }
 }
 
 /** The parts of a status worth a database write when they change. Scan times alone are not. */
@@ -128,8 +162,9 @@ function statusSignature(s: DeviceStatus): string {
     const c = s?.channels?.[ch];
     // How fresh the last good read is, in 5 minute steps, so a stalled or recovered page is written at once.
     const fresh = c?.last_ok_at ? Math.min(3, Math.floor(Math.max(0, (s.reported_at || 0) - c.last_ok_at) / (5 * MIN))) : -1;
-    return c ? [c.state, c.detail, c.unread, c.busy, c.last_error, c.recoveries, c.version, fresh] : null;
-  })]);
+    // Whether the lane works is written at once too, so a standby never judges a stall from an old row.
+    return c ? [c.state, c.detail, c.unread, c.busy, c.last_error, c.recoveries, c.version, fresh, c.account ?? '', Boolean(c.active_since)] : null;
+  }), (s?.command_results ?? []).map((r) => r.id)]);
 }
 
 /** Whether the vision model is on (a key and the switch), and whether whole videos may still go today. One small query. */
@@ -171,9 +206,11 @@ function requireDevice(c: Ctx): DeviceRow {
 export function register(r: Router): void {
   // Exchange a one-time pairing code from the dashboard for a long lived device token.
   r.post('/api/agent/pair', 'public', async (c) => {
-    const body = await c.body<{ code?: unknown; name?: unknown }>();
+    const body = await c.body<{ code?: unknown; name?: unknown; person?: unknown }>();
     const code = str(body.code, 'code', { max: 20 }).toUpperCase().replace(/[^A-Z0-9]/g, '');
     const name = str(body.name, 'name', { max: 60, optional: true }) || 'Laptop';
+    // Whose laptop it is: typed in the popup (0.6.0 and up), else the name given when the line was made.
+    const typed = cleanName(body.person);
     const now = c.now;
 
     const guard = await getState<{ n: number; since: number }>(c.db, 'pair_fail', { n: 0, since: now });
@@ -181,16 +218,17 @@ export function register(r: Router): void {
 
     const formatted = `${code.slice(0, 4)}-${code.slice(4)}`;
     const hash = await sha256Hex(formatted);
-    const used = await run(c.db, 'UPDATE pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?', now, hash, now);
-    if (!used) {
+    const usedRows = await all<{ person: string }>(c.db, 'UPDATE pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING person', now, hash, now);
+    if (!usedRows.length) {
       await setState(c.db, 'pair_fail', now - guard.since < 10 * MIN ? { n: guard.n + 1, since: guard.since } : { n: 1, since: now });
       throw new HttpError(400, 'bad_code', 'That code is wrong or has expired. Make a new one in the dashboard.');
     }
     const token = `acxd_${randomToken(32)}`;
     const id = uid('dev');
-    await run(c.db, 'INSERT INTO devices (id, name, token_hash, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)', id, name, await sha256Hex(token), now, now);
-    await logEvent(c.db, { level: 'good', type: 'device_paired', message: `${name} is connected.` });
-    return json({ device_id: id, token, server_time: now });
+    const person = typed || String(usedRows[0]?.person ?? '').trim();
+    await run(c.db, 'INSERT INTO devices (id, name, token_hash, created_at, last_seen_at, person) VALUES (?, ?, ?, ?, ?, ?)', id, name, await sha256Hex(token), now, now, person);
+    await logEvent(c.db, { level: 'good', type: 'device_paired', message: person ? `${person}’s laptop is connected.` : `${name} is connected.` });
+    return json({ device_id: id, token, server_time: now, person });
   });
 
   // Heartbeat + job pickup. Called every poll_seconds and whenever the extension finishes something.
@@ -203,9 +241,19 @@ export function register(r: Router): void {
     // One small UPDATE, and only when something the owner sees changed or a minute has passed:
     // this runs every 20 s and the free plan allows 100,000 rows written a day.
     const before = parseJson<DeviceStatus>(device.status, { channels: {}, paused_locally: false, reported_at: 0 });
+    carryStateSince(status, before);
+    // Commands from the dashboard (open a tab) wait on this same row until the laptop says it ran them
+    // (src/pipeline/commands.ts). Their list changes ride on the status write when there is one.
+    const cmd = planCommands(device, status, version, c.now);
     const changed = version !== device.version || statusSignature(before) !== statusSignature(status);
-    if (changed || wasOffline || c.now - (device.last_seen_at ?? 0) >= STATUS_WRITE_MS) {
+    const wrote = changed || wasOffline || c.now - (device.last_seen_at ?? 0) >= STATUS_WRITE_MS;
+    if (wrote && cmd.next !== null) {
+      await run(c.db, 'UPDATE devices SET last_seen_at = ?, status = ?, version = ?, commands = CASE WHEN commands = ? THEN ? ELSE commands END WHERE id = ?',
+        c.now, JSON.stringify(status), version, cmd.before, cmd.next, device.id);
+    } else if (wrote) {
       await run(c.db, 'UPDATE devices SET last_seen_at = ?, status = ?, version = ? WHERE id = ?', c.now, JSON.stringify(status), version, device.id);
+    } else if (cmd.next !== null) {
+      await run(c.db, 'UPDATE devices SET commands = ? WHERE id = ? AND commands = ?', cmd.next, device.id, cmd.before);
     }
     if (wasOffline) {
       await logEvent(c.db, { level: 'good', type: 'device_online', message: `${device.name} is back online.` });
@@ -218,9 +266,13 @@ export function register(r: Router): void {
     device.version = version;
     // A newer extension (it reports `sending`) queues jobs per tab, so it gets them while it reads.
     // An older one types the jobs of a sync straight away, so a channel it says is busy is left alone.
+    // Which laptop answers each lane (src/pipeline/leader.ts): jobs go only to the one that answers.
+    // The lease runs from the device row as stored now, so it ends before anyone may take over.
+    const lanes = await laneContext(c.db, device.id, c.now);
+    const elected = await electLanes(c.env, device, status, settings, c.now, wrote ? c.now : device.last_seen_at ?? c.now, lanes);
     const ready = CHANNELS.filter((ch) => {
       const st = status.channels[ch];
-      return st?.state === 'ready' && (st.sending !== null || !st.busy);
+      return st?.state === 'ready' && (st.sending !== null || !st.busy) && elected.active.includes(ch);
     });
     const jobs = status.paused_locally ? [] : await leaseDue(c.db, device, settings, ready);
     // Newer extensions list the jobs they hold: the ones the server cancelled meanwhile (a pause, an opt
@@ -234,6 +286,10 @@ export function register(r: Router): void {
       jobs,
       cancelled,
       selectors: body.selectors_version === sel.version ? null : sel,
+      // Newer builds (0.6.0): what this laptop does on each lane, and how long it may. Older ones ignore it.
+      lanes: elected.grants,
+      commands: cmd.send,
+      me: { device_id: device.id, name: device.name, person: device.person ?? '' },
     });
   });
 
@@ -243,8 +299,10 @@ export function register(r: Router): void {
     // Room for up to 3 photos of 260 KB of base64 each next to the messages.
     const payload = parseInbound(await c.body(1_200_000));
     return ndjsonStream(c.exec, async (send, isOpen) => {
-      // Jobs are only handed over while the extension is still listening; otherwise they wait for its next sync.
-      const live = () => isOpen() && !c.req.signal?.aborted;
+      // Jobs are only handed over while the extension is still listening, and only to the laptop that answers
+      // this lane (src/pipeline/leader.ts); otherwise they wait for the next sync of the one that does.
+      const mine = inlineAllowed(device.id, await laneLeader(c.db, payload.channel));
+      const live = () => mine && isOpen() && !c.req.signal?.aborted;
       const outcome = await handleInbound(c.env, device, payload, (o) => { void send({ type: 'accepted', ...o }); }, { live, startedAt: c.now });
       const delivered = await Promise.race([send({ type: 'decision', ...outcome }), new Promise<boolean>((r) => setTimeout(() => r(true), 10_000))]);
       // The answer could not be written: the extension hung up just now. Its jobs go back to the queue
@@ -302,11 +360,13 @@ export function register(r: Router): void {
 /** Latest live device with its parsed status, for the dashboard. */
 export async function currentDevice(db: D1Database, now: number) {
   // Only what the dashboard shows (never the token hash), newest first.
-  const rows = await all<Pick<DeviceRow, 'id' | 'name' | 'version' | 'last_seen_at' | 'status'>>(db,
-    'SELECT id, name, version, last_seen_at, status FROM devices WHERE revoked_at IS NULL ORDER BY COALESCE(last_seen_at, 0) DESC LIMIT 5');
+  const rows = await all<Pick<DeviceRow, 'id' | 'name' | 'version' | 'last_seen_at' | 'status' | 'person'>>(db,
+    // Through the partial index devices_live_seen (migration 0013): five rows, not every laptop ever paired.
+    'SELECT id, name, person, version, last_seen_at, status FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5');
   return rows.map((d) => ({
     id: d.id,
     name: d.name,
+    person: d.person ?? '',
     version: d.version,
     last_seen_at: d.last_seen_at,
     online: d.last_seen_at !== null && now - d.last_seen_at < ONLINE_WINDOW_MS,
@@ -314,8 +374,8 @@ export async function currentDevice(db: D1Database, now: number) {
   }));
 }
 
-export async function pairingCodeRow(db: D1Database, codeHash: string, now: number): Promise<void> {
+export async function pairingCodeRow(db: D1Database, codeHash: string, now: number, person = ''): Promise<void> {
   await run(db, 'DELETE FROM pairing_codes WHERE expires_at < ? OR used_at IS NOT NULL', now);
-  await run(db, 'INSERT INTO pairing_codes (code_hash, created_at, expires_at) VALUES (?, ?, ?)', codeHash, now, now + 15 * MIN);
+  await run(db, 'INSERT INTO pairing_codes (code_hash, created_at, expires_at, person) VALUES (?, ?, ?, ?)', codeHash, now, now + 15 * MIN, person);
 }
 

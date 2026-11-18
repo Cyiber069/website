@@ -93,6 +93,16 @@
   }
 
   const ownHandle = () => (appContext() && appContext().unique_id) || '';
+  /** The header's link to the signed in profile, when the page data has no user (some pages lack it). Selector from the pack. */
+  function headerHandle() {
+    const sel = ACX.lookup('page.own_profile_link');
+    if (!sel) return '';
+    try {
+      const a = document.querySelector(String(sel));
+      const m = a && /\/@([A-Za-z0-9._]{2,40})/.exec(a.getAttribute('href') || '');
+      return m ? m[1].toLowerCase() : '';
+    } catch { return ''; }
+  }
 
   let lastVariant = 'unknown';
   /** sdk | legacy | vmok | unknown. Decided from what is in the DOM, with the A/B flags as a hint. */
@@ -529,7 +539,9 @@
     // A business account: the worker then sends a tab that wandered into Business Suite back to the
     // business view of this page (scene=business), where this script works.
     const business = Boolean((appContext() && appContext().business) || /(^|&)scene=business(&|$)/.test(location.search.slice(1)));
-    return { state: 'ready', detail: layout, unread, ...(business ? { business: true } : {}) };
+    // The signed in handle (TikTok's own page data, else the profile link in the header): the dashboard
+    // shows it, and a laptop on another account never answers the shop's messages.
+    return { state: 'ready', detail: layout, unread, account: ownHandle() || headerHandle(), ...(business ? { business: true } : {}) };
   }
 
   // ---- scan ------------------------------------------------------------------------------------------------

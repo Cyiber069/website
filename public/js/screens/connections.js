@@ -1,6 +1,6 @@
 // Connections: the laptop, the AI brain, Google AI Studio (photos and videos), Shopify, phone notifications,
 // channel modes, pacing, password.
-import { api, get, post, put, del } from '../api.js';
+import { api, get, post, put, del, patch } from '../api.js';
 import { $, html, raw, icon, setHTML, toast, toastError, friendly, unavailable, skeletonCards, switchRow, segmented, field, busy, ago, copyText, confirmDialog, chBadge, chName, CHANNELS, plural } from '../ui.js';
 import { pushState, enablePush, disablePush } from '../push.js';
 
@@ -14,6 +14,7 @@ export default {
   mount(view, ctx) {
     let devices = null, devicesErr = null;
     let pair = null;
+    let asking = false; // the "whose laptop is it" step before a pairing line is made
     let conn = null, connErr = null;
     let settings = null, settingsErr = null;
     let push = { supported: false, permission: 'default', subscribed: false };
@@ -39,11 +40,22 @@ export default {
       const box = $('#sec-laptop', view);
       const list = devices || [];
       const online = list.some((d) => d.online);
+      const label = (d) => (d.person ? `${d.person}’s laptop` : d.name || 'Laptop');
       setHTML(box, html`
-        ${head('laptop', 'i-laptop', 'This laptop', 'The agent works through Chrome on your laptop. Leave it open and plugged in.', devices ? html`<span class="pill ${online ? 'pill--live' : list.length ? 'pill--down' : 'pill--wait'}"><span class="dot ${online ? 'dot--live' : list.length ? 'dot--down' : 'dot--wait'}" aria-hidden="true"></span>${online ? 'Online' : list.length ? 'Offline' : 'Not paired'}</span>` : '')}
+        ${head('laptop', 'i-laptop', list.length > 1 ? 'Laptops' : 'This laptop', 'The agent works through Chrome on each laptop. Each one belongs to a person. Leave them open and plugged in.', devices ? html`<span class="pill ${online ? 'pill--live' : list.length ? 'pill--down' : 'pill--wait'}"><span class="dot ${online ? 'dot--live' : list.length ? 'dot--down' : 'dot--wait'}" aria-hidden="true"></span>${online ? 'Online' : list.length ? 'Offline' : 'Not paired'}</span>` : '')}
         ${devicesErr && !devices ? unavailable('The laptop list', devicesErr) : ''}
-        ${list.length ? html`<ul class="rows">${list.map((d) => html`<li class="rowline"><span class="row"><b class="truncate">${d.name || 'Laptop'}</b><span class="tag ${d.online ? 'tag--live' : 'tag--down'}">${d.online ? 'Online' : 'Offline'}</span></span><span class="meta">${d.last_seen_at ? `Last checked in ${ago(d.last_seen_at)}` : 'Has not checked in yet'}</span><button type="button" class="btn btn--ghost btn--sm" data-action="unpair" data-id="${d.id}" data-name="${d.name || 'this laptop'}">Remove</button></li>`)}</ul>` : ''}
+        ${list.length ? html`<ul class="rows">${list.map((d) => html`<li class="rowline"><span class="row"><b class="truncate">${label(d)}</b><span class="tag ${d.online ? 'tag--live' : 'tag--down'}">${d.online ? 'Online' : 'Offline'}</span></span><span class="meta">${d.person ? `${d.name}. ` : ''}${d.last_seen_at ? `Last checked in ${ago(d.last_seen_at)}` : 'Has not checked in yet'}${d.version ? `. Extension ${d.version}` : ''}</span>
+            <button type="button" class="btn btn--ghost btn--sm" data-action="rename" data-id="${d.id}">Change name</button><button type="button" class="btn btn--ghost btn--sm" data-action="unpair" data-id="${d.id}" data-name="${label(d)}">Remove</button>
+            <form class="rename stack" data-rename-form="${d.id}" hidden><div class="grid grid--2">
+              <div class="field"><label class="field__label" for="rp-${d.id}">Whose laptop</label><input class="input" id="rp-${d.id}" name="person" maxlength="40" value="${d.person || ''}" placeholder="Adrian" autocomplete="off"></div>
+              <div class="field"><label class="field__label" for="rn-${d.id}">Laptop name</label><input class="input" id="rn-${d.id}" name="name" maxlength="60" value="${d.name || ''}" autocomplete="off"></div></div>
+              <div class="wrap"><button type="submit" class="btn btn--primary btn--sm">Save</button></div></form></li>`)}</ul>` : ''}
+        ${!pair && asking ? html`<form class="pairbox stack" id="pair-form">
+            <div class="field"><label class="field__label" for="pair-person">Whose laptop is it?</label><input class="input" id="pair-person" name="person" maxlength="40" placeholder="Adrian" autocomplete="off">
+              <p class="field__hint">The dashboard shows each laptop by its person. You can change it later.</p></div>
+            <div class="wrap"><button type="submit" class="btn btn--primary">Make the pairing line</button><button type="button" class="btn btn--ghost" data-action="pair-cancel">Cancel</button></div></form>` : ''}
         ${pair ? html`<div class="pairbox stack">
+            ${pair.person ? html`<p><b>For ${pair.person}’s laptop.</b></p>` : ''}
             ${copyRow('Pairing line', pair.pairing_string, 'pair-line')}
             <p class="meta" id="pair-left"></p>
             <ol class="howto">
@@ -53,8 +65,8 @@ export default {
               <li>Paste the pairing line and press <b>Connect</b>.</li>
               <li>Open WhatsApp Web, Gmail and TikTok in tabs and leave them signed in.</li>
             </ol></div>`
-          : html`<div><button type="button" class="btn ${list.length ? '' : 'btn--primary'}" data-action="pair">${list.length ? 'Pair another laptop' : 'Pair this laptop'}</button></div>
-            ${list.length ? '' : html`<p class="field__hint">You get a one time line to paste into the ACX Agent extension. It works for 15 minutes.</p>`}`}`);
+          : asking ? '' : html`<div><button type="button" class="btn ${list.length ? '' : 'btn--primary'}" data-action="pair">${list.length ? 'Pair another laptop' : 'Pair this laptop'}</button></div>
+            <p class="field__hint">${list.length ? 'A second laptop signed in to the same WhatsApp, Gmail and TikTok stands by. It takes over if the first one goes off.' : 'You get a one time line to paste into the ACX Agent extension. It works for 15 minutes.'}</p>`}`);
       paintPairLeft();
     }
     function paintPairLeft() {
@@ -68,7 +80,7 @@ export default {
       try { devices = (await get('/api/devices')).devices || []; devicesErr = null; }
       catch (err) { if (err.name === 'AuthError') return; devicesErr = err; }
       if (pair && devices && devices.length > had) { pair = null; toast('Laptop paired. The agent can see your chats now.'); ctx.refreshOverview(); }
-      const sig = JSON.stringify([devices?.map((d) => [d.id, d.online, d.name]), Boolean(pair), Boolean(devicesErr)]);
+      const sig = JSON.stringify([devices?.map((d) => [d.id, d.online, d.name, d.person, d.version]), Boolean(pair), Boolean(devicesErr), asking]);
       if (sig !== laptopSig) { laptopSig = sig; paintLaptop(); }
     }
 
@@ -362,6 +374,26 @@ export default {
         });
       }
     });
+    // Whose laptop it is, then the pairing line; and renaming a laptop.
+    view.addEventListener('submit', async (e) => {
+      const pf = e.target.closest('#pair-form');
+      if (pf) {
+        e.preventDefault();
+        const btn = pf.querySelector('[type="submit"]');
+        return busy(btn, async () => {
+          try { pair = await post('/api/devices/pair-code', { person: pf.elements.namedItem('person').value.trim() }); asking = false; laptopSig = ''; paintLaptop(); $('#sec-laptop [data-copy]', view)?.focus(); }
+          catch (err) { toastError(err, 'Could not make a pairing line. Try again.'); }
+        });
+      }
+      const rf = e.target.closest('[data-rename-form]');
+      if (rf) {
+        e.preventDefault();
+        const name = rf.elements.namedItem('name').value.trim();
+        if (!name) { toast('Give the laptop a name.', { type: 'warn' }); return; }
+        try { await patch(`/api/devices/${encodeURIComponent(rf.dataset.renameForm)}`, { person: rf.elements.namedItem('person').value.trim(), name }); toast('Saved.'); laptopSig = ''; await loadDevices(); ctx.refreshOverview(); }
+        catch (err) { toastError(err, 'Not saved. Try again.'); }
+      }
+    });
     view.addEventListener('click', async (e) => {
       const jump = e.target.closest('[data-jump]');
       if (jump) { e.preventDefault(); const t = view.querySelector(jump.getAttribute('href')); if (t) { t.scrollIntoView({ behavior: 'smooth', block: 'start' }); const h = t.querySelector('h2'); if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); } } return; }
@@ -371,12 +403,9 @@ export default {
       const action = b.dataset.action;
       if (action === 'retry') { loadDevices(); loadConn(); loadSettings(); return; }
       if (action === 'signout') return ctx.signOut();
-      if (action === 'pair') {
-        return busy(b, async () => {
-          try { pair = await post('/api/devices/pair-code'); laptopSig = ''; paintLaptop(); $('#sec-laptop [data-copy]', view)?.focus(); }
-          catch (err) { toastError(err, 'Could not make a pairing line. Try again.'); }
-        });
-      }
+      if (action === 'pair') { asking = true; laptopSig = ''; paintLaptop(); $('#pair-person', view)?.focus(); return; }
+      if (action === 'pair-cancel') { asking = false; laptopSig = ''; paintLaptop(); return; }
+      if (action === 'rename') { const f = view.querySelector(`[data-rename-form="${CSS.escape(b.dataset.id)}"]`); if (f) { f.hidden = !f.hidden; if (!f.hidden) f.elements.namedItem('person').focus(); } return; }
       if (action === 'unpair') {
         if (!(await confirmDialog({ title: `Remove ${b.dataset.name}?`, text: 'The agent stops working through that laptop straight away. You can pair it again later.', confirm: 'Remove', danger: true }))) return;
         try { await del(`/api/devices/${encodeURIComponent(b.dataset.id)}`); toast('Laptop removed.', { type: 'warn' }); await loadDevices(); ctx.refreshOverview(); }

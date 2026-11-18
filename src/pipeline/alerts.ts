@@ -5,7 +5,7 @@ import { MIN } from '../lib/time';
 import { emptyTarget, enqueue } from './outbox';
 
 export interface OwnerAlert {
-  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount' | 'channel' | 'stuck' | 'ai' | 'usage' | 'waiting';
+  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount' | 'channel' | 'stuck' | 'ai' | 'usage' | 'waiting' | 'failover';
   title: string;
   body: string;
   /** Dashboard path, for example /#/urgent */
@@ -26,6 +26,8 @@ const THROTTLE_MS: Record<OwnerAlert['kind'], number> = {
   usage: 0,
   // A reply held up by a draft or by the owner typing in the agent's tab (src/pipeline/outbox.ts).
   waiting: 10 * MIN,
+  // Another laptop took over a channel (src/pipeline/leader.ts). A laptop going on and off sends one an hour at most.
+  failover: 60 * MIN,
 };
 
 /**
