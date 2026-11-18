@@ -5,7 +5,7 @@ import { MIN } from '../lib/time';
 import { emptyTarget, enqueue } from './outbox';
 
 export interface OwnerAlert {
-  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount' | 'channel' | 'stuck' | 'ai' | 'usage' | 'waiting' | 'claude';
+  kind: 'urgent' | 'review' | 'offline' | 'recovery' | 'error' | 'discount' | 'channel' | 'stuck' | 'ai' | 'usage' | 'waiting' | 'claude' | 'failover';
   title: string;
   body: string;
   /** Dashboard path, for example /#/urgent */
@@ -28,6 +28,8 @@ const THROTTLE_MS: Record<OwnerAlert['kind'], number> = {
   waiting: 10 * MIN,
   // Claude out of credit or its key refused (src/brain/allowance.ts): already once per outage, this stops a flapping key.
   claude: 60 * MIN,
+  // Another laptop took over a channel (src/pipeline/leader.ts). A laptop going on and off sends one an hour at most.
+  failover: 60 * MIN,
 };
 
 /**

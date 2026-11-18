@@ -7,6 +7,8 @@ import { randomToken, sha256Hex, timingSafeEqual } from '../lib/crypto';
 import { HttpError, json, type Router } from '../lib/http';
 import { getSettings, getState, setState } from '../lib/settings';
 import { replyTimes } from '../pipeline/replytime';
+import { LANES, channelOf, deviceLabel, maskAccount } from '../pipeline/leader';
+import type { LaneLeaderRow } from '../types';
 
 const HOUR = 3_600_000;
 const LINK_HOURS = 24;
@@ -29,14 +31,27 @@ function eventMessage(e: Record<string, unknown>): string {
   if (ERROR_EVENTS.has(String(e.type))) return scrub(cut(msg.slice(msg.indexOf(': ') + 2), 300));
   return '';
 }
+/** A laptop's stored status with each channel's account masked (src/pipeline/leader.ts maskAccount). */
+function maskStatus(st: unknown): unknown {
+  if (!st || typeof st !== 'object') return st;
+  const s = st as { channels?: Record<string, Record<string, unknown>> };
+  if (!s.channels) return st;
+  const channels: Record<string, Record<string, unknown>> = {};
+  for (const [ch, c] of Object.entries(s.channels)) {
+    channels[ch] = c && typeof c === 'object' && typeof c.account === 'string' && channelOf(`${ch}:inbox`)
+      ? { ...c, account: maskAccount(channelOf(`${ch}:inbox`)!, c.account) } : c;
+  }
+  return { ...s, channels };
+}
+
 /** Customer names become "J…" so the report shows which chat without saying who. */
 const initial = (s: unknown): string => { const t = String(s ?? '').trim(); return t ? `${[...t][0]}…` : ''; };
 
 export async function buildReport(db: D1Database, now: number): Promise<Record<string, unknown>> {
   const since = now - 24 * HOUR;
   const settings = await getSettings(db);
-  const [devices, diagnostics, events, jobs, jobCounts, conversations, messageCounts, urgent, llm, override, replies] = await Promise.all([
-    all<Record<string, unknown>>(db, 'SELECT id, name, created_at, last_seen_at, status, version, revoked_at FROM devices ORDER BY last_seen_at DESC LIMIT 10'),
+  const [devices, diagnostics, events, jobs, jobCounts, conversations, messageCounts, urgent, llm, override, replies, leaders] = await Promise.all([
+    all<Record<string, unknown>>(db, 'SELECT id, name, person, created_at, last_seen_at, status, version, revoked_at FROM devices ORDER BY last_seen_at DESC LIMIT 10'),
     all<Record<string, unknown>>(db, 'SELECT ts, device_id, channel, kind, data FROM diagnostics WHERE ts >= ? ORDER BY ts DESC LIMIT 80', since),
     all<Record<string, unknown>>(db, 'SELECT ts, level, type, channel, conversation_id, message, data FROM events WHERE ts >= ? ORDER BY ts DESC LIMIT 80', since),
     all<Record<string, unknown>>(db, `SELECT id, channel, kind, conversation_id, status, source, attempts, last_error, not_before, lease_until, lease_device,
@@ -51,7 +66,33 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
       FROM llm_usage WHERE ts >= ? GROUP BY provider, model, purpose`, since),
     getState<{ rev?: number } | null>(db, 'selectors_override', null),
     replyTimes(db, since),
+    all<LaneLeaderRow>(db, 'SELECT * FROM lane_leaders'),
   ]);
+  // Who answers each lane and each laptop's account there, masked (enough to tell two apart).
+  const byId = new Map(devices.map((d) => [String(d.id), d]));
+  const laneLeaders = LANES.map((lane) => {
+    const ch = channelOf(lane)!;
+    const row = leaders.find((l) => l.lane === lane);
+    const d = row?.device_id ? byId.get(row.device_id) : undefined;
+    return {
+      lane, account: maskAccount(ch, row?.account ?? ''), device_id: row?.device_id || null,
+      leader: d ? deviceLabel({ person: String(d.person ?? ''), name: String(d.name ?? '') }) : null,
+      epoch: row?.epoch ?? 0, since: row?.since ?? null, reason: row?.reason ?? '', prev_device: row?.prev_device || null,
+    };
+  });
+  const people = devices.filter((d) => !d.revoked_at).map((d) => {
+    const st = (parse(d.status) ?? {}) as { channels?: Record<string, { state?: string; account?: string }>; paused_locally?: boolean };
+    const lanes: Record<string, { state: string; account: string; answers: boolean }> = {};
+    for (const lane of LANES) {
+      const ch = channelOf(lane)!;
+      const c = st.channels?.[ch];
+      lanes[lane] = { state: c?.state ?? 'no_tab', account: maskAccount(ch, c?.account ?? ''), answers: laneLeaders.some((l) => l.lane === lane && l.device_id === d.id) };
+    }
+    return {
+      device_id: d.id, person: d.person || null, name: d.name, version: d.version,
+      online: typeof d.last_seen_at === 'number' && now - d.last_seen_at < ONLINE_MS, paused: st.paused_locally === true, lanes,
+    };
+  });
   return {
     generated_at: now,
     note: 'Last 24 hours. Customer message text, previews, phone numbers and email addresses are left out.',
@@ -62,9 +103,12 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
       voice: { commas: settings.voice.commas, mirror_level: settings.voice.mirror_level },
       selectors_override_rev: override?.rev ?? null,
     },
+    // Each laptop's person, what it does on each lane, and the laptop answering each lane.
+    people,
+    lane_leaders: laneLeaders,
     devices: devices.map((d) => ({
-      id: d.id, name: d.name, version: d.version, created_at: d.created_at, last_seen_at: d.last_seen_at, revoked: Boolean(d.revoked_at),
-      online: typeof d.last_seen_at === 'number' && now - d.last_seen_at < ONLINE_MS, status: parse(d.status),
+      id: d.id, name: d.name, person: d.person || null, version: d.version, created_at: d.created_at, last_seen_at: d.last_seen_at, revoked: Boolean(d.revoked_at),
+      online: typeof d.last_seen_at === 'number' && now - d.last_seen_at < ONLINE_MS, status: maskStatus(parse(d.status)),
     })),
     // Page snapshots are tag and attribute skeletons with no text; the newest few are kept whole for fixing selectors.
     diagnostics: diagnostics.map((d, i) => ({ ...d, data: scrub(cut(d.data, d.kind === 'dom_snapshot' && i < 40 ? 40_000 : 2_000)) })),

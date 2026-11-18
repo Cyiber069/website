@@ -11,6 +11,7 @@ import { usageToday, type D1Usage } from '../lib/usage';
 import { HIGH_PCT } from '../lib/budget';
 import { ONLINE_WINDOW_MS, type ChannelStatus, type DeviceStatus } from '../routes/agent';
 import { alertOwner } from './alerts';
+import { channelsView, type WatchedDevice } from './leader';
 
 /** A channel that has not read its page for this long, or is signed out or blocked this long, is down. */
 export const CHANNEL_DOWN_MS = 10 * MIN;
@@ -182,9 +183,14 @@ async function watchOffline(env: Env, settings: Settings, d: Pick<DeviceRow, 'na
 export async function watchHealth(env: Env, now = Date.now()): Promise<void> {
   const db = env.DB;
   const settings = await getSettings(db);
+  // The newest laptops, with who answers each lane (src/pipeline/leader.ts) in the same query.
   const [{ monitor, usage, offlineAlerted }, devices] = await Promise.all([
     monitorRows(db),
-    all<Pick<DeviceRow, 'name' | 'last_seen_at' | 'status'>>(db, 'SELECT name, last_seen_at, status FROM devices WHERE revoked_at IS NULL ORDER BY COALESCE(last_seen_at, 0) DESC LIMIT 1'),
+    // Through the partial index devices_live_seen (migration 0013): the newest five rows, never every laptop ever paired.
+    all<WatchedDevice>(db,
+      `SELECT id, name, person, last_seen_at, status,
+         (SELECT json_group_array(json_object('lane', lane, 'account', account, 'device_id', device_id)) FROM lane_leaders) AS leaders
+       FROM devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC LIMIT 5`),
   ]);
   const m: MonitorState = JSON.parse(JSON.stringify(monitor));
   const before = JSON.stringify(m);
@@ -192,12 +198,14 @@ export async function watchHealth(env: Env, now = Date.now()): Promise<void> {
   // Database use is watched even with the agent off: the dashboard alone uses rows too.
   await watchUsage(env, settings, usage, m, now);
   if (settings.agent.enabled) {
+    // The newest laptop: when it is offline, every laptop is.
     const d = devices[0];
     if (d) {
       await watchOffline(env, settings, d, offlineAlerted, now);
       const online = d.last_seen_at !== null && now - d.last_seen_at < ONLINE_WINDOW_MS;
-      // Offline has its own alert. Channel problems are judged only while the laptop is checking in.
-      if (online) await watchChannels(env, settings, parseJson<DeviceStatus>(d.status, { channels: {}, paused_locally: false, reported_at: 0 }), m, now);
+      // Offline has its own alert. Channel problems are judged only while a laptop is checking in, each
+      // from the laptop that answers it (or the best one online while nobody does).
+      if (online) await watchChannels(env, settings, channelsView(devices, settings, now, ONLINE_WINDOW_MS), m, now);
     }
     await watchStuck(env, settings, m, now);
     await watchAi(env, settings, m, now);

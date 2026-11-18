@@ -412,6 +412,15 @@ export interface UrgentRow {
 export interface DeviceRow {
   id: string; name: string; token_hash: string; created_at: number; last_seen_at: number | null;
   status: string; version: string; revoked_at: number | null;
+  /** Migration 0013: whose laptop it is, and the dashboard's commands waiting for its next sync (JSON). */
+  person?: string; commands?: string;
+}
+
+/** One row of lane_leaders (migration 0013): the laptop that answers a lane, '' for nobody. */
+export interface LaneLeaderRow {
+  lane: string; account: string; device_id: string; epoch: number; since: number; reason: string; prev_device: string;
+  /** 1 while the laptop that answers was told it is the only one paired. */
+  solo: number;
 }
 
 export interface CheckoutRow {

@@ -57,6 +57,8 @@ export const NEVER_LOCKED: readonly string[] = [
   '* /api/agent/*', '* /api/hooks/*', '* /api/test/*',
   // Checks that change nothing: the Test buttons, and a suggested reminder that is not saved.
   'POST /api/connections/brain/test', 'POST /api/connections/vision/test', 'POST /api/connections/shopify/test', 'POST /api/push/test', 'POST /api/recovery/teach',
+  // The blue dot on Live: opening a tab on a laptop changes no setting.
+  'POST /api/devices/:id/commands',
 ];
 
 /** Every change a box covers. Add a new owner route here when it changes something a box shows. */
@@ -69,7 +71,7 @@ export const LOCK_RULES: Readonly<Record<LockSectionId, readonly string[]>> = {
   channels: ['PUT /api/settings/channels'],
   gmail: ['PUT /api/settings/gmail'],
   pacing: ['PUT /api/settings/pacing'],
-  laptops: ['* /api/devices', '* /api/devices/*'],
+  laptops: ['* /api/devices', '* /api/devices/*', '* /api/lanes/*', '* /api/people', '* /api/people/*'],
   recovery_message: ['PUT /api/recovery/template'],
   recovery_settings: ['PUT /api/settings/recovery'],
   discounts: ['PUT /api/settings/discounts'],

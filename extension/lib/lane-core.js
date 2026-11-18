@@ -260,3 +260,50 @@ export function chooseStep({ scanDue, readyJob, jobUrgent, dueRead, readsSinceSe
 export function sendBudget(otherWork) {
   return otherWork > 0 ? 6000 : null;
 }
+
+// ---- which laptop answers each lane (the server's src/pipeline/leader.ts) ---------------------------
+
+/**
+ * The server's word on each lane: `lanes` in the sync answer (servers from 0.6.0). Each lane becomes
+ * { role, until, solo, epoch, account, leader }, with `until` on this laptop's clock: the moment the
+ * sync was SENT plus lease_ms, so a slow answer only makes the lease shorter, never longer.
+ * null for an older server (it elects nobody: every lane works as before).
+ */
+export function readGrants(lanes, sentAt) {
+  if (!lanes || typeof lanes !== 'object' || Array.isArray(lanes)) return null;
+  const out = {};
+  for (const [id, g] of Object.entries(lanes)) {
+    if (!g || typeof g !== 'object') continue;
+    const leader = g.leader && typeof g.leader === 'object'
+      ? { device_id: String(g.leader.device_id || ''), person: String(g.leader.person || ''), name: String(g.leader.name || '') } : null;
+    out[id] = {
+      role: typeof g.role === 'string' ? g.role : 'standby',
+      until: sentAt + Math.max(0, num(g.lease_ms) ?? 0),
+      solo: g.solo === true,
+      epoch: num(g.epoch) ?? 0,
+      account: typeof g.account === 'string' ? g.account : '',
+      leader,
+    };
+  }
+  return out;
+}
+
+/**
+ * May the lane scan, read and send now? Only while it answers the lane and inside its lease. The only
+ * laptop paired (solo) keeps working while the server cannot be reached, as before. A lane the server
+ * did not name is not elected: it works.
+ */
+export function grantActive(g, now) {
+  if (!g) return true;
+  if (g.role !== 'active') return false;
+  return g.solo === true || now < g.until;
+}
+
+/** 'stood_down' when the lane stopped answering (another laptop does now), 'promoted' when it starts, else null. */
+export function grantChange(prev, next) {
+  const was = Boolean(prev && prev.role === 'active');
+  const is = Boolean(next && next.role === 'active');
+  if (was && !is && next) return 'stood_down';
+  if (!was && is) return 'promoted';
+  return null;
+}

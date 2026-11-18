@@ -282,14 +282,15 @@
     // Never answer mail from an inbox the owner did not choose.
     const shown = account().email;
     if (wantedAccount && shown && shown !== wantedAccount) {
-      return { state: 'blocked', detail: `This tab shows ${shown}. Switch it to ${wantedAccount}`, unread: 0 };
+      return { state: 'blocked', detail: `This tab shows ${shown}. Switch it to ${wantedAccount}`, unread: 0, account: shown };
     }
 
     // The feed count is the real number of unread Primary emails. Refresh it in the background.
     if (Date.now() - feedCache.at > 45_000) { feedCache.at = Date.now(); fetchFeed().catch(() => null); }
     const unread = feedCache.count != null ? feedCache.count : titleUnread();
-    // The detail names the inbox so the dashboard can show which Gmail account the agent uses.
-    return { state: 'ready', detail: shown || '', unread };
+    // The detail names the inbox so the dashboard can show which Gmail account the agent uses, and the
+    // account lets the server keep a laptop on another inbox out of the shop's (src/pipeline/leader.ts).
+    return { state: 'ready', detail: shown || '', unread, account: shown || '' };
   }
 
   // ---- finding unread threads ----------------------------------------------------------------------------

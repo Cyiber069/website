@@ -58,13 +58,17 @@ async function json(path, opts) {
   return data;
 }
 
-export async function pair(pairingString, deviceName) {
+/** `person`: whose laptop it is (the dashboard shows people by name). Empty: the name typed on the Connections screen. */
+export async function pair(pairingString, deviceName, person = '') {
   const { server_url, code } = parsePairingString(pairingString);
-  const data = await json('/api/agent/pair', { body: { code, name: deviceName }, auth: { server_url } });
-  const auth = { server_url, token: data.token, device_id: data.device_id, device_name: deviceName };
+  const data = await json('/api/agent/pair', { body: { code, name: deviceName, ...(person ? { person } : {}) }, auth: { server_url } });
+  const auth = { server_url, token: data.token, device_id: data.device_id, device_name: deviceName, person: data.person || person || '' };
   await store.set({ auth });
   return auth;
 }
+
+/** This laptop is being disconnected: the server removes it at once. Older servers answer 404 (ignored). */
+export const leave = () => json('/api/agent/leave', { body: {}, timeoutMs: 5000 });
 
 export const sync = (status, selectorsVersion, version) =>
   json('/api/agent/sync', { body: { version, selectors_version: selectorsVersion, status } });

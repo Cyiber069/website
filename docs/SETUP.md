@@ -20,8 +20,10 @@ The database (`acx-agent`) already exists in your Cloudflare account and the sit
 2. In Chrome open `chrome://extensions`. Switch on **Developer mode** (top right) and leave it on.
 3. Press **Load unpacked** and choose the `extension` folder inside the unzipped folder.
 4. Pin "ACX Agent" to the toolbar.
-5. In the dashboard open **Connections** and press **Pair this laptop**. Copy the pairing line.
-6. Click the ACX Agent icon in Chrome, paste the line, press **Connect**.
+5. In the dashboard open **Connections** and press **Pair this laptop**. Type whose laptop it is, then copy the pairing line.
+6. Click the ACX Agent icon in Chrome, paste the line, type your name, press **Connect**.
+
+**A second laptop.** Do steps 1 to 6 on it, with **Pair another laptop**. Sign it in to the same WhatsApp, Gmail and TikTok. Only one laptop answers each channel. The other stands by and takes over in about a minute if the first one goes off or stops working. A laptop on another WhatsApp number or Gmail address stays out of the shop's chats. Your name next to the logo shows who is online. Click it to see that laptop and each channel.
 
 ## 3. Open and log in to the three sites
 

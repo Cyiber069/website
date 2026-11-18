@@ -234,6 +234,29 @@ export async function runChecks() {
   assert.match(tiktok.urls.inbox_business, /^https:\/\/www\.tiktok\.com\/messages\?.*scene=business/);
   ok('TikTok pack: request pending text matches the live wording; business inbox address is the messages page');
 
+  // Which laptop answers each lane (the server's src/pipeline/leader.ts): the extension's side.
+  {
+    const sent = 1_000_000;
+    const g = core.readGrants({
+      'whatsapp:inbox': { role: 'active', lease_ms: 60_000, solo: false, epoch: 3, account: '447700900123', leader: { device_id: 'dev_a', person: 'Sam' } },
+      'gmail:inbox': { role: 'standby', lease_ms: 0, leader: { device_id: 'dev_b', person: 'Adrian' } },
+      'tiktok:inbox': { role: 'active', lease_ms: 0, solo: true },
+      junk: null,
+    }, sent);
+    assert.equal(core.readGrants(undefined, sent), null, 'an older server elects nobody: every lane works');
+    assert.equal(g['whatsapp:inbox'].until, sent + 60_000, 'the lease runs from when the sync was sent');
+    assert.ok(core.grantActive(g['whatsapp:inbox'], sent + 59_000));
+    assert.ok(!core.grantActive(g['whatsapp:inbox'], sent + 60_001), 'stops when its lease is over, before a standby may take over');
+    assert.ok(!core.grantActive(g['gmail:inbox'], sent), 'a standby never reads or sends');
+    assert.ok(core.grantActive(g['tiktok:inbox'], sent + 3600_000), 'the only laptop paired keeps working while the server is away');
+    assert.ok(core.grantActive(undefined, sent), 'a lane the server did not name works');
+    assert.equal(core.grantChange(g['whatsapp:inbox'], g['gmail:inbox']), 'stood_down');
+    assert.equal(core.grantChange(g['gmail:inbox'], g['whatsapp:inbox']), 'promoted');
+    assert.equal(core.grantChange(g['whatsapp:inbox'], g['whatsapp:inbox']), null);
+    assert.equal(core.grantChange(g['whatsapp:inbox'], undefined), null, 'a lane no longer named is not a stand down');
+    ok('lanes: a lane works only while this laptop answers it and inside its lease; the only laptop keeps working offline');
+  }
+
   return n;
 }
 

@@ -14,6 +14,7 @@ import connections from './screens/connections.js';
 import health from './screens/health.js';
 import more from './screens/more.js';
 import { isStale, nextRefreshIn, refreshOnWake } from './poll.js';
+import { paintPeople } from './people.js';
 
 const SCREENS = { live, urgent, inbox, knowledge, voice, recovery, sales, discounts, connections, health, more };
 const NAV = [
@@ -102,6 +103,7 @@ function renderShell() {
     <a class="skip" href="#main">Skip to content</a>
     <aside class="side" aria-label="Main">
       <a class="brand" href="#/live"><img class="brand__logo" src="/img/logo.png" alt="ACX Ebikes" width="142" height="36"><span class="brand__tag">Agent</span></a>
+      <div class="people" data-people role="group" aria-label="People and their laptops"></div>
       <nav class="nav" aria-label="Screens">
         ${NAV.map(([id, label, ic]) => html`<a class="nav__item" href="#/${id}" data-nav="${id}">${icon(ic, 'nav__icon')}<span class="nav__label">${label}</span>${id === 'urgent' ? raw('<span class="count count--urgent nav__count" data-urgent-count hidden>0</span>') : ''}</a>`)}
       </nav>
@@ -113,6 +115,7 @@ function renderShell() {
       <h1 class="title" id="screen-title" tabindex="-1">ACX Agent</h1>
       <div class="top__spacer"></div>
       <span class="sr-only" role="status" aria-live="polite" id="urgent-announce"></span>
+      <div class="people people--top" data-people role="group" aria-label="People and their laptops"></div>
       <a class="pill pill--pause top__status" href="#/live" id="top-status"><span class="dot dot--pause" aria-hidden="true"></span><span>Checking</span></a>
     </header>
     <main class="main" id="main"><div id="view"></div></main>
@@ -143,6 +146,8 @@ function paintShell() {
     announce.dataset.n = String(n);
   }
   if ('setAppBadge' in navigator) (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+  // One chip per person next to the logo: who is online. A click shows their laptop and channels.
+  paintPeople(ov, { refresh: refreshOverview });
   const s = agentStatus(ov);
   const pill = $('#top-status');
   if (pill) {

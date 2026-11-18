@@ -16,3 +16,15 @@ export function isLegacyExtension(version: string | null | undefined): boolean {
 
 /** The settle time the old builds were made for: they need the long quiet wait (12 s) to read a burst once. */
 export const LEGACY_SETTLE_SECONDS = 12;
+
+/**
+ * True for an extension that knows about lanes (0.6.0 and up, or a test or dev build): it stands by when
+ * another laptop answers a lane (it only probes, never reads or sends) and it runs the dashboard's
+ * commands (open a tab). Older builds read every lane they have open; the server still gives them jobs
+ * only for the lanes they answer.
+ */
+export function canStandBy(version: string | null | undefined): boolean {
+  const m = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(String(version ?? '').trim());
+  if (!m) return true;
+  return Number(m[1]) > 0 || Number(m[2]) >= 6;
+}

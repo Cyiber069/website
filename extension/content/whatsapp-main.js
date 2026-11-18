@@ -124,6 +124,23 @@
       if (!blob && url.startsWith('blob:')) { try { blob = await (await fetch(url)).blob(); } catch { blob = null; } }
       return blob && blob.size ? { ...out, blob, mime: out.mime || blob.type || null } : { ...out, why: 'not_loaded' };
     },
+    // The phone this WhatsApp Web is linked to, as WhatsApp writes it ("447700900123@c.us", maybe with a
+    // ":12" device part). The phone number form first: newer builds may also know "me" by a hidden id
+    // (@lid), which the server does not take as an account. Local lookups only; null when not found.
+    me() {
+      const U = mod('meUser');
+      let w = null;
+      try { if (U && typeof U.getMaybeMePnUser === 'function') w = U.getMaybeMePnUser(); } catch { w = null; }
+      try { if (!w && U && typeof U.getMeUser === 'function') w = U.getMeUser(); } catch { w = null; }
+      try {
+        if (!w) {
+          const C = mod('conn');
+          const conn = C && (C.Conn || C.default || C);
+          if (conn && conn.wid) w = conn.wid;
+        }
+      } catch { w = null; }
+      return wstr(w) || null;
+    },
 
     // Phone number (digits) for a chat id. Local lookups only; null when the person hides their number.
     phoneOf(jid) {

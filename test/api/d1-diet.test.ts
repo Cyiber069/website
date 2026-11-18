@@ -223,9 +223,9 @@ describe('settings', () => {
   it('a sync does not read the settings again within 30 s', async () => {
     await sync(['whatsapp']);
     const again = await sync(['whatsapp']);
-    // Device row, the two lease reads of the one ready channel, one per job handed out, the selectors and
-    // the vision check: no settings read.
-    const settingsReads = again.queries - (1 + 2 + again.data.jobs.length + 1 + 1);
+    // Device row, who answers each lane (src/pipeline/leader.ts), the two lease reads of the one ready
+    // channel, one per job handed out, the selectors and the vision check: no settings read.
+    const settingsReads = again.queries - (1 + 1 + 2 + again.data.jobs.length + 1 + 1);
     expect(settingsReads).toBeLessThanOrEqual(0);
     for (const j of again.data.jobs) await finish(j.id);
   });

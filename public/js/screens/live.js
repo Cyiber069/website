@@ -3,6 +3,10 @@ import { get, post } from '../api.js';
 import { toast } from '../ui.js';
 import { $, html, raw, icon, setHTML, chBadge, chName, CHANNELS, ago, clock, num, syncList, unavailable, timeTag, plural, span } from '../ui.js';
 import { agentStatus, overviewStale, urgentCount } from '../app.js';
+import { allLaptops, openTab } from '../people.js';
+
+/** The laptop whose tab a channel is judged by: the one answering it, else the best one online (src/pipeline/leader.ts). */
+const laptopFor = (ov, ch) => ov.lanes?.[ch]?.device ?? ov.device;
 
 const STATE_TEXT = {
   ready: ['Connected', 'pill--live', 'dot--live'], loading: ['Loading', 'pill--wait', 'dot--wait'], no_tab: ['Tab not open', 'pill--wait', 'dot--wait'],
@@ -12,7 +16,7 @@ const MODE_TEXT = { auto: 'Replies on its own', review: 'Asks you first', off: '
 export function channelState(ov, ch) {
   const mode = ov.channels?.[ch]?.mode || 'off';
   if (mode === 'off') return { text: 'Off', pill: 'pill--pause', dot: 'dot--pause', mode, hint: 'Switched off in Connections' };
-  const device = ov.device;
+  const device = laptopFor(ov, ch);
   if (!device) return { text: 'No laptop', pill: 'pill--wait', dot: 'dot--wait', mode, hint: MODE_TEXT[mode] };
   if (!device.online) return { text: 'Laptop offline', pill: 'pill--down', dot: 'dot--down', mode, hint: MODE_TEXT[mode] };
   const st = device.status?.channels?.[ch];
@@ -30,7 +34,7 @@ const SEEN_WARN_MS = 5 * 60000, SEEN_DOWN_MS = 10 * 60000;
 /** "Last read 2 min ago" from the last good scan the laptop reported. Amber after 5 min, red after 10 with the reason. */
 export function channelSeen(ov, ch) {
   const mode = ov.channels?.[ch]?.mode || 'off';
-  const d = ov.device;
+  const d = laptopFor(ov, ch);
   const st = d?.status?.channels?.[ch];
   if (mode === 'off' || !d?.online || !st?.last_ok_at) return null;
   const age = Math.max(0, (ov.now || Date.now()) - st.last_ok_at);
@@ -144,12 +148,21 @@ export default {
       if (document.activeElement !== sw || sw.checked === ov.agent.enabled) sw.checked = Boolean(ov.agent.enabled);
       $('#hero-switch-label', view).textContent = ov.agent.enabled ? 'Agent on' : 'Agent off';
 
-      // Laptop + channels
+      // Laptop + channels. With more than one laptop each channel says which one answers it.
       const d = ov.device;
-      const laptop = !d ? ['Not paired', 'pill--wait', 'dot--wait', 'Pair it in Connections'] : d.online ? ['Online', 'pill--live', 'dot--live', `Checked in ${ago(d.last_seen_at, ov.now)}`] : ['Offline', 'pill--down', 'dot--down', `Last seen ${ago(d.last_seen_at, ov.now)}`];
+      const laptops = allLaptops(ov);
+      const onlineCount = laptops.filter((x) => x.online).length;
+      const many = laptops.length > 1;
+      const laptopName = d ? (d.person ? `${d.person}’s laptop` : d.name || 'Laptop') : 'Laptop';
+      const laptop = !d ? ['Not paired', 'pill--wait', 'dot--wait', 'Pair it in Connections'] : d.online ? ['Online', 'pill--live', 'dot--live', many ? `${onlineCount} of ${laptops.length} laptops online` : `Checked in ${ago(d.last_seen_at, ov.now)}`] : ['Offline', 'pill--down', 'dot--down', `Last seen ${ago(d.last_seen_at, ov.now)}`];
+      const answeredBy = (c) => {
+        if (!many || ov.channels?.[c]?.mode === 'off') return '';
+        const l = ov.lanes?.[c]?.leader;
+        return l ? `${l.label} answers${l.online ? '' : '. It is offline'}` : 'No laptop answers it yet';
+      };
       setHTML($('#channels', view), html`
-        <a class="chcard" href="#/connections"><span class="ch ch--icon" aria-hidden="true">${icon('i-laptop', 'ch__glyph')}</span><span class="chcard__name">${d?.name || 'Laptop'}</span><span class="pill ${laptop[1]}"><span class="dot ${laptop[2]}" aria-hidden="true"></span>${laptop[0]}</span><span class="chcard__hint">${laptop[3]}</span></a>
-        ${CHANNELS.map((c) => { const st = channelState(ov, c); const seen = st.seen; return html`<a class="chcard" href="${seen && seen.level !== 'ok' ? '#/health' : '#/connections'}">${chBadge(c, true)}<span class="chcard__name">${chName(c)}</span><span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span>${seen ? html`<span class="chcard__seen chcard__seen--${seen.level}">${seen.text}</span>` : ''}<span class="chcard__hint">${seen?.reason || st.hint}</span>${seen?.stuck ? html`<span class="chcard__seen chcard__seen--wait">${seen.stuck === 1 ? 'One chat' : `${seen.stuck} chats`} waiting with no reply</span>` : ''}</a>`; })}`);
+        <div class="chcard"><span class="ch ch--icon" aria-hidden="true">${icon('i-laptop', 'ch__glyph')}</span><a class="chcard__name chcard__link" href="#/connections">${many ? 'Laptops' : laptopName}</a><span class="pill ${laptop[1]}"><span class="dot ${laptop[2]}" aria-hidden="true"></span>${laptop[0]}</span><span class="chcard__hint">${laptop[3]}</span></div>
+        ${CHANNELS.map((c) => { const st = channelState(ov, c); const seen = st.seen; const who = answeredBy(c); return html`<div class="chcard">${chBadge(c, true)}<a class="chcard__name chcard__link" href="${seen && seen.level !== 'ok' ? '#/health' : '#/connections'}">${chName(c)}</a><button type="button" class="tabdot" data-open-tab="${c}" aria-label="Open the ${chName(c)} tab and pin it" title="Open the ${chName(c)} tab and pin it"></button><span class="pill ${st.pill}"><span class="dot ${st.dot}" aria-hidden="true"></span>${st.text}</span>${seen ? html`<span class="chcard__seen chcard__seen--${seen.level}">${seen.text}</span>` : ''}<span class="chcard__hint">${seen?.reason || st.hint}</span>${who ? html`<span class="chcard__who">${who}</span>` : ''}${seen?.stuck ? html`<span class="chcard__seen chcard__seen--wait">${seen.stuck === 1 ? 'One chat' : `${seen.stuck} chats`} waiting with no reply</span>` : ''}</div>`; })}`);
       const warn = warnings(ov);
       const wbox = $('#warnings', view);
       wbox.hidden = !warn.length;
@@ -270,6 +283,14 @@ export default {
       }
       if (ended && !document.hidden) loadTakeovers();
     }, 1000);
+    // The blue dot: this laptop opens and pins the tab at once; from the phone or another laptop the
+    // command goes through the server to the laptop picked, and the screen says when it is done.
+    view.addEventListener('click', (e) => {
+      const dot = e.target.closest('[data-open-tab]');
+      if (!dot || dot.getAttribute('aria-busy') === 'true' || !ctx.overview) return;
+      e.preventDefault();
+      openTab(ctx.overview, dot.dataset.openTab, null, dot);
+    });
     view.addEventListener('click', async (e) => {
       const back = e.target.closest('[data-handback]');
       const hold = e.target.closest('[data-hold]');

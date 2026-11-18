@@ -21,6 +21,7 @@ import { cachedAnswer, onReset } from '../lib/cache';
 import { DASHBOARD_SECONDS, budget, type Budget, type BudgetLevel } from '../lib/budget';
 import { kbTotals } from '../kb/cache';
 import { learnUnlessLocked } from '../lib/locks';
+import { cleanName, normAccount, teamView } from '../pipeline/leader';
 
 const count = async (db: D1Database, sql: string, ...p: (string | number)[]) => (await one<{ n: number }>(db, sql, ...p))?.n ?? 0;
 
@@ -126,7 +127,9 @@ async function overview(env: Env, db: D1Database, now: number) {
   const settings = await getSettings(db);
   const day = startOfLondonDay(now);
   const [devices, hints, mon, today, kb] = await Promise.all([currentDevice(db, now), secretHints(db), monitorRows(db), todayStats(db, day, now), kbTotals(env)]);
-  const device = devices[0] ?? null;
+  // People, their laptops and which one answers each channel (src/pipeline/leader.ts). One query more.
+  const team = await teamView(db, devices, settings);
+  const device = team.device ?? devices[0] ?? null;
   const [urgentOpen, reviewPending, queued] = await Promise.all([
     count(db, `SELECT COUNT(*) AS n FROM urgent WHERE status = 'open'`),
     count(db, `SELECT COUNT(*) AS n FROM outbox WHERE status = 'review'`),
@@ -142,6 +145,8 @@ async function overview(env: Env, db: D1Database, now: number) {
     now,
     agent: { enabled: settings.agent.enabled },
     device,
+    people: team.people,
+    lanes: team.lanes,
     channels: settings.channels,
     // Channel problems, chats waiting with no reply and AI failures found by the every minute check.
     monitor: { channels: mon.monitor.channels, stuck: mon.monitor.stuck_by_channel, ai_failing: mon.monitor.ai_failing },
@@ -478,6 +483,11 @@ export function register(r: Router): void {
     if (group === 'recovery') { delete patch.template; delete patch.consent_confirmed; delete patch.consent_mode; }
     const clean = group === 'discounts' ? checkDiscountPatch(patch) : group === 'vision' ? checkVisionPatch(patch) : patch;
     const next = await patchSettings(c.db, group, clean as Partial<Settings[typeof group]>);
+    // The Gmail inbox chosen here is the shop's Gmail account for the lane too (src/pipeline/leader.ts).
+    // Cleared, the lane forgets the one it learned and takes the next laptop's.
+    if (group === 'gmail' && 'account' in patch) {
+      await run(c.db, `UPDATE lane_leaders SET account = ? WHERE lane = 'gmail:inbox'`, normAccount('gmail', (next as Settings['gmail']).account));
+    }
     return json({ ok: true, [group]: next });
   });
 
@@ -488,9 +498,12 @@ export function register(r: Router): void {
   });
 
   r.post('/api/devices/pair-code', 'owner', async (c) => {
+    // Optional: whose laptop it is (Connections asks). The laptop that uses the code gets that name.
+    const body = await c.body<{ person?: unknown }>().catch(() => ({} as { person?: unknown }));
+    const person = cleanName(body.person);
     const code = pairingCode();
-    await pairingCodeRow(c.db, await sha256Hex(code), c.now);
-    return json({ code, server_url: c.url.origin, pairing_string: `${c.url.origin}#${code}`, expires_at: c.now + 15 * MIN });
+    await pairingCodeRow(c.db, await sha256Hex(code), c.now, person);
+    return json({ code, server_url: c.url.origin, pairing_string: `${c.url.origin}#${code}`, expires_at: c.now + 15 * MIN, person });
   });
 
   r.delete('/api/devices/:id', 'owner', async (c) => {
