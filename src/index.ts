@@ -7,6 +7,7 @@ import type { Env } from './types';
 import { flushUsage, meteredDb } from './lib/usage';
 import { bumpDashboard } from './lib/cache';
 import { assertUnlocked, withLockHeader } from './lib/locks';
+import { logEvent } from './lib/events';
 
 const router = buildRouter();
 
@@ -122,7 +123,11 @@ export default {
         res = json({ error: err.code, message: err.message, ...err.extra }, err.status);
       } else {
         console.error('unhandled', req.method, url.pathname, err);
-        res = json({ error: 'internal', message: 'Something went wrong on our side' }, 500);
+        // The reason, short and without numbers or addresses, so the owner sees it on screen and in Health.
+        const why = String((err as Error)?.message ?? err).replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, '[email]').replace(/\d{6,}/g, '#').slice(0, 160);
+        exec.waitUntil(logEvent(env.DB, { level: 'error', type: 'server_error', message: `${req.method} ${url.pathname.replace(/\/[A-Za-z0-9_-]{12,}/g, '/:id')}: ${why}` }).catch(() => undefined));
+        const owner = !url.pathname.startsWith('/api/agent/') && !url.pathname.startsWith('/api/hooks/');
+        res = json({ error: 'internal', message: owner ? `Something went wrong on our side (${why})` : 'Something went wrong on our side' }, 500);
       }
     }
     const headers = new Headers(res.headers);
