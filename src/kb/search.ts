@@ -125,7 +125,20 @@ function renderExcerpt(h: KbHit): string {
  * fits brain.kb_full_tokens) or the best brain.kb_top_chunks excerpts for `queryText`.
  * `budgetTokens` caps the total for models with a small context window.
  */
-export async function buildKnowledgeContext(env: Env, queryText: string, opts: { budgetTokens?: number; include?: string[] } = {}): Promise<KnowledgeContext> {
+export interface KnowledgeOptions {
+  budgetTokens?: number;
+  include?: string[];
+  /**
+   * Only the excerpts that match the question (and the documents asked for by id), never the whole
+   * knowledge base or the pinned documents in full: Workers AI pays for every token in free neurons.
+   * Pinned documents can still match.
+   */
+  matchesOnly?: boolean;
+  /** How many excerpts at most. Default brain.kb_top_chunks. */
+  topChunks?: number;
+}
+
+export async function buildKnowledgeContext(env: Env, queryText: string, opts: KnowledgeOptions = {}): Promise<KnowledgeContext> {
   await ensureSeeded(env);
   const settings = await getSettings(env.DB);
   const budget = opts.budgetTokens ?? Number.MAX_SAFE_INTEGER;
@@ -135,10 +148,11 @@ export async function buildKnowledgeContext(env: Env, queryText: string, opts: {
   if (!enabled.length) return { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
 
   const total = enabled.reduce((n, d) => n + d.token_estimate, 0);
-  if (total <= Math.min(settings.brain.kb_full_tokens, budget)) {
+  if (!opts.matchesOnly && total <= Math.min(settings.brain.kb_full_tokens, budget)) {
     return { mode: 'full', stable: enabled.map(renderDoc).join('\n\n'), retrieved: '', docs: enabled.map((d) => ({ id: d.id, title: d.title })), tokens: total };
   }
-  const docs = enabled.filter((d) => d.pinned === 1);
+  const docs = opts.matchesOnly ? [] : enabled.filter((d) => d.pinned === 1);
+  const top = Math.max(1, opts.topChunks ?? settings.brain.kb_top_chunks);
 
   // Too big to send whole: pinned documents first (they are listed first), then the best matches.
   const used: { id: string; title: string }[] = [];
@@ -163,7 +177,7 @@ export async function buildKnowledgeContext(env: Env, queryText: string, opts: {
     }
   }
   const included = new Set(used.map((u) => u.id));
-  const hits = (await searchKb(env, queryText, { limit: settings.brain.kb_top_chunks + included.size, includePinned: false })).filter((h) => !included.has(h.doc_id)).slice(0, settings.brain.kb_top_chunks);
+  const hits = (await searchKb(env, queryText, { limit: top + included.size, includePinned: opts.matchesOnly === true })).filter((h) => !included.has(h.doc_id)).slice(0, top);
   // Keep excerpts of one document together and in reading order, best document first.
   const order = [...new Set(hits.map((h) => h.doc_id))];
   const picked: KbHit[] = [];

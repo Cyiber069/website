@@ -153,7 +153,7 @@ export interface EnforceContext {
 export type Enforced = RawDecision & { retry: string[] };
 
 // What to tell the model for each thing the sanitizer flags but cannot repair.
-const REGEN_HINTS: Record<string, string> = {
+export const REGEN_HINTS: Record<string, string> = {
   not_just_x_but_y: 'drop the "not just X, it is Y" sentence and state the fact',
   ai_vocabulary: 'use plain shop words',
   address_term_not_mirrored: 'do not call the customer bro or mate, they did not',

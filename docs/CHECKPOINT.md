@@ -9,7 +9,7 @@ Updated 2026-11-17. Keep this short: objective, decisions, what is live, what is
 
 ## Owner decisions
 - Replies as fast as possible (not "within 2 minutes"): no artificial delay, no letter by letter typing, short quiet window (about 4 s) so split messages get one reply. Keep platform gaps on TikTok.
-- Keep the current AI model (claude-opus-5-5, effort low) unless the owner asks for a faster lighter one.
+- AI split (2026-11-18): Claude does every reply, photos, discount checks and polishing, on "Haiku with Sonnet for the chats that matter" (the default; plain Haiku, Sonnet and Opus stay selectable). Cloudflare Workers AI (free) does voice notes, TikTok comments later, and everything from 22:00 UTC while the free allowance lasts, and steps in when Claude runs out of credit. Google AI Studio does videos and sponsors later.
 - Recovery message is only ever approved by the owner; its preview shows the exact sent text.
 - Outreach to creators starts slow (about 15 a day, 10:00 to 20:00, spaced) because TikTok can restrict accounts for bulk DMs.
 

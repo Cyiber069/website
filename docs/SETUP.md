@@ -44,6 +44,8 @@ Then click the extension icon, open **More**, press **Run a check**. It tests ea
 
 It works straight away on Cloudflare's free AI (a few hundred short replies a day). For better replies paste a Claude API key from console.anthropic.com in **Connections, AI brain** and press **Test**. Claude is billed per use by Anthropic.
 
+Which AI does what is shown on **Connections, AI brain**. Claude writes every customer reply, reads photos, checks discount codes and polishes your answers. The model starts on **Haiku with Sonnet for the chats that matter**: Haiku answers most chats and Sonnet takes sales, complaints and anything Haiku is unsure about. You can pick plain Haiku, Sonnet or Opus instead. The free Cloudflare AI writes out voice notes so the agent can answer them, and from 22:00 UTC to midnight it answers customers too while the free allowance lasts. If Claude runs out of credit it steps in and you get one message. Connections shows how much of today's free allowance is used.
+
 Photos and videos: the free AI cannot see them. Make a key at aistudio.google.com (Get API key, on a project with billing on), paste it in **Connections, Google AI Studio**, press **Save**, then **Test key**. From then on the agent gets a short note of what each photo or video shows and can answer it. Unclear photos, damage, faults and safety problems still come to you in Urgent. **Most videos a day** caps the whole videos it watches (20); after that it looks at a few pictures from each one. In aistudio.google.com/logs you can also switch off request logging for the project. Google bills per use.
 
 ## 6. Teach it

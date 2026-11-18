@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../helpers/server.mjs';
 import { jpegSize } from './mocks/image.mjs';
 import { startFakeGemini } from '../helpers/fake-gemini.mjs';
+import { startFakeSpeech } from '../helpers/fake-speech.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright'); // pre-installed on the machine, not a dependency of the repo
@@ -476,6 +477,59 @@ async function main() {
     assert.match(note.data, /canvas|fetch/);
     await api(`/api/urgent/${deadCard.id}/dismiss`, { body: {} });
     pass(`photo that cannot be copied: owner asked silently, failure noted in diagnostics (${JSON.parse(note.data).media_capture[0]})`);
+  }
+
+  // ---- voice notes: the bytes read from the page, written out by the free Cloudflare AI (a fake here), answered ---------------------
+  {
+    const speech = await startFakeSpeech();
+    const voiceRows = (threadId) => sql(
+      `SELECT md.kind, md.mime, md.bytes, md.description, m.kind AS message_kind, m.meta FROM media md JOIN messages m ON m.id = md.message_id
+       JOIN conversations cv ON cv.id = md.conversation_id WHERE cv.external_thread_id = ? ORDER BY md.created_at`, [threadId]);
+    try {
+      await api('/api/test/speech-base', { body: { url: speech.url } });
+      await mock('set', { bridge: true }); // switched off by the bare id step above
+      // WhatsApp holds the downloaded note in memory: the read only bridge hands its bytes over.
+      const VAL = '447700900771@c.us';
+      await mock('receive', '+44 7700 900771', '', { kind: 'voice', voice: 'bridge', said: 'how long is delivery to Leeds' });
+      const heard = await until('reply to the voice note', async () => (await sentTo(VAL))[0]);
+      assert.equal(heard.text, 'Mock reply to: how long is delivery to Leeds', 'the brain answered what the customer said');
+      const [row] = await until('the voice note to be stored', async () => { const r = await voiceRows(VAL); return r.length ? r : null; });
+      assert.deepEqual([row.kind, row.mime, row.message_kind, row.description], ['voice', 'audio/ogg', 'voice', 'how long is delivery to Leeds']);
+      assert.equal(speech.requests.at(-1).head, 'OggS', 'the real Ogg bytes reached the speech model');
+      const valConv = await conversation(VAL);
+      const shown = (await api(`/api/conversations/${valConv.id}`)).messages.find((m) => m.kind === 'voice');
+      assert.deepEqual(shown.voice, { transcript: 'how long is delivery to Leeds' }, 'the owner sees what the voice note said');
+      pass(`voice note from the bridge: ${row.bytes} bytes captured, written out and answered`);
+
+      // An audio element in the bubble, read in the tab.
+      const VIC = '447700900772@c.us';
+      await mock('receive', '+44 7700 900772', '', { kind: 'voice', voice: 'dom', said: 'is the battery waterproof' });
+      const heard2 = await until('reply to the second voice note', async () => (await sentTo(VIC))[0]);
+      assert.equal(heard2.text, 'Mock reply to: is the battery waterproof');
+      pass('voice note from an audio element in the bubble: written out and answered');
+
+      // Not downloaded yet: the download arrow is pressed once, never play.
+      const VERA = '447700900773@c.us';
+      await mock('receive', '+44 7700 900773', '', { kind: 'voice', voice: 'download', said: 'can I pay in three' });
+      const heard3 = await until('reply to the voice note that had to be downloaded', async () => (await sentTo(VERA))[0]);
+      assert.equal(heard3.text, 'Mock reply to: can I pay in three');
+      assert.equal((await mock('state')).voicePlays || 0, 0, 'no voice note was played');
+      pass('voice note not downloaded yet: downloaded (not played), written out and answered');
+
+      // The speech model fails: the owner is asked, nothing goes to the customer, as before.
+      const VOLE = '447700900774@c.us';
+      await mock('receive', '+44 7700 900774', '', { kind: 'voice', voice: 'bridge', said: 'FAIL' });
+      const failCard = await until('Urgent card for the voice note that could not be written out', async () => { const cv = await conversation(VOLE); return cv ? (await api('/api/urgent')).urgent.find((u) => u.conversation_id === cv.id) : null; });
+      assert.equal(failCard.category, 'media');
+      assert.equal(failCard.reason, 'The agent cannot listen to voice notes');
+      await sleep(1500);
+      assert.equal((await sentTo(VOLE)).length, 0, 'nothing was sent to the customer');
+      pass('voice note the speech model could not write out: owner asked silently, as before');
+    } finally {
+      await mock('set', { bridge: false }).catch(() => {});
+      await api('/api/test/speech-base', { body: { url: null } }).catch(() => {});
+      await speech.stop();
+    }
   }
 
   // ---- Google AI Studio: a photo described, a video opened in the viewer, captured whole, streamed and watched ------------------

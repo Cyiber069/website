@@ -111,7 +111,8 @@ export async function handleCodeTurn(env: Env, t: CodeTurn): Promise<CodeTurnRes
   // Quick yes or no on the cheap model. A no, or the check failing, is a normal reply: no code is made.
   let request: DiscountRequest;
   try {
-    const main = await chooseProvider(env, t.settings);
+    // The strong model confirms (Sonnet in the default mix): a yes makes a real code in Shopify.
+    const main = await chooseProvider(env, t.settings, { tier: 'strong' });
     const cheap = cheapChoice(main);
     const split = cheap.model !== main.model;
     request = await extractDiscountRequest(env, t.history, {

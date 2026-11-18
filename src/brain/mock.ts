@@ -15,7 +15,11 @@ export function mockSales(text: string): SalesRead {
   return { stage: 'none', product: null };
 }
 
-export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesImages?: boolean } = {}): Decision {
+/**
+ * `tier` is the model the mock stands in for (src/brain/route.ts): haiku and sonnet inside the mix, set for a
+ * plain model setting, workers for Workers AI. Only the haiku-stumped trigger looks at it.
+ */
+export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesImages?: boolean; tier?: string } = {}): Decision {
   const last = [...input.history].reverse().find((m) => m.direction === 'in');
   const text = (last?.body ?? '').toLowerCase();
   const base: Decision = {
@@ -46,6 +50,14 @@ export function mockDecide(input: DecideInput, tone: ToneProfile, opts: { seesIm
   const guided = input.context_notes.some((n) => n.startsWith('Owner guidance'));
   if (guided) {
     return { ...base, parts: [`Mock reply following owner guidance to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock owner guidance' };
+  }
+  // Haiku is unsure, Sonnet knows (the mix gives Sonnet one try before the owner is asked).
+  if (text.includes('haiku-stumped')) {
+    if (opts.tier === 'sonnet') return { ...base, parts: [`Mock Sonnet answer to: ${(last?.body ?? '').slice(0, 60)}`], note: 'mock sonnet' };
+    return {
+      ...base, action: 'escalate', confidence: 0.2, parts: ['Let me check that for you'], note: 'mock unsure',
+      escalate: { question: last?.body ?? '', reason: 'Not sure (mock)', category: 'unknown_fact' },
+    };
   }
   if (text.includes('warranty on the moon') || text.includes('unknown-question')) {
     return {

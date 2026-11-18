@@ -523,13 +523,17 @@ describe('chooseProvider', () => {
   });
 
   it('prefers Claude when a key is saved, from the dashboard or the environment', async () => {
-    expect(await chooseProvider(fakeEnv({ secret: 'sk-saved', ai: true }), settings())).toEqual({ provider: 'anthropic', model: 'claude-opus-5-5', apiKey: 'sk-saved' });
+    // The default model setting is the mix: Haiku answers a plain chat.
+    expect(await chooseProvider(fakeEnv({ secret: 'sk-saved', ai: true }), settings())).toMatchObject({ provider: 'anthropic', model: 'claude-haiku-5-5', apiKey: 'sk-saved', route: { why: 'claude', mix: true, tier: 'haiku' } });
     expect((await chooseProvider(fakeEnv({ envKey: 'sk-env' }), settings())).apiKey).toBe('sk-env');
     expect((await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings({}, { model: 'claude-haiku-5-5' }))).model).toBe('claude-haiku-5-5');
+    expect((await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings({}, { model: 'claude-opus-5-5' }))).model).toBe('claude-opus-5-5');
+    // A chat that matters gets Sonnet at low effort.
+    expect(await chooseProvider(fakeEnv({ secret: 'sk-saved' }), settings(), { chat: { matters: true, why: 'sale' } })).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low' });
   });
 
   it('falls back to Workers AI without a key, and honours a forced provider', async () => {
-    expect(await chooseProvider(fakeEnv({ ai: true }), settings())).toEqual({ provider: 'workers_ai', model: DEFAULT_SETTINGS.brain.workers_ai_model, apiKey: null });
+    expect(await chooseProvider(fakeEnv({ ai: true }), settings())).toMatchObject({ provider: 'workers_ai', model: DEFAULT_SETTINGS.brain.workers_ai_model, apiKey: null, route: { why: 'no_key' } });
     expect((await chooseProvider(fakeEnv({ secret: 'sk-saved', ai: true }), settings({}, { provider: 'workers_ai' }))).provider).toBe('workers_ai');
     expect((await chooseProvider(fakeEnv({ secret: 'sk-saved', ai: true }), settings({}, { provider: 'anthropic' }))).provider).toBe('anthropic');
   });
@@ -577,17 +581,19 @@ describe('Workers AI output handling', () => {
 // ---- the Claude request itself (network stubbed) ---------------------------------------------------
 
 
-/** A D1 stand in: no settings rows (defaults apply), one saved API key, and a log of every write. */
+/** A D1 stand in: no settings rows (defaults apply), one saved API key, and a log of every write (batches too). */
 function fakeDb(writes: { sql: string; args: unknown[] }[]): D1Database {
   const prepare = (sql: string) => {
     const bound = (args: unknown[]) => ({
+      sql, args,
       first: async () => (sql.includes('FROM secrets') ? { value: 'sk-ant-test' } : null),
       all: async () => ({ results: [] }),
       run: async () => { writes.push({ sql, args }); return { meta: { changes: 1 } }; },
     });
     return { bind: (...args: unknown[]) => bound(args), ...bound([]) };
   };
-  return { prepare } as unknown as D1Database;
+  const batch = async (list: { sql: string; args: unknown[] }[]) => list.map((st) => { writes.push({ sql: st.sql, args: st.args }); return { results: [], meta: { changes: 1 } }; });
+  return { prepare, batch } as unknown as D1Database;
 }
 
 function claudeReply(body: Record<string, unknown>, status = 200): Response {
@@ -636,7 +642,8 @@ describe('callJson with Claude', () => {
     expect(body.model).toBe('claude-opus-5-5');
     expect(body.fallbacks).toBe('default');
     expect(body.output_config).toEqual({ effort: 'low', format: { type: 'json_schema', schema: expect.objectContaining({ additionalProperties: false }) } });
-    expect(body.system).toEqual([{ type: 'text', text: 'instructions' }, { type: 'text', text: 'knowledge', cache_control: { type: 'ephemeral' } }]);
+    // The stable system blocks are cached for an hour.
+    expect(body.system).toEqual([{ type: 'text', text: 'instructions' }, { type: 'text', text: 'knowledge', cache_control: { type: 'ephemeral', ttl: '1h' } }]);
     expect(body.messages).toEqual([{ role: 'user', content: 'conversation' }]);
     for (const banned of ['temperature', 'top_p', 'top_k', 'thinking', 'betas']) expect(body).not.toHaveProperty(banned);
 
@@ -667,6 +674,33 @@ describe('callJson with Claude', () => {
     await expect((await call(err(400, 'invalid_request_error'))).run).rejects.toMatchObject({ code: 'bad_request' });
     await expect((await call(() => claudeReply(okMessage('{"ok":', { stop_reason: 'max_tokens' })))).run).rejects.toMatchObject({ code: 'truncated' });
     await expect((await call(() => claudeReply(okMessage('not json at all')))).run).rejects.toMatchObject({ code: 'bad_output' });
+  });
+
+  it('reads no credit as a billing error, and a refused key as auth', async () => {
+    const err = (status: number, type: string, message: string) => () => claudeReply({ type: 'error', error: { type, message } }, status);
+    await expect((await call(err(402, 'billing_error', 'Payment required'))).run).rejects.toMatchObject({ code: 'billing', retryable: false });
+    await expect((await call(err(400, 'invalid_request_error', 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'))).run).rejects.toMatchObject({ code: 'billing' });
+    await expect((await call(err(403, 'permission_error', 'nope'))).run).rejects.toMatchObject({ code: 'auth' });
+  });
+
+  it('answers on the free Cloudflare AI when Claude has no credit, and the owner is told', async () => {
+    const writes: { sql: string; args: unknown[] }[] = [];
+    const claudeCalls: string[] = [];
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL) => { claudeCalls.push(String(url instanceof Request ? url.url : url)); return claudeReply({ type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } }, 400); });
+    const ai = { run: async () => ({ choices: [{ message: { content: '{"ok":true}' } }], usage: { prompt_tokens: 3000, completion_tokens: 200 } }) };
+    const env: Env = { DB: fakeDb(writes), ASSETS: {} as Fetcher, AI: ai as unknown as Ai };
+    const res = await callJson<{ ok: boolean }>(env, {
+      purpose: 'polish', schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      system: [{ text: 'instructions', cache: true }], user: 'x', choice: { provider: 'anthropic', model: 'claude-haiku-5-5', apiKey: 'sk-ant-test' },
+    });
+    expect(res).toMatchObject({ provider: 'workers_ai', data: { ok: true } });
+    expect(claudeCalls).toHaveLength(1);
+    // The failed Claude call, the outage noted once, then the Workers AI call with its neurons in the same batch.
+    expect(writes.some((w) => w.sql.includes('llm_usage') && w.args[1] === 'anthropic' && w.args.at(-1) === 0)).toBe(true);
+    expect(writes.some((w) => w.sql.includes('llm_usage') && w.args[1] === 'workers_ai' && w.args.at(-1) === 1)).toBe(true);
+    expect(writes.some((w) => w.sql.includes("'state:ai_state'") && w.sql.includes('$.used'))).toBe(true);
+    // With fallback false the caller handles it.
+    await expect(callJson(env, { purpose: 'decide', schema: {}, system: [], user: 'x', choice: { provider: 'anthropic', model: 'claude-haiku-5-5', apiKey: 'k' }, fallback: false })).rejects.toMatchObject({ code: 'billing' });
   });
 
   it('retries a rate limit once and then reports it as retryable', async () => {

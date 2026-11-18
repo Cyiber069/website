@@ -7,8 +7,10 @@
 //   mock        Local development and tests (ACX_TEST_MODE=1). Never calls out.
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env, LlmUsage, Settings } from '../types';
-import { run } from '../lib/db';
+import { stmt } from '../lib/db';
 import { getSecret, getSettings } from '../lib/settings';
+import { aiState, allowanceOf, claudeDownAt, clearClaudeDown, countDay, neuronsStatement, noteClaudeDown, noteNeuronsResult, routeClock, windowClock } from './allowance';
+import { HAIKU_MODEL, MIX_MODEL, SONNET_MODEL, allowanceLeft, pickRoute, textNeurons, type Effort, type Route, type RouteOptions } from './route';
 
 export type ProviderName = 'anthropic' | 'workers_ai' | 'mock';
 
@@ -17,12 +19,17 @@ export interface ProviderChoice {
   model: string;
   /** Only set for anthropic. */
   apiKey: string | null;
+  /** Claude only: the effort for this call (Sonnet in the mix always runs at low). Default: the brain setting. */
+  effort?: Effort | null;
+  /** Why this model answers (src/brain/route.ts). The mock carries the route it stands in for. */
+  route?: Route;
 }
 
 /** Thrown for every model failure. `code` is stable and safe to branch on, `message` is fit to show the owner. */
 export class LlmError extends Error {
   constructor(
-    public code: 'no_provider' | 'auth' | 'bad_request' | 'not_found' | 'rate_limited' | 'overloaded' | 'timeout' | 'network' | 'refusal' | 'truncated' | 'bad_output' | 'provider_error',
+    // billing: the Claude account has no credit. allowance: the free Workers AI neurons for today are used up.
+    public code: 'no_provider' | 'auth' | 'billing' | 'allowance' | 'bad_request' | 'not_found' | 'rate_limited' | 'overloaded' | 'timeout' | 'network' | 'refusal' | 'truncated' | 'bad_output' | 'provider_error',
     message: string,
     /** Worth trying again later without changing anything. */
     public retryable = false,
@@ -36,11 +43,18 @@ export class LlmError extends Error {
 /** True for the error a call gets when the request it belongs to has no time left for it. */
 export const isDeadline = (err: unknown): boolean => err instanceof LlmError && err.code === 'timeout';
 
-/** One block of the system prompt. Blocks marked `cache` end a prefix that stays the same between calls. */
+/** Claude failed for credit, billing or key reasons: Workers AI takes over for a while (src/brain/route.ts). */
+export const isAccountError = (err: unknown): err is LlmError => err instanceof LlmError && (err.code === 'auth' || err.code === 'billing');
+
+/**
+ * One block of the system prompt. Blocks marked `cache` end a prefix that stays the same between calls.
+ * Claude keeps them for an hour (ttl 1h), so a quiet spell does not pay for writing the cache again.
+ */
 export interface SystemBlock {
   text: string;
   cache?: boolean;
 }
+export const CACHE_TTL = '1h' as const;
 
 /** A picture for the user turn, with the line of text that introduces it. */
 export interface PromptImage {
@@ -64,6 +78,8 @@ export const MOCK_TEXT_MODEL = 'mock-text';
  */
 export const MOCK_CLAUDE_MODEL = 'mock-claude';
 export const MOCK_CLAUDE_CHEAP_MODEL = 'mock-claude-cheap';
+/** Test mode: the mock standing in for Sonnet inside the mix. */
+export const MOCK_CLAUDE_STRONG_MODEL = 'mock-claude-sonnet';
 const claudeLikeMock = (choice: ProviderChoice) => choice.provider === 'mock' && choice.model.startsWith(MOCK_CLAUDE_MODEL);
 
 /**
@@ -99,6 +115,11 @@ export interface CallJsonInput {
   /** Claude only: how long one attempt may take, and how many times the SDK tries again. Defaults 50 s and 1. */
   timeoutMs?: number;
   maxRetries?: number;
+  /**
+   * When Claude fails for credit, billing or key reasons the same call is made on Workers AI (when it has
+   * free neurons left). false: the caller handles it (decide builds a Workers AI prompt of its own).
+   */
+  fallback?: boolean;
 }
 
 export interface CallJsonResult<T> {
@@ -113,44 +134,70 @@ const ANTHROPIC_TIMEOUT_MS = 50_000;
 const ANTHROPIC_MAX_RETRIES = 1;
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
-/**
- * Which model answers. Claude when a key is saved, unless the owner forced Workers AI; Workers AI when
- * the binding exists; the mock in test mode.
- */
-export async function chooseProvider(env: Env, settings: Settings): Promise<ProviderChoice> {
-  // Tests: the mock, which can see pictures like Claude, or reads text only like Workers AI when that provider is chosen.
-  if (env.ACX_TEST_MODE === '1') {
-    if (settings.brain.provider === 'anthropic') {
-      await getSecret(env.DB, 'anthropic_api_key'); // what the real choice reads
-      return { provider: 'mock', model: MOCK_CLAUDE_MODEL, apiKey: null };
-    }
-    return { provider: 'mock', model: settings.brain.provider === 'workers_ai' ? MOCK_TEXT_MODEL : 'mock', apiKey: null };
-  }
-  const brain = settings.brain;
-  const key = ((await getSecret(env.DB, 'anthropic_api_key')) ?? env.ANTHROPIC_API_KEY ?? '').trim();
-  const workers: ProviderChoice | null = env.AI ? { provider: 'workers_ai', model: brain.workers_ai_model, apiKey: null } : null;
-  const claude: ProviderChoice | null = key ? { provider: 'anthropic', model: brain.model, apiKey: key } : null;
+/** The mock that stands in for a route in test mode. */
+function mockFor(r: Route): ProviderChoice {
+  if (r.provider === 'workers_ai') return { provider: 'mock', model: MOCK_TEXT_MODEL, apiKey: null, route: r };
+  return { provider: 'mock', model: r.tier === 'sonnet' ? MOCK_CLAUDE_STRONG_MODEL : MOCK_CLAUDE_MODEL, apiKey: null, effort: r.effort, route: r };
+}
 
-  if (brain.provider === 'workers_ai') {
-    if (workers) return workers;
-    throw new LlmError('no_provider', 'Workers AI is selected but this Worker has no AI binding');
+/**
+ * Which model answers (src/brain/route.ts has the rules). Claude when a key is saved, by the model
+ * setting; Workers AI without a key, when the owner forced it, from 22:00 UTC while the free allowance
+ * lasts and for a while after Claude failed for credit, billing or key reasons; the mock in test mode.
+ * `opts.chat` says whether the chat matters (the mix then picks Sonnet), `opts.tier` asks for the cheap
+ * or the strong model. One query (the key), as before: the allowance comes with the settings.
+ */
+export async function chooseProvider(env: Env, settings: Settings, opts: RouteOptions = {}): Promise<ProviderChoice> {
+  const brain = settings.brain;
+  // Tests: the mock, which can see pictures like Claude, or reads text only like Workers AI when that provider is chosen.
+  // With the provider set to anthropic the routing rules run for real (Workers AI counts as there, the
+  // free window only with a test clock), so the tests see which model would have answered.
+  if (env.ACX_TEST_MODE === '1') {
+    if (brain.provider === 'anthropic') {
+      await getSecret(env.DB, 'anthropic_api_key'); // what the real choice reads
+      const s = await aiState(env);
+      const now = routeClock(env, s);
+      const r = pickRoute({ brain, claudeKey: true, workersAi: true, now, allowance: allowanceOf(s, now), claudeDownAt: claudeDownAt(s), windowClock: windowClock(env, s) }, opts);
+      return mockFor(r!);
+    }
+    if (brain.provider === 'workers_ai') return { provider: 'mock', model: MOCK_TEXT_MODEL, apiKey: null, route: { provider: 'workers_ai', model: brain.workers_ai_model, effort: null, why: 'forced_workers', mix: false, tier: 'workers' } };
+    return { provider: 'mock', model: 'mock', apiKey: null };
   }
-  if (brain.provider === 'anthropic') {
-    if (claude) return claude;
-    throw new LlmError('no_provider', 'Claude is selected but no API key is saved');
+  const key = ((await getSecret(env.DB, 'anthropic_api_key')) ?? env.ANTHROPIC_API_KEY ?? '').trim();
+  const s = await aiState(env);
+  const now = routeClock(env, s);
+  const r = pickRoute({ brain, claudeKey: Boolean(key), workersAi: Boolean(env.AI), now, allowance: allowanceOf(s, now), claudeDownAt: claudeDownAt(s) }, opts);
+  if (!r) {
+    if (brain.provider === 'workers_ai') throw new LlmError('no_provider', 'Workers AI is selected but this Worker has no AI binding');
+    if (brain.provider === 'anthropic') throw new LlmError('no_provider', 'Claude is selected but no API key is saved');
+    throw new LlmError('no_provider', 'No AI is connected yet. Save a Claude API key or enable Workers AI.');
   }
-  const pick = claude ?? workers;
-  if (!pick) throw new LlmError('no_provider', 'No AI is connected yet. Save a Claude API key or enable Workers AI.');
-  return pick;
+  return r.provider === 'anthropic'
+    ? { provider: 'anthropic', model: r.model, apiKey: key, effort: r.effort, route: r }
+    : { provider: 'workers_ai', model: r.model, apiKey: null, route: r };
 }
 
 /** The cheapest model of the same provider, for small jobs such as the sales follow up. */
-export const CHEAP_CLAUDE_MODEL = 'claude-haiku-5-5';
+export const CHEAP_CLAUDE_MODEL = HAIKU_MODEL;
 export function cheapChoice(choice: ProviderChoice): ProviderChoice {
-  if (choice.provider === 'mock' && choice.model === MOCK_CLAUDE_MODEL) return { ...choice, model: MOCK_CLAUDE_CHEAP_MODEL };
+  const route = choice.route ? { ...choice.route, model: HAIKU_MODEL, effort: null, tier: choice.route.mix ? 'haiku' as const : 'set' as const, why: 'claude' as const } : undefined;
+  if (choice.provider === 'mock' && choice.model.startsWith(MOCK_CLAUDE_MODEL)) return { ...choice, model: MOCK_CLAUDE_CHEAP_MODEL, effort: null, route };
   if (choice.provider !== 'anthropic' || /haiku/i.test(choice.model)) return choice;
-  return { ...choice, model: CHEAP_CLAUDE_MODEL };
+  // Haiku runs at the owner's effort setting, as in the mix.
+  return { ...choice, model: CHEAP_CLAUDE_MODEL, effort: null, route };
 }
+
+/** Sonnet at low effort, for the one retry in the mix when Haiku would escalate or is unsure. */
+export function sonnetChoice(choice: ProviderChoice): ProviderChoice {
+  const route: Route | undefined = choice.route ? { ...choice.route, model: SONNET_MODEL, effort: 'low', tier: 'sonnet' } : undefined;
+  if (choice.provider === 'mock') return { ...choice, model: MOCK_CLAUDE_STRONG_MODEL, effort: 'low', route };
+  return { ...choice, model: SONNET_MODEL, effort: 'low', route };
+}
+
+/** Claude-like: the real Claude, or the mock standing in for it. */
+export const isClaudeChoice = (choice: ProviderChoice): boolean => choice.provider === 'anthropic' || (choice.provider === 'mock' && choice.route?.provider === 'anthropic');
+/** Text only Workers AI, or the mock standing in for it. */
+export const isWorkersChoice = (choice: ProviderChoice): boolean => choice.provider === 'workers_ai' || (choice.provider === 'mock' && choice.model === MOCK_TEXT_MODEL);
 
 /** How many tokens of knowledge a provider can take on top of instructions, conversation and answer. */
 export function knowledgeBudget(choice: ProviderChoice): number {
@@ -224,6 +271,10 @@ export function retryAfterMs(headers: unknown, now = Date.now()): number | null 
 function fromAnthropicError(err: unknown): LlmError {
   if (err instanceof LlmError) return err;
   const after = err instanceof Anthropic.APIError ? retryAfterMs(err.headers) : null;
+  // No credit: a 402, or the 400 that says the credit balance is too low.
+  if (err instanceof Anthropic.APIError && (err.status === 402 || (err.status === 400 && /credit balance|purchase credits|billing/i.test(err.message)))) {
+    return new LlmError('billing', 'The Anthropic account has no credit left. Add credit at console.anthropic.com.');
+  }
   if (err instanceof Anthropic.AuthenticationError) return new LlmError('auth', 'The Claude API key was rejected. Check it on the Connections screen.');
   if (err instanceof Anthropic.PermissionDeniedError) return new LlmError('auth', 'The Claude API key is not allowed to use this model.');
   if (err instanceof Anthropic.NotFoundError) return new LlmError('not_found', 'Claude does not know that model name. Pick another model on the Connections screen.');
@@ -245,8 +296,8 @@ async function callAnthropic(choice: ProviderChoice, settings: Settings, input: 
     ...(baseURL ? { baseURL } : {}),
   });
   const fallback = supportsFallbacks(choice.model);
-  // Haiku 4.5 is the one current model that rejects the effort setting.
-  const effort = /haiku-4-5/.test(choice.model) ? undefined : settings.brain.effort;
+  // Haiku 4.5 is the one current model that rejects the effort setting. Sonnet in the mix runs at low.
+  const effort = /haiku-4-5/.test(choice.model) ? undefined : (choice.effort ?? settings.brain.effort);
   let message: Anthropic.Beta.BetaMessage;
   try {
     message = await client.beta.messages.create({
@@ -255,7 +306,7 @@ async function callAnthropic(choice: ProviderChoice, settings: Settings, input: 
       // No temperature or other sampling settings: current models reject them. Thinking is left to
       // the model (adaptive) and steered with effort.
       system: input.system.filter((b) => b.text.trim()).map((b) => ({
-        type: 'text' as const, text: b.text, ...(b.cache ? { cache_control: { type: 'ephemeral' as const } } : {}),
+        type: 'text' as const, text: b.text, ...(b.cache ? { cache_control: { type: 'ephemeral' as const, ttl: CACHE_TTL } } : {}),
       })),
       messages: [{ role: 'user', content: userContent(input.user, input.images) }],
       output_config: { ...(effort ? { effort } : {}), format: { type: 'json_schema', schema: input.schema } },
@@ -383,8 +434,12 @@ export async function callWorkersAi(env: Env, choice: ProviderChoice, input: Cal
   return { data, usage };
 }
 
+/** The daily free allocation is used up (Workers AI error 3036). Out until 00:00 UTC. */
+export const isDailyLimit = (text: string): boolean => /\b3036\b|daily free allocation|used up your daily/i.test(text);
+
 function workersError(text: string): LlmError {
   if (/needs to be run remotely/i.test(text)) return new LlmError('no_provider', 'Workers AI is not available in local development');
+  if (isDailyLimit(text)) return new LlmError('allowance', 'The free Cloudflare AI allowance is used up until 00:00 UTC.', true);
   if (/neurons|quota|capacity|rate limit|429|3040/i.test(text)) return new LlmError('rate_limited', 'Workers AI daily allowance or rate limit reached.', true);
   if (/no such model|5007|not found/i.test(text)) return new LlmError('not_found', 'Workers AI does not know that model name.');
   if (/timeout|timed out/i.test(text)) return new LlmError('timeout', 'Workers AI took too long to answer.', true);
@@ -393,22 +448,48 @@ function workersError(text: string): LlmError {
 
 // ---- the one entry point -------------------------------------------------------------------------
 
-async function recordUsage(env: Env, purpose: string, usage: LlmUsage, ok: boolean): Promise<void> {
+const USAGE_SQL = 'INSERT INTO llm_usage (ts, provider, model, purpose, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ms, ok) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+
+/**
+ * Write one call to llm_usage. A Workers AI call also adds its neurons to today's free allowance, in
+ * the same batch (one query); a daily limit error marks the allowance used up until 00:00 UTC.
+ */
+async function recordUsage(env: Env, purpose: string, usage: LlmUsage, ok: boolean, opts: { workers?: boolean; out?: boolean } = {}): Promise<void> {
   try {
-    await run(
-      env.DB,
-      'INSERT INTO llm_usage (ts, provider, model, purpose, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ms, ok) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      Date.now(), usage.provider, usage.model, purpose.slice(0, 40), usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cache_write_tokens, usage.ms, ok ? 1 : 0,
-    );
+    const row = stmt(env.DB, USAGE_SQL, Date.now(), usage.provider, usage.model, purpose.slice(0, 40), usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cache_write_tokens, usage.ms, ok ? 1 : 0);
+    if (!opts.workers) { await row.run(); return; }
+    const neurons = textNeurons(usage.model, usage.input_tokens, usage.output_tokens);
+    const res = await env.DB.batch([row, neuronsStatement(env.DB, await countDay(env), neurons, opts.out === true)]);
+    noteNeuronsResult(res[1]);
   } catch (err) {
     console.error('llm_usage insert failed', err); // bookkeeping must never break a reply
   }
 }
 
-/** The claude-like mock writes its call to llm_usage like a real call (tests of the query limit). */
-export async function recordMockUsage(env: Env, choice: ProviderChoice, purpose: string): Promise<void> {
+/** Test mode: what a Workers AI call costs, in tokens, for the mock that stands in for it. */
+export const MOCK_WORKERS_TOKENS = { input: 3000, output: 200 };
+
+/**
+ * The claude-like mock writes its call to llm_usage like a real call (tests of the query limit). The mock
+ * standing in for a routed Workers AI call also counts its neurons, as production does. The model column
+ * holds the model the mock stands in for.
+ */
+export async function recordMockUsage(env: Env, choice: ProviderChoice, purpose: string, ok = true, out = false): Promise<void> {
+  if (choice.route?.provider === 'workers_ai') {
+    await recordUsage(env, purpose, { provider: 'mock', model: choice.route.model, input_tokens: MOCK_WORKERS_TOKENS.input, output_tokens: MOCK_WORKERS_TOKENS.output, cache_read_tokens: 0, cache_write_tokens: 0, ms: 0 }, ok, { workers: true, out });
+    return;
+  }
   if (!claudeLikeMock(choice)) return;
-  await recordUsage(env, purpose, { provider: 'mock', model: choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ms: 0 }, true);
+  await recordUsage(env, purpose, { provider: 'mock', model: choice.route?.model ?? choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ms: 0 }, ok);
+}
+
+/** Workers AI as a stand in for Claude, when it has free neurons left today. Null otherwise. */
+export async function workersFallback(env: Env, settings: Settings): Promise<ProviderChoice | null> {
+  if (env.ACX_TEST_MODE !== '1' && !env.AI) return null;
+  const s = await aiState(env);
+  if (!allowanceLeft(allowanceOf(s, routeClock(env, s)))) return null;
+  const route: Route = { provider: 'workers_ai', model: settings.brain.workers_ai_model, effort: null, why: 'claude_down', mix: settings.brain.model === MIX_MODEL, tier: 'workers' };
+  return env.ACX_TEST_MODE === '1' ? { provider: 'mock', model: MOCK_TEXT_MODEL, apiKey: null, route } : { provider: 'workers_ai', model: route.model, apiKey: null, route };
 }
 
 /**
@@ -425,20 +506,30 @@ export async function callJson<T = unknown>(env: Env, input: CallJsonInput): Pro
     return { data, usage: null, provider: 'mock', model: 'mock' };
   }
   const started = Date.now();
+  const workers = choice.provider === 'workers_ai';
   try {
     // Optional: send Claude calls through a proxy such as Cloudflare AI Gateway by setting the
     // ANTHROPIC_BASE_URL variable on the Worker. Not set means the Anthropic API directly.
     const baseURL = (env as Env & { ANTHROPIC_BASE_URL?: string }).ANTHROPIC_BASE_URL?.trim() || undefined;
     const { data, usage } = choice.provider === 'anthropic' ? await callAnthropic(choice, settings, input, baseURL) : await callWorkersAi(env, choice, input);
     const full: LlmUsage = { ...usage, ms: Date.now() - started };
-    await recordUsage(env, input.purpose, full, true);
+    await recordUsage(env, input.purpose, full, true, { workers });
+    // Claude answers again after an outage: the next calls go back to it.
+    if (choice.provider === 'anthropic') await clearClaudeDown(env, { why: 'answered' });
     return { data: data as T, usage: full, provider: choice.provider, model: choice.model };
   } catch (err) {
     const e = err instanceof LlmError ? err : new LlmError('provider_error', String((err as Error)?.message ?? err).slice(0, 200), true);
     const partial = (e as LlmError & { usage?: Omit<LlmUsage, 'ms'> }).usage;
     await recordUsage(env, input.purpose, {
       provider: choice.provider, model: choice.model, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, ...partial, ms: Date.now() - started,
-    }, false);
+    }, false, { workers, out: e.code === 'allowance' });
+    // Claude fails for credit, billing or key reasons: the owner is told once and Workers AI answers
+    // this call and the next ones for a while, when it has free neurons left today.
+    if (choice.provider === 'anthropic' && isAccountError(e)) {
+      await noteClaudeDown(env, settings, e.code as 'billing' | 'auth', e.message);
+      const stand = input.fallback === false ? null : await workersFallback(env, settings);
+      if (stand) return callJson<T>(env, { ...input, choice: stand, fallback: false });
+    }
     throw e;
   }
 }
@@ -488,7 +579,8 @@ export async function callWithin<T = unknown>(env: Env, input: CallJsonInput, bu
   try {
     return await attempt();
   } catch (err) {
-    if (!budget.retryQuickFailure || !(err instanceof LlmError) || !err.retryable || err.code === 'timeout') throw err;
+    // A used up allowance stays used up until 00:00 UTC: never asked again here.
+    if (!budget.retryQuickFailure || !(err instanceof LlmError) || !err.retryable || err.code === 'timeout' || err.code === 'allowance') throw err;
     if (Date.now() - started > QUICK_FAILURE_MS) throw err;
     const wait = err.retryAfterMs ?? 1000;
     if (wait > 3000 || callTimeout(budget, Date.now() + wait) === 0) throw err;

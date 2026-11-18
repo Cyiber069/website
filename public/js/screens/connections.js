@@ -73,13 +73,31 @@ export default {
     }
 
     // ---- Brain ----------------------------------------------------------------------------------------
+    const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Today's free Cloudflare AI allowance, in plain words. The server keeps the count itself: an estimate.
+    function allowanceLine(a) {
+      if (!a) return '';
+      const back = `It starts again at ${clock(a.resets_at)} your time.`;
+      if (a.out) return `Free Cloudflare AI today: used up. ${back}`;
+      return `Free Cloudflare AI today: about ${a.pct}% used (an estimate). ${back}${a.window_now ? ' It is answering customers now.' : ''}`;
+    }
+    function claudeDownLine(d) {
+      if (!d) return '';
+      const why = d.code === 'billing' ? 'The Anthropic account has no credit left. Add credit at console.anthropic.com.' : 'The Claude API key was refused. Check it below.';
+      return html`<p class="banner banner--down">${icon('i-stop')}<span><b>Claude stopped working ${ago(d.at)}.</b> ${why} The free Cloudflare AI is answering for now.</span></p>`;
+    }
     function paintBrain() {
       const box = $('#sec-brain', view);
       if (!conn) { setHTML(box, html`${head('brain', 'i-brain', 'AI brain', 'What the agent thinks with.')}${unavailable('The AI brain settings', connErr)}`); return; }
       const b = conn.brain || {};
       const models = b.models?.length ? b.models : [{ id: b.model, label: b.model, note: '' }];
+      const w = b.workers_ai || {};
       setHTML(box, html`
         ${head('brain', 'i-brain', 'AI brain', 'The agent thinks with Claude. You pay Anthropic for what it uses.', savedTag(b.claude_key, 'Key saved', 'No key yet'))}
+        ${claudeDownLine(w.claude_down)}
+        ${b.split?.length ? html`<div class="stack"><h3 class="eyebrow">Which AI does what</h3>
+          <ul class="rows" id="ai-split">${b.split.map((x) => html`<li class="rowline"><b>${x.name}</b><span class="meta">${x.does}</span></li>`)}</ul>
+          ${w.allowance ? html`<p class="meta" id="ai-allowance">${allowanceLine(w.allowance)}</p>` : ''}</div>` : ''}
         <form class="stack form" id="brain-form" novalidate>
           ${field({ label: b.claude_key?.saved ? 'Replace the Claude API key' : 'Claude API key', name: 'anthropic_api_key', type: 'password', placeholder: 'sk-ant-...', attrs: 'autocomplete="off" spellcheck="false"', hint: 'Get one at console.anthropic.com under API keys. It is stored on the server and never shown again.' })}
           <div class="field"><label class="field__label" for="brain-model">Model</label>
@@ -277,7 +295,9 @@ export default {
         formError(f);
         return busy(btn, async () => {
           try {
-            const body = { model: f.elements.model.value, effort: f.elements.effort.value };
+            // The model only when the owner changed it: a model they pick is kept from now on.
+            const body = { effort: f.elements.effort.value };
+            if (f.elements.model.value !== conn?.brain?.model) body.model = f.elements.model.value;
             if (key) body.anthropic_api_key = key;
             conn = { ...conn, ...(await put('/api/connections/brain', body)) }; brainTest = null; clean(f);
             toast(key ? 'Key saved. Press Test it to check it works.' : 'Brain settings saved.');

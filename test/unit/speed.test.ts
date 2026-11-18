@@ -129,9 +129,21 @@ describe('decide under a time limit', () => {
   });
 
   it('rewrites once when there is time', async () => {
-    const calls = stubFetch([message(NOT_HONEST), message(NOT_HONEST)]);
-    await decide(env(), input('are you a bot'), { deadlineAt: Date.now() + 40_000 });
+    // A "not just X, it's Y" sentence only the model can rewrite.
+    const NOT_JUST = JSON.stringify({ note: 'n', kb_refs: [], action: 'reply', escalate: null, flags: { opt_out: false, asked_if_bot: false, needs_human: false }, parts: ["It's not just a kit, it's a whole new ride"], confidence: 0.95, sales: null });
+    const calls = stubFetch([message(NOT_JUST), message(NOT_JUST)]);
+    await decide(env(), input('what is it like'), { deadlineAt: Date.now() + 40_000 });
     expect(calls).toHaveLength(2);
+  });
+
+  it('fixes in code what code can fix, with no rewrite call', async () => {
+    // No honest answer to "are you a bot": the fixed honest line goes first, the model's answer after it.
+    const calls = stubFetch([message(NOT_HONEST), message(NOT_HONEST)]);
+    const d = await decide(env(), input('are you a bot'), { deadlineAt: Date.now() + 40_000 });
+    expect(calls).toHaveLength(1);
+    expect(d.parts[0]).toMatch(/AI assistant/);
+    expect(d.parts.join(' ')).toMatch(/what can I help with/i);
+    expect(d.note).toMatch(/style fixed in code/);
   });
 
   it('a decide that cannot finish in time is a retryable timeout, not a wrong answer', async () => {

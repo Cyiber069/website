@@ -11,7 +11,9 @@
 //   read({ key })      -> { thread: { external_id, title, is_group, subject, contact: { name, phone, email, handle } },
 //                           messages: [{ external_id, direction: 'in'|'out', body, kind, ts, media? }] }   oldest first, max 40
 //                         `media` is { kind: 'image' | 'video_frame', mime: 'image/jpeg', data: <base64> } when
-//                         ACX.captureMedia could copy the photo (or one frame of the video) out of the bubble.
+//                         ACX.captureMedia could copy the photo (or one frame of the video) out of the bubble,
+//                         or { kind: 'voice', mime: 'audio/ogg', data, seconds } for a voice note (the adapter
+//                         finds the bytes: captureMedia(messages, { voice: find })).
 //                         For the newest customer video ACX.captureVideo may add `video` ({ token, bytes, mime,
 //                         seconds } held in this page, or { url, mime }), `frames` (small JPEGs) and `seconds`.
 //                         `shared` ({ author, caption }) marks a shared post (TikTok). The worker uploads
@@ -694,13 +696,47 @@
     return { fail: tried.join(' ') };
   }
 
+  // Voice notes: at most about 185 KB (250,000 characters of base64), about 2 minutes.
+  const VOICE = { max_bytes: 185_000, max_seconds: 120 };
+  const audioMime = (mime) => { const m = String(mime || '').split(';')[0].trim().toLowerCase(); return /^audio\/[\w.+-]+$/.test(m) ? m : 'audio/ogg'; };
+
+  /**
+   * One voice note -> { data, mime, seconds } or { fail }. `find(m, deadline)` is the adapter's: it
+   * resolves to { blob, seconds?, mime? }, { url, seconds?, mime? } (an https address the service worker
+   * may fetch) or { why }.
+   */
+  async function captureVoice(m, find, deadline) {
+    const left = () => deadline - Date.now();
+    let found = null;
+    try { found = await withLimit(find(m, deadline), Math.max(0, left())); } catch (err) { return { fail: `voice:${errName(err)}` }; }
+    if (!found) return { fail: 'voice:timeout' };
+    if (found.why) return { fail: `voice:${found.why}` };
+    const seconds = Number.isFinite(found.seconds) && found.seconds > 0 ? Math.round(found.seconds * 10) / 10 : null;
+    if (seconds && seconds > VOICE.max_seconds) return { fail: 'voice:too_long' };
+    let data = '';
+    let mime = audioMime(found.mime);
+    if (found.blob) {
+      if (found.blob.size > VOICE.max_bytes) return { fail: 'voice:too_big' };
+      try { data = await blobBase64(found.blob); } catch (err) { return { fail: `voice:read:${errName(err)}` }; }
+      if (found.blob.type) mime = audioMime(found.blob.type);
+    } else if (found.url && /^https:/i.test(found.url) && left() > 300) {
+      const res = await toWorker({ type: 'fetch_audio', url: found.url, timeout_ms: Math.max(300, left() - 100) });
+      if (!res || !res.ok || typeof res.data !== 'string') return { fail: `voice:worker:${String((res && res.error) || 'no_answer').slice(0, 30)}` };
+      data = res.data;
+      if (res.mime) mime = audioMime(res.mime);
+    }
+    if (!data || data.length > MEDIA.max_base64) return { fail: data ? 'voice:too_big' : 'voice:no_bytes' };
+    return { data, mime, seconds };
+  }
+
   /**
    * `messages` is the thread, oldest first. A message that shows a photo or video carries
    * `_media: { el: <its bubble>, kind: 'image' | 'video' }`. The newest unanswered customer messages
    * (after our last message), at most 3, newest first, get `media` set when the copy worked.
-   * Voice notes are never captured. Resolves with the number captured. Never rejects.
+   * A voice note (`_media.kind` 'voice') is captured only when the adapter passes `opts.voice`, its
+   * finder (see captureVoice). Resolves with the number captured. Never rejects.
    */
-  async function captureMedia(messages) {
+  async function captureMedia(messages, opts = {}) {
     const started = Date.now();
     const failures = [];
     let captured = 0;
@@ -709,7 +745,7 @@
       for (let i = messages.length - 1; i >= 0 && picks.length < MEDIA.max_items; i--) {
         const m = messages[i];
         if (!m || m.direction !== 'in') break;
-        if (m._media && m._media.el) picks.push(m);
+        if (m._media && m._media.el && (m._media.kind !== 'voice' || typeof opts.voice === 'function')) picks.push(m);
       }
       if (!picks.length) return 0;
       const deadline = started + MEDIA.budget_ms;
@@ -718,9 +754,11 @@
         for (const m of picks) {
           if (Date.now() >= deadline - 200) { failures.push('timeout'); break; }
           let res;
-          try { res = await captureOne(m._media.el, m._media.kind === 'video' ? 'video' : 'image', deadline); } catch (err) { res = { fail: `error:${errName(err)}` }; }
+          const isVoice = m._media.kind === 'voice';
+          try { res = isVoice ? await captureVoice(m, opts.voice, deadline) : await captureOne(m._media.el, m._media.kind === 'video' ? 'video' : 'image', deadline); } catch (err) { res = { fail: `error:${errName(err)}` }; }
           if (!open) return; // the read moved on without this one
-          if (res.data) { m.media = { kind: m._media.kind === 'video' ? 'video_frame' : 'image', mime: 'image/jpeg', data: res.data }; captured++; } else failures.push(res.fail || 'unknown');
+          if (res.data && isVoice) { m.media = { kind: 'voice', mime: res.mime, data: res.data, ...(res.seconds ? { seconds: res.seconds } : {}) }; captured++; }
+          else if (res.data) { m.media = { kind: m._media.kind === 'video' ? 'video_frame' : 'image', mime: 'image/jpeg', data: res.data }; captured++; } else failures.push(res.fail || 'unknown');
         }
       })();
       const late = Symbol('late');
