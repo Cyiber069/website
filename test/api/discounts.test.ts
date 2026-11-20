@@ -384,7 +384,7 @@ describe('code request rules (no server)', async () => {
   const { mockDiscountRequest } = await import('../../src/brain/discount');
   const { DEFAULT_SETTINGS } = await import('../../src/lib/settings');
   const base = {
-    settings: DEFAULT_SETTINGS.discounts, request: { wants_code: true, code: 'MACCA5', confidence: 0.95 }, code: 'MACCA5',
+    settings: { ...DEFAULT_SETTINGS.discounts, mode: 'auto' }, request: { wants_code: true, code: 'MACCA5', confidence: 0.95 }, code: 'MACCA5',
     problem: null, taken_here: false, contact_code: null, made_today: 0,
   };
 

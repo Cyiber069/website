@@ -68,7 +68,7 @@ describe('split code requests (no server)', () => {
 
   it('only ever makes a code the customer typed, and parks anything doubtful', () => {
     const base = {
-      settings: DEFAULT_SETTINGS.discounts, request: { wants_code: true, code: 'JAKE20', confidence: 0.95 }, code: 'JAKE20',
+      settings: { ...DEFAULT_SETTINGS.discounts, mode: 'auto' }, request: { wants_code: true, code: 'JAKE20', confidence: 0.95 }, code: 'JAKE20',
       problem: null, taken_here: false, contact_code: null, made_today: 0,
     };
     expect(planCodeRequest({ ...base, in_words: true, doubt: null })).toEqual({ kind: 'create', code: 'JAKE20' });

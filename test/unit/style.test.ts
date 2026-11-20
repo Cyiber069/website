@@ -99,7 +99,10 @@ describe('golden replies from the voice report', () => {
         tone: a.profile, channel: e.channel, customer_emojis: a.emojis, asked_if_bot: !!e.flags?.asked_if_bot,
         serious: isSeriousTopic(e.customer.map((m) => m.body).join(' ')), max_chars: gmail ? 600 : 260, max_sentences: gmail ? 6 : 3,
       });
-      expect(r.parts).toEqual(e.parts);
+      // At most two chat messages: a third is folded into the second, as the sanitizer does.
+      const want = [...e.parts];
+      while (!gmail && want.length > 2) { const tail = want.pop()!; const head = want[want.length - 1]!; want[want.length - 1] = head + (/[.!?]$/.test(head) ? ' ' : '. ') + tail; }
+      expect(r.parts).toEqual(want);
       expect(r.violations).toEqual([]);
       expect(r.flags).toMatchObject({ blocked: null, overflow: false, regen: [] });
     });
@@ -212,7 +215,7 @@ describe('sanitizeReply: mirroring', () => {
   it('adds the capitals a lower case draft left out', () => {
     expect(sanitizeReply('yeah it does. ships tomorrow', ctx(chill))).toBe('Yeah it does. Ships tomorrow');
     expect(sanitizeReply("i think so. i'll check and i can hold one", ctx(chill))).toBe("I think so. I'll check and I can hold one");
-    expect(finalizeParts(['hey broo', 'the 5000w does about 50mph', 'private land only though'], ctx(chill))).toEqual(['Hey broo', 'The 5000w does about 50mph', 'Private land only though']);
+    expect(finalizeParts(['hey broo', 'the 5000w does about 50mph', 'private land only though'], ctx(chill))).toEqual(['Hey broo', 'The 5000w does about 50mph. Private land only though']);
   });
 
   it('keeps capitals for a neutral customer, and full stops for a formal one', () => {
@@ -290,10 +293,10 @@ describe('finalizeParts', () => {
     expect(finalizeParts(['   '], ctx(chill))).toEqual([]);
   });
 
-  it('never sends more than three chat messages, folding the rest into the last', () => {
+  it('never sends more than two chat messages, folding the rest into the last', () => {
     const out = finalizeParts(['hey', 'its in stock', 'ships tomorrow', 'arrives friday', 'tracked'], ctx(chill, { max_sentences: 8 }));
-    expect(out).toHaveLength(3);
-    expect(out).toEqual(['Hey', 'Its in stock', 'Ships tomorrow. Arrives friday. Tracked']);
+    expect(out).toHaveLength(2);
+    expect(out).toEqual(['Hey', 'Its in stock. Ships tomorrow. Arrives friday. Tracked']);
   });
 
   it('sends one message on email', () => {

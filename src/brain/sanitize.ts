@@ -410,7 +410,10 @@ export function sanitizeParts(partsIn: string | string[], optsIn: Partial<Saniti
     if (last && last.part === u.part) { last.s += (last.para !== u.para ? '\n\n' : last.line !== u.line ? '\n' : ' ') + u.s; last.para = u.para; last.line = u.line; } else grouped.push({ ...u });
   }
   parts = grouped.map((g) => g.s);
-  const maxParts = chat ? 3 : 1;
+  const maxParts = chat ? 2 : 1;   // the owner wants 1 or 2 messages per reply
+  // A repeated message is dropped before folding, so it never ends up twice inside one message.
+  const key = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  parts = parts.filter((x, i) => !parts.slice(0, i).some((y) => key(y) === key(x)));
   while (parts.length > maxParts) {
     let tail = parts.pop()!;
     const head = parts[parts.length - 1]!;
@@ -533,7 +536,7 @@ export function styleViolations(parts: string[], o: Partial<SanitizeOptions> = {
     if (/[\u{2018}\u{2019}\u{201C}\u{201D}\u{2026}]/u.test(t)) v.push(`part${i}:smart_punctuation`);
     if (o.channel !== 'gmail' && /\n/.test(raw)) v.push(`part${i}:newline_in_chat_part`);
   });
-  if (parts.length > (o.channel === 'gmail' ? 1 : 3)) v.push('too_many_parts');
+  if (parts.length > (o.channel === 'gmail' ? 1 : 2)) v.push('too_many_parts');
   if (o.max_chars && parts.join(' ').length > o.max_chars) v.push('over_max_chars');
   if (CLAIMS_HUMAN.test(parts.join('\n'))) v.push('claims_human');
   return v;

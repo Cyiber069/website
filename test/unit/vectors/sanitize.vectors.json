@@ -998,7 +998,7 @@
    }
   },
   {
-   "name": "S63 four parts merge to three and every sentence gets a capital",
+   "name": "S63 four parts merge to two and every sentence gets a capital",
    "input": [
     "hey",
     "yeah we do",
@@ -1009,8 +1009,7 @@
    "opts": {},
    "expected": [
     "Hey",
-    "Yeah we do",
-    "Its \u00a3499. Ships tomorrow"
+    "Yeah we do. Its \u00a3499. Ships tomorrow"
    ],
    "flags": {}
   },

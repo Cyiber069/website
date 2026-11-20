@@ -95,7 +95,7 @@ export const DEFAULT_SETTINGS: Settings = {
     ],
   },
   discounts: {
-    mode: 'auto',
+    mode: 'ask',   // the owner makes codes by hand: the agent asks on Urgent
     amount: 20,
     currency: 'GBP',
     applies_to: 'kits, bundles and batteries',

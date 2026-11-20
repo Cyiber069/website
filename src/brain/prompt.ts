@@ -237,7 +237,7 @@ function requestHeader(p: { settings: Settings; channel: Channel; now: number; n
   return [
     `<channel>${p.channel}</channel>`,
     `<now>${londonNow(p.now)}</now>`,
-    `<limits max_chars="${limits.max_chars}" max_sentences="${limits.max_sentences}" max_parts="${p.channel === 'gmail' ? 1 : 3}"/>`,
+    `<limits max_chars="${limits.max_chars}" max_sentences="${limits.max_sentences}" max_parts="${p.channel === 'gmail' ? 1 : 2}"/>`,
     `<notes>\n${p.notes.length ? p.notes.join('\n') : 'none'}\n</notes>`,
     `<tone>${JSON.stringify(p.tone)}</tone>`,
     `<mirror_plan>${JSON.stringify(p.plan)}</mirror_plan>`,

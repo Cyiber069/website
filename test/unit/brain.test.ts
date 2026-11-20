@@ -57,7 +57,7 @@ describe('decide prompt', () => {
     for (const leak of ['how long is delivery', 'Margaret Hughes', 'Jake', 'kb_ship', 'kb_ret', 'Europe/London', '"register"', 'email subject']) expect(sys).not.toContain(leak);
     expect(a.user).toContain('<channel>whatsapp</channel>');
     expect(a.user).toMatch(/<now>\w+day \d{4}-\d{2}-\d{2} \d{2}:\d{2} Europe\/London<\/now>/);
-    expect(a.user).toContain('<limits max_chars="900" max_sentences="10" max_parts="3"/>');
+    expect(a.user).toContain('<limits max_chars="900" max_sentences="10" max_parts="2"/>');
     expect(a.user).toContain('kb_ship');
     expect(a.user).toContain('{"from":"customer","text":"yoooo brooo"}');
     expect(a.user).toContain('first reply in this conversation');
@@ -102,7 +102,7 @@ describe('decide prompt', () => {
     const p = prompt([inMsg('hi')], settings({ extra_rules: 'Never mention competitors.' }));
     expect(p.system[1]!.text).toMatch(/^<owner_rules>[\s\S]*Never mention competitors\.[\s\S]*<\/owner_rules>\n\n<knowledge>/);
     // Limits are numbers in the request, not adjectives.
-    expect(prompt([inMsg('hi')], settings({ max_sentences: 2, max_chars: 140 })).user).toContain('<limits max_chars="140" max_sentences="2" max_parts="3"/>');
+    expect(prompt([inMsg('hi')], settings({ max_sentences: 2, max_chars: 140 })).user).toContain('<limits max_chars="140" max_sentences="2" max_parts="2"/>');
   });
 
   it('carries the rules that matter most', () => {
