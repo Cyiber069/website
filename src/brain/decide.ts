@@ -163,7 +163,9 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
   const fullConversation = renderConversation(heard.history, heard.now);
   let input = recentPart(heard);
   const serious = seriousTopic(input.history);
-  const plan = mirrorPlan(tone, settings.voice, serious);
+  const basePlan = mirrorPlan(tone, settings.voice, serious);
+  // The owner's playbook wants a full answer even to a short question (speed, price, link, next step).
+  const plan = { ...basePlan, char_budget: Math.max(basePlan.char_budget, Math.min(450, lengthLimits(settings.voice, inputIn.channel).max_chars)) };
   const pending = pendingInbound(input.history);
   const lastText = [...pending].reverse().find(hasWords)?.body ?? '';
   const purpose = input.mode === 'playground' ? 'playground' : 'decide';

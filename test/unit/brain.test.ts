@@ -57,7 +57,7 @@ describe('decide prompt', () => {
     for (const leak of ['how long is delivery', 'Margaret Hughes', 'Jake', 'kb_ship', 'kb_ret', 'Europe/London', '"register"', 'email subject']) expect(sys).not.toContain(leak);
     expect(a.user).toContain('<channel>whatsapp</channel>');
     expect(a.user).toMatch(/<now>\w+day \d{4}-\d{2}-\d{2} \d{2}:\d{2} Europe\/London<\/now>/);
-    expect(a.user).toContain('<limits max_chars="260" max_sentences="3" max_parts="3"/>');
+    expect(a.user).toContain('<limits max_chars="900" max_sentences="10" max_parts="3"/>');
     expect(a.user).toContain('kb_ship');
     expect(a.user).toContain('{"from":"customer","text":"yoooo brooo"}');
     expect(a.user).toContain('first reply in this conversation');
@@ -67,7 +67,7 @@ describe('decide prompt', () => {
     const plan = JSON.parse(/<mirror_plan>(.*)<\/mirror_plan>/.exec(a.user)![1]!);
     expect(plan).toMatchObject({ address: 'bro', lowercase: false, serious: false }); // the customer writes lower case, the reply never does
     expect(b.user).toContain('<channel>gmail</channel>');
-    expect(b.user).toContain('<limits max_chars="600" max_sentences="6" max_parts="1"/>');
+    expect(b.user).toContain('<limits max_chars="1600" max_sentences="16" max_parts="1"/>');
     expect(b.user).toContain('email subject: Returns');
     expect(JSON.parse(/<mirror_plan>(.*)<\/mirror_plan>/.exec(b.user)![1]!)).toMatchObject({ address: '', serious: true, end_with_full_stop: true });
     expect(a.user.trimEnd().endsWith("Write the JSON for the next reply to the customer's latest messages.")).toBe(true);
@@ -353,7 +353,7 @@ describe('enforceDecision', () => {
     expect(lie.retry.join(' ')).toMatch(/never say or imply that a person is typing/);
     const waffle = enforceDecision(raw({ parts: ['Great question!', 'I hope this helps!'] }), { ...c2, final: false });
     expect(waffle.retry.join(' ')).toMatch(/stock phrases/);
-    const tooLong = enforceDecision(raw({ parts: ['Yes it is in stock today. It ships tomorrow morning from the UK. It arrives by the end of the week. It comes fully charged in the box. It has a full warranty included.'] }), { ...c2, final: false });
+    const tooLong = enforceDecision(raw({ parts: [Array.from({ length: 12 }, (_, i) => `Fact number ${i + 1} is here.`).join(' ')] }), { ...c2, final: false });
     expect(tooLong.retry.join(' ')).toMatch(/too long/);
     expect(enforceDecision(raw({ parts: ['yes the 72v is in stock'] }), { ...c2, final: false }).retry).toEqual([]);
   });

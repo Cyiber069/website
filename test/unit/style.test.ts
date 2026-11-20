@@ -272,8 +272,11 @@ describe('length limits', () => {
   });
 
   it('gives email more room and keeps its paragraphs', () => {
-    expect(lengthLimits(DEFAULT_SETTINGS.voice, 'whatsapp')).toEqual({ max_chars: 260, max_sentences: 3 });
-    expect(lengthLimits(DEFAULT_SETTINGS.voice, 'gmail')).toEqual({ max_chars: 600, max_sentences: 6 });
+    // The old default (260, 3) cut the playbook's full answers, so it means 900 and 10 (1600 and 16 by email).
+    expect(lengthLimits(DEFAULT_SETTINGS.voice, 'whatsapp')).toEqual({ max_chars: 900, max_sentences: 10 });
+    expect(lengthLimits(DEFAULT_SETTINGS.voice, 'gmail')).toEqual({ max_chars: 1600, max_sentences: 16 });
+    // A length the owner chose is kept.
+    expect(lengthLimits({ ...DEFAULT_SETTINGS.voice, max_chars: 400, max_sentences: 4 }, 'whatsapp')).toEqual({ max_chars: 400, max_sentences: 4 });
     const email = 'Good afternoon Margaret\n\nYes, the 250W kit fits a 700c wheel. Please choose the 700c option at checkout so the rim size matches.\n\nKind regards\nACX Ebikes';
     expect(sanitizeReply(email, ctx(formal, {}, 'gmail'))).toBe(email);
     expect(sanitizeReply('line one\nline two', ctx(plain))).not.toContain('\n');

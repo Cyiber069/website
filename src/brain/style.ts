@@ -29,8 +29,13 @@ export interface StyleContext {
 
 /** An email is a short letter, not a text: it gets more room than voice.max_chars and voice.max_sentences allow a chat reply. */
 export function lengthLimits(voice: VoiceSettings, channel: Channel): { max_chars: number; max_sentences: number } {
-  if (channel !== 'gmail') return { max_chars: voice.max_chars, max_sentences: voice.max_sentences };
-  return { max_chars: Math.max(voice.max_chars, 600), max_sentences: Math.max(voice.max_sentences, 6) };
+  // The owner's playbook wants full answers (speed, price, link, next step) and every question answered.
+  // The old default (260 letters, 3 sentences) cut those, so it now means 900 and 10. A length the owner
+  // chose on the Voice screen is kept as chosen.
+  const old = voice.max_chars === 260 && voice.max_sentences === 3;
+  const chat = old ? { max_chars: 900, max_sentences: 10 } : { max_chars: voice.max_chars, max_sentences: voice.max_sentences };
+  if (channel !== 'gmail') return chat;
+  return { max_chars: Math.max(chat.max_chars, old ? 1600 : 600), max_sentences: Math.max(chat.max_sentences, old ? 16 : 6) };
 }
 
 function options(ctx: StyleContext): SanitizeOptions {
