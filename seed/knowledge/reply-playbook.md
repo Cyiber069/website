@@ -8,7 +8,7 @@ Use these as the pattern for every reply. Swap anything in [square brackets] for
 2. Give 2 to 4 useful facts: speed, price, fit, delivery, what's included.
 3. Say why it's the right pick for THEM if you can.
 4. End with one clear next step: a link, a question, or "send me a pic".
-5. Keep it short. 3 to 6 lines on WhatsApp or TikTok. Never a wall of text.
+5. Give a full answer. A product question gets 4 to 6 lines with the speed, what's included, the price compared with the other options, delivery and the link. A customer who asks several questions gets every one answered. Never a one line reply to a product question.
 6. Match the customer's tone. Casual customer ("bro", "yo") gets casual replies. Formal customer gets formal replies.
 7. Never use dashes. Use commas and full stops.
 8. Sign off "ACX Ebikes" only on long or formal messages. Never a personal name.
@@ -28,7 +28,7 @@ Use these as the pattern for every reply. Swap anything in [square brackets] for
 | 1500W kit | £270 | acxebikes.com/products/acx-1500w-kit-basic |
 | 1500W bundle | £589 | acxebikes.com/products/acx-1500w-bundle |
 | 2000W kit | £290 | acxebikes.com/products/acx-2000w-kit |
-| 2000W bundle (best seller) | £595 | acxebikes.com/products/acx-2000w-bundle |
+| 2000W bundle | £595 | acxebikes.com/products/acx-2000w-bundle |
 | 3000W kit | £380 | acxebikes.com/products/acx-3000w-kit |
 | 3000W bundle | £689 | acxebikes.com/products/acx-3000w-bundle |
 | 5000W kit | £400 | acxebikes.com/products/acx-5000w-kit |
@@ -56,11 +56,13 @@ Kit = no battery. Bundle = kit plus battery and charger.
 
 # 1. Which kit or bundle should I get?
 
-**Q: What's your best bundle?**
-> Our most powerful is the 5000W bundle, around 50 to 60+ mph, from £819. It's built for stealth or C41 style frames with a 150mm back end, not normal mountain bikes.
-> For a normal hardtail, the best all rounder is our 2000W bundle, our best seller. It does around 32 to 38 mph, fits most mountain bikes, and ships from UK stock in about 3 working days. From £595, depending on your screen (SW900 or UKC1) and battery size (20Ah, 25Ah or 30Ah).
-> Here's the link: acxebikes.com/products/acx-2000w-bundle
-> Send me a pic of your bike and I'll tell you which one fits 👍
+**Q: What's your best bundle? / What's your best kit?**
+(Our best kit and our best bundle is always the 5000W. Never call any other kit or bundle our best or our best seller.)
+> Our best bundle is the 5000W bundle 🔥 It's our most powerful setup, around 50 to 60+ mph depending on your weight, battery and hills.
+> It runs on a 72V battery (20Ah, 25Ah or 30Ah) and comes with everything: the 5000W motor wheel, battery and charger, controller, screen (SW900 or UKC1), throttle, pedal assist sensor, brake levers with motor cut off, torque arms and all the wiring. From £819, or £400 for the kit on its own if you already have a 72V battery.
+> It's built for stealth or C41 style frames with a 150mm back end, so it won't fit a normal mountain bike. On a normal hardtail the strongest fit is the 3000W bundle (around 37 to 50 mph, from £689) or the 2000W bundle (around 32 to 38 mph, from £595).
+> Here's the link: acxebikes.com/products/acx-5000w-bundle
+> What bike are you putting it on? Send me a pic and I'll tell you which one fits 👍
 
 **Q: What's your fastest kit?**
 > Our fastest is the 5000W, around 50 to 60+ mph, from £400 as a kit or £819 with the battery. It needs a 150mm back end (stealth or C41 style frame). On a normal hardtail, the fastest that fits is the 3000W, around 37 to 50 mph, from £689 as a bundle.
@@ -71,7 +73,7 @@ Kit = no battery. Bundle = kit plus battery and charger.
 > What bike are you putting it on?
 
 **Q: Should I get the 1500W or the 2000W?**
-> If you can, go 2000W. It's only a little more (from £595 vs £589 as a bundle), it's our best seller, does around 32 to 38 mph vs 28 to 34 mph, and 27.5 and 29 inch ship from UK stock in about 3 working days.
+> If you can, go 2000W. It's only a little more (from £595 vs £589 as a bundle), does around 32 to 38 mph vs 28 to 34 mph, and 27.5 and 29 inch ship from UK stock in about 3 working days.
 > The 1500W is great if you want strong performance without going too fast.
 
 **Q: Is the 1000W enough? / I think 1000W isn't powerful enough**

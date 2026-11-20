@@ -65,10 +65,10 @@ async function seed(env: Env): Promise<void> {
 // Seed notes added after the first release. Each is inserted once, also into a knowledge base that
 // was seeded before it existed, unless a document with the same title is already there. A state
 // flag per note means a note the owner deleted is never put back.
-const LATER_NOTES: (IngestInput & { id: string; flag: string })[] = [
+const LATER_NOTES: (IngestInput & { id: string; flag: string; replace?: boolean })[] = [
   {
     // The owner's reply playbook: speeds, ranges, fitting, delivery, discounts and what to hand over. Pinned: always given in full.
-    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook', title: 'Reply playbook (from the owner)',
+    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v2', replace: true, title: 'Reply playbook (from the owner)',
     content: playbookMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {
@@ -87,8 +87,9 @@ async function addLaterNotes(env: Env): Promise<void> {
   for (const note of LATER_NOTES) {
     const claimed = await run(db, `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING`, `state:${note.flag}`, JSON.stringify({ at: Date.now() }), Date.now());
     if (!claimed) continue;
-    if (await one<{ id: string }>(db, 'SELECT id FROM kb_docs WHERE id = ? OR lower(title) = lower(?) LIMIT 1', note.id, note.title)) continue;
-    const { flag: _flag, ...input } = note;
+    // A note marked replace overwrites its earlier version (same id) once per new flag: a corrected playbook.
+    if (!note.replace && await one<{ id: string }>(db, 'SELECT id FROM kb_docs WHERE id = ? OR lower(title) = lower(?) LIMIT 1', note.id, note.title)) continue;
+    const { flag: _flag, replace: _replace, ...input } = note;
     try {
       await ingestBulk(env, [{ input }]);
     } catch (err) {
