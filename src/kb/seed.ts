@@ -11,6 +11,7 @@ import policiesMd from '../../seed/knowledge/policies.md';
 import productsMd from '../../seed/knowledge/products.md';
 import storeFactsMd from '../../seed/knowledge/store-facts.md';
 import creatorMd from '../../seed/knowledge/creator-sponsorship.md';
+import playbookMd from '../../seed/knowledge/reply-playbook.md';
 import { splitSections } from './chunk';
 import { PRODUCT_PICKER_ID, PRODUCT_PICKER_TITLE, buildProductPicker } from './picker';
 import { type IngestInput, ingestBulk } from './docs';
@@ -65,6 +66,11 @@ async function seed(env: Env): Promise<void> {
 // was seeded before it existed, unless a document with the same title is already there. A state
 // flag per note means a note the owner deleted is never put back.
 const LATER_NOTES: (IngestInput & { id: string; flag: string })[] = [
+  {
+    // The owner's reply playbook: speeds, ranges, fitting, delivery, discounts and what to hand over. Pinned: always given in full.
+    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook', title: 'Reply playbook (from the owner)',
+    content: playbookMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/', pinned: true,
+  },
   {
     id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship', title: 'Creator sponsorship and discount codes',
     content: creatorMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/',
