@@ -43,16 +43,25 @@ Kit = no battery. Bundle = kit plus battery and charger.
 
 ## Speed sheet
 
-| Kit | Voltage | Rough top speed |
-|---|---|---|
-| 250W | 36V | Pedal assist only, gentle everyday riding |
-| 500W | 48V | around 25 mph |
-| 750W | 48V | around 25 to 30 mph |
-| 1000W | 48V | around 28 to 32 mph |
-| 1500W | 52V | around 28 to 34 mph |
-| 2000W | 52V | around 32 to 38 mph |
-| 3000W | 72V | around 37 to 50 mph |
-| 5000W | 72V | around 50 to 60+ mph |
+| Kit | Voltage | Rough top speed | In km/h |
+|---|---|---|---|
+| 250W | 36V | Pedal assist only, gentle everyday riding | assist cuts out at 25 km/h (15.5 mph) |
+| 500W | 48V | around 25 mph | around 40 km/h |
+| 750W | 48V | around 25 to 30 mph | around 40 to 48 km/h |
+| 1000W | 48V | around 28 to 32 mph | around 45 to 51 km/h |
+| 1500W | 52V | around 28 to 34 mph | around 45 to 55 km/h |
+| 2000W | 52V | around 32 to 38 mph | around 51 to 61 km/h |
+| 3000W | 72V | around 37 to 50 mph | around 60 to 80 km/h |
+| 5000W | 72V | around 50 to 60+ mph | around 80 to 97+ km/h |
+
+Customers outside the UK usually think in km/h: give km/h first for them, with mph after. Use the km/h column exactly, never work it out.
+
+## Conversions
+
+- Speed: 1 mph is about 1.6 km/h. Always copy the km/h column above.
+- Range: 1 mile is about 1.6 km. 45 miles is about 72 km, 65 miles about 105 km, 72 miles about 116 km, 108 miles about 174 km, 27 miles about 43 km, 37 miles about 60 km, 41 miles about 66 km, 62 miles about 100 km, 17 miles about 27 km, 24 miles about 39 km, 26 miles about 42 km, 39 miles about 63 km.
+- Battery size: 44.5cm long is about 17.5 inches. 150mm and 135mm are the rear dropout widths.
+- Money: prices on the site are in pounds. The customer's currency comes from their phone number (+353 Ireland, +49 Germany, +33 France and the rest of the euro countries pay in euros, +1 in US dollars, +41 Swiss francs). Give the pound price with "about" the amount in their currency from the exchange rate table the agent is given, and say checkout shows the exact price in their currency.
 
 # 1. Which kit or bundle should I get?
 

@@ -714,7 +714,7 @@ export async function processConversation(env: Env, convId: string, device: Devi
       if (loaded.voice.length) await transcribeForBrain(env, settings, loaded.voice, { deadlineAt, channel: conv!.channel, conversationId: convId });
       for (const v of loaded.voice) if (v.transcript) heardBy.set(v.message_id, v.transcript);
       decision = await decide(env, {
-        channel: conv!.channel, contact_name: contact.display_name || null, subject: conv!.subject,
+        channel: conv!.channel, contact_name: contact.display_name || null, contact_phone: contact.phone ?? null, subject: conv!.subject,
         history, context_notes: notes, now, mode: 'live', media,
         voice: loaded.voice.filter((v) => v.transcript).map((v) => ({ index: v.index, transcript: v.transcript!, seconds: v.meta.seconds ?? null })),
         sales_stage: conv!.sales_stage ?? null,

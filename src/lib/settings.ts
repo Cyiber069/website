@@ -225,7 +225,7 @@ export function migrateBrain(raw: unknown, value: Settings['brain']): boolean {
  * today's database use (the budget guard, src/lib/budget.ts), the knowledge version (src/kb/cache.ts)
  * and the settings revision (below), and what the owner locked (src/lib/locks.ts).
  */
-const BUNDLED_STATE = ['d1_usage', 'kb_version', 'settings_rev', 'locks', 'ai_state'] as const;
+const BUNDLED_STATE = ['d1_usage', 'kb_version', 'settings_rev', 'locks', 'ai_state', 'fx_rates'] as const;
 export type BundledState = (typeof BUNDLED_STATE)[number];
 
 interface Bundle { at: number; value: Settings; state: Partial<Record<BundledState, unknown>>; rev: number }

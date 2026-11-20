@@ -134,7 +134,7 @@ export async function answerUrgentWithNote(env: Env, urgentId: string, note: str
     const history: HistoryMessage[] = rows.map((m) => ({ direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts }));
     if (!history.some((m) => m.direction === 'in')) throw new HttpError(409, 'nothing_to_answer', 'There is no customer message in this chat to answer.');
     const decision = await decide(env, {
-      channel: conv.channel, contact_name: contact.display_name || null, subject: conv.subject,
+      channel: conv.channel, contact_name: contact.display_name || null, contact_phone: contact.phone ?? null, subject: conv.subject,
       history, context_notes: [...kept, guidance, REPLY_NOW_NOTE], now, mode: 'live',
     });
     // The owner already looked at this, so confidence does not hold it back. Anything that is not a

@@ -23,6 +23,7 @@ import { chatSignals, wantsSecondOpinion, type RouteOptions } from './route';
 import { confidentHoldingLine, enforceDecision, hasWords, holdingLine, isShopping, knowledgeQuery, pendingInbound, promptToneNotes, seriousTopic, type EnforceContext } from './rules';
 import { PRODUCT_PICKER_ID } from '../kb';
 import { lengthLimits } from './style';
+import { currencyNote, playbookPrices, storedRates } from './currency';
 import { analyzeTone, mirrorPlan } from './tone';
 
 const NO_KNOWLEDGE: KnowledgeContext = { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
@@ -167,6 +168,7 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
   // The owner's playbook wants a full answer even to a short question (speed, price, link, next step).
   const plan = { ...basePlan, char_budget: Math.max(basePlan.char_budget, Math.min(450, lengthLimits(settings.voice, inputIn.channel).max_chars)) };
   const pending = pendingInbound(input.history);
+  const fx = await storedRates(env.DB).catch(() => null);
   const lastText = [...pending].reverse().find(hasWords)?.body ?? '';
   const purpose = input.mode === 'playground' ? 'playground' : 'decide';
 
@@ -236,6 +238,10 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
       console.error('knowledge lookup failed', err);
       return NO_KNOWLEDGE;
     });
+    // Prices in the customer's currency, from a table built on the playbook's price list, so the model copies
+    // rather than works out the sums and the figure check finds every converted price.
+    const fxNote = currencyNote(input.contact_phone, fx, playbookPrices(knowledge.stable));
+    if (fxNote) notes.push(fxNote);
     const sources = [knowledge.stable, knowledge.retrieved, call.context_notes.join('\n'), call.subject ?? '', fullConversation, seen].join('\n');
     const ctx: EnforceContext = { settings, input: call, tone, sources, customerEmojis: analysis.emojis };
 

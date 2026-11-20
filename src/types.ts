@@ -226,6 +226,8 @@ export interface HistoryMessage {
 export interface DecideInput {
   channel: Channel;
   contact_name: string | null;
+  /** The customer's phone number (E.164) when known: picks the currency prices are shown in (src/brain/currency.ts). */
+  contact_phone?: string | null;
   subject: string | null;
   /** Oldest first, at most 30 messages. The last one is from the customer. */
   history: HistoryMessage[];
