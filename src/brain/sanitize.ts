@@ -431,7 +431,9 @@ export function sanitizeParts(partsIn: string | string[], optsIn: Partial<Saniti
   const masked = parts.map((p) => {
     p = p.replace(new RegExp(`(\\u{E000}([\\u{E100}-\\u{E8FF}])\\u{E001})[.,;:!?]+$`, 'u'), (m: string, ph: string, c: string) => (vault.isLink(c) ? ph : m));   // a link at the end of a message stays the last character
     if (chat && !formal) p = p.replace(/(?<![.])\.$/, '');
-    return properCase(p.trim(), (tone.language ?? 'en') === 'en');   // S13b capitals, while links and codes are still hidden
+    // Currency codes next to an amount are always in capitals: "chf 902" becomes "CHF 902".
+    const codes = p.replace(/\b(chf|eur|usd|gbp|nok|sek|dkk|pln|czk|huf|aud|nzd|cad|zar|aed)\b(?=\s?\d)|(?<=\d\s?)\b(chf|eur|usd|gbp|nok|sek|dkk|pln|czk|huf|aud|nzd|cad|zar|aed)\b/gi, (m) => m.toUpperCase());
+    return properCase(codes.trim(), (tone.language ?? 'en') === 'en');   // S13b capitals, while links and codes are still hidden
   }).filter(Boolean);
   parts = masked.map((p) => vault.show(p));
   if (!parts.length) flags.empty = true;
