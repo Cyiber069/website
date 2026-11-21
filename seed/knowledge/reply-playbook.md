@@ -77,22 +77,22 @@ Customers outside the UK usually think in km/h: give km/h first for them, with m
 > Our fastest is the 5000W, around 50 to 60+ mph, from £400 as a kit or £819 with the battery. It needs a 150mm back end (stealth or C41 style frame). On a normal hardtail, the fastest that fits is the 3000W, around 37 to 50 mph, from £689 as a bundle.
 
 **Q: Is the [X]W bundle good?**
-> Yes, the [X]W is a great pick if you want [use: commuting / big power on a normal MTB / serious speed]. It does around [speed], runs on [voltage], and comes with the battery, charger, controller, screen, throttle, pedal sensor, brake levers, torque arms and all the wiring. From £[price].
+> Yes, the [X]W is a great pick if you want [use: big power on a normal MTB / serious speed / off road fun]. It does around [speed], runs on [voltage], and comes with the battery, charger, controller, screen, throttle, pedal sensor, brake levers, torque arms and all the wiring. From £[price].
 > Link: [link]
 > What bike are you putting it on?
 
 **Q: Should I get the 1500W or the 2000W?**
-> If you can, go 2000W. It's only a little more (from £595 vs £589 as a bundle), does around 32 to 38 mph vs 28 to 34 mph, and 27.5 and 29 inch ship from UK stock in about 3 working days.
+> If you can, go 2000W. It's only a little more (from £595 vs £589 as a bundle), and does around 32 to 38 mph vs 28 to 34 mph.
 > The 1500W is great if you want strong performance without going too fast.
 
 **Q: Is the 1000W enough? / I think 1000W isn't powerful enough**
 > The 1000W is strong, around 28 to 32 mph, and climbs hills well. If you want more punch, the 2000W is the step up, around 32 to 38 mph, from £595 as a bundle, and it still fits a normal mountain bike.
 
 **Q: I have €500 to €600 / £[budget], what can I get?**
-> With that budget you can get a full bundle (kit, battery and charger) ready to ride. The 500W, 750W and 1000W bundles start from £439 (around €505). If you already have a battery, the 2000W kit is £290. Checkout shows the exact price in your currency.
+> With that budget you can get a full bundle (kit, battery and charger) ready to ride. The 500W and 750W bundles start from £439 and the 1000W from £449. If you already have a battery, the 2000W kit is £290. Checkout shows the exact price in your currency.
 
 **Q: Kit or bundle, what's the difference?**
-> The kit is the motor wheel, controller, screen, throttle, pedal sensor, brake levers, torque arms and wiring, with no battery. The bundle is the same plus the battery and charger. If you don't already have a battery, the bundle works out cheaper than buying them separately.
+> The kit is the motor wheel, controller, screen, throttle, pedal sensor, brake levers, torque arms and wiring, with no battery. The bundle is the same plus the battery and charger. If you don't already have a battery, the bundle usually works out cheaper than buying them separately.
 
 # 2. Speed
 
@@ -225,12 +225,12 @@ Customers outside the UK usually think in km/h: give km/h first for them, with m
 # 8. Discounts
 
 **Q: Can I get a discount / discount code?**
-> Our prices are already on sale right now, so what you see on the site is the best price. Discount codes are only for our sponsored riders.
-> (Never create or promise a code. If they push, send to Adrian as DISCOUNT.)
+> Our prices are already on sale right now, so what you see on the site is the best price.
+> (Never say that sponsors, riders or creators get codes. Never create or promise a code. If they push, send to Adrian as DISCOUNT.)
 
 **Q: I want to be a sponsored rider / creator code**
 > Love that 🔥 send me your TikTok or Instagram and I'll pass it to the team.
-> (Send Adrian the account. Only after Adrian says it's done, send: "Your discount code [CODE NAME] is now live! It's £20 off all batteries, kits and bundles only. Make sure to put it in your bio, tag us in all your videos and tag us in your bio 🔥")
+> (Send Adrian the account. Say nothing about codes, discounts or money. The owner makes any code by hand.)
 
 # 9. Refunds, cancellations, complaints (always send to Adrian)
 

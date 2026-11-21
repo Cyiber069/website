@@ -10,8 +10,8 @@ import pagesMd from '../../seed/knowledge/pages.md';
 import policiesMd from '../../seed/knowledge/policies.md';
 import productsMd from '../../seed/knowledge/products.md';
 import storeFactsMd from '../../seed/knowledge/store-facts.md';
-import creatorMd from '../../seed/knowledge/creator-sponsorship.md';
 import playbookMd from '../../seed/knowledge/reply-playbook.md';
+import ownerRulesMd from '../../seed/knowledge/owner-rules.md';
 import { splitSections } from './chunk';
 import { PRODUCT_PICKER_ID, PRODUCT_PICKER_TITLE, buildProductPicker } from './picker';
 import { type IngestInput, ingestBulk } from './docs';
@@ -65,15 +65,26 @@ async function seed(env: Env): Promise<void> {
 // Seed notes added after the first release. Each is inserted once, also into a knowledge base that
 // was seeded before it existed, unless a document with the same title is already there. A state
 // flag per note means a note the owner deleted is never put back.
+// Replaces the old creator note, which explained creator codes as if the agent could tell customers about them.
+const CREATOR_NOTE = `For the team only, never told to customers: the owner makes creator codes by hand.
+Never tell a customer that sponsors, creators, riders or affiliates get discount codes, and never mention codes, commission or money when someone asks to be sponsored.
+When someone asks to be sponsored or for their own code, ask for their TikTok or Instagram and say you will pass it to the team. The shop's code rules hand the request to the owner.
+Never tell anyone a code is live: the owner sends that message.`;
+
 const LATER_NOTES: (IngestInput & { id: string; flag: string; replace?: boolean })[] = [
   {
+    // The owner's rules and the settled contradictions between the playbook and the store. Pinned, source note: wins over everything.
+    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v1', replace: true, title: 'Owner rules and corrections',
+    content: ownerRulesMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'note', source_ref: 'https://acxebikes.com/', pinned: true,
+  },
+  {
     // The owner's reply playbook: speeds, ranges, fitting, delivery, discounts and what to hand over. Pinned: always given in full.
-    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v3', replace: true, title: 'Reply playbook (from the owner)',
+    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v4', replace: true, title: 'Reply playbook (from the owner)',
     content: playbookMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {
-    id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship', title: 'Creator sponsorship and discount codes',
-    content: creatorMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/',
+    id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship_v2', replace: true, title: 'Creator sponsorship and discount codes',
+    content: CREATOR_NOTE, category: 'faq', source: 'note', source_ref: 'https://acxebikes.com/',
   },
   {
     // Given in full to the brain when a customer is shopping (src/brain/decide.ts), so recommendations carry real links.

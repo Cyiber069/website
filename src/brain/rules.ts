@@ -226,6 +226,15 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
     }
   }
 
+  // Never say that sponsors or creators get discount codes (owner rule). The sentence is taken out on
+  // the last pass, and the model is asked to rewrite on the first.
+  if (out.action !== 'ignore' && out.parts.some((x) => sponsorCodeClaim(x))) {
+    if (!final) out.retry.push('never say that sponsors, riders or creators get discount codes, and never mention a sponsorship offer');
+    out.parts = out.parts.map(withoutSponsorCodeClaim).filter((x) => x.trim());
+    out.note = `${out.note} (removed a line saying sponsors get discount codes)`.trim();
+    if (!out.parts.length && out.action === 'reply' && final) escalate('The draft said sponsors get discount codes, which the owner does not allow', 'discount_price');
+  }
+
   // Never sound unsure (owner rule). A reply that says "not sure" or "no idea" becomes a question for
   // the owner with a confident holding line, and the answer is learned through the Urgent flow.
   if (out.action === 'reply' && out.parts.some(soundsUnsure)) {
@@ -328,4 +337,14 @@ function checkSales(d: RawDecision, tone: ToneProfile): RawDecision['sales'] {
   if (!read) return null;
   if (read.stage === 'browsing' && productLink(d.parts.join(' '))) return { ...read, stage: 'interested' };
   return read;
+}
+
+
+// "Codes are only for our sponsored riders", "creators get a discount code" and the like.
+const SPONSOR = String.raw`(?:sponsor(?:ed|s|ship)?|creators?|riders?|affiliates?|influencers?|ambassadors?)`;
+const CODE = String.raw`(?:discount|promo|coupon|creator|affiliate)?\s*codes?|discounts?|% off|£\d+ off`;
+const SPONSOR_CODE = new RegExp(String.raw`\b${SPONSOR}\b[^.!?\n]{0,60}\b(?:${CODE})|\b(?:${CODE})\b[^.!?\n]{0,60}\b${SPONSOR}\b`, 'i');
+export const sponsorCodeClaim = (text: string): boolean => SPONSOR_CODE.test(text);
+export function withoutSponsorCodeClaim(text: string): string {
+  return text.split(/(?<=[.!?])\s+/).filter((x) => !sponsorCodeClaim(x)).join(' ').trim();
 }
