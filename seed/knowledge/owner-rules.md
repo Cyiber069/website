@@ -55,8 +55,7 @@ These rules come from the owner and win over every other knowledge entry, includ
 ## Not settled yet (until the owner answers)
 
 - Do not call any kit above 250W good for commuting.
-- Do not pair the 60V battery with a kit, and do not suggest a spare 72V battery for a 48V or 52V bundle.
-- For the 30Ah battery, ask the frame size or a side on photo and let the team confirm it fits.
+- Do not suggest a spare 72V battery for a 48V or 52V bundle.
 
 ## Answers from the owner (use this wording, swap in what the customer asked)
 
@@ -81,3 +80,21 @@ Use this when a customer asks which bike to buy or build on, or whether their bi
 - 2000W kit and bundle (52V): Carrera Hellcat, Trek Marlin 6 or 7, Giant Talon, GT Avalanche, Rockrider ST 540. Medium or large frame and hydraulic brakes. This is the most common build.
 - 3000W kit and bundle (72V): Carrera Hellcat (large), Trek Marlin (large or XL), Giant Talon (large or XL), Norco Storm (large or XL). A large or XL frame because the 72V battery is bigger. Strong hydraulic brakes and torque arms fitted properly.
 - 5000W kit and bundle (72V): a stealth bomber style frame, a C41 frame or an enduro e bike frame. It does not fit a normal mountain bike: it needs a 150mm rear end, so only these e bike frames.
+
+## Batteries (from the owner)
+
+Battery energy in watt hours, and which kits each voltage is used on:
+- 48V: 20Ah 960 Wh, 25Ah 1,200 Wh, 30Ah 1,440 Wh. Used on the 500W, 750W, 1000W and 1500W.
+- 52V: 20Ah 1,040 Wh, 25Ah 1,300 Wh, 30Ah 1,560 Wh. Used on the 1500W and 2000W.
+- 60V: 20Ah 1,200 Wh, 25Ah 1,500 Wh, 30Ah 1,800 Wh. Only a spare for an existing 60V system: never recommend it for a new kit.
+- 72V: 20Ah 1,440 Wh, 25Ah 1,800 Wh, 30Ah 2,160 Wh. Used on the 3000W and 5000W.
+
+Physical size (confirmed):
+- 72V pack: about 44.5cm long at the base, 26.5cm tall and 9cm wide.
+- Large battery bag: 44.5cm along the bottom, 40cm along the top, 26.5cm high and 9.5cm deep.
+
+Which battery size fits which frame (this wins over any other battery size rule, the playbook included):
+- 20Ah: small and medium frames.
+- 25Ah: medium and large frames. This is the biggest that fits a typical hardtail.
+- 30Ah: XL or stealth frames only. It is too long for a normal frame triangle, so never say the 30Ah fits a large hardtail.
+- A 72V battery is bigger than a 52V or 48V one at the same Ah, so 72V builds need a large or XL frame.
