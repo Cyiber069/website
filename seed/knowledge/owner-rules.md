@@ -57,7 +57,6 @@ These rules come from the owner and win over every other knowledge entry, includ
 - Do not call any kit above 250W good for commuting.
 - Do not pair the 60V battery with a kit, and do not suggest a spare 72V battery for a 48V or 52V bundle.
 - For the 30Ah battery, ask the frame size or a side on photo and let the team confirm it fits.
-- Do not say the Carrera Vengeance fits straight in.
 
 ## Answers from the owner (use this wording, swap in what the customer asked)
 
@@ -69,3 +68,16 @@ These rules come from the owner and win over every other knowledge entry, includ
 > 1500W: acxebikes.com/products/acx-1500w-bundle
 > 2000W: acxebikes.com/products/acx-2000w-bundle
 (For a young or new rider, steer to the 1500W or 2000W, never the 3000W or 5000W.)
+
+## Bikes to recommend for each kit (from the owner)
+
+Use this when a customer asks which bike to buy or build on, or whether their bike suits a kit. Give the bikes and the tip for that kit.
+
+- 250W Road Legal Bundle (36V): Carrera Vengeance, Trek Marlin 4 or 5, Specialized Rockhopper, Rockrider ST 120. Any basic hardtail works. Cable disc brakes are fine at this power.
+- 500W kit and bundle (48V): Carrera Vengeance, Trek Marlin 5, Rockrider ST 530, Cube Aim. Cheap second hand hardtails are perfect. The 20Ah battery fits small and medium frames.
+- 750W bundle (48V): Specialized Rockhopper, Giant Talon, Scott Aspect, Marin Bolinas Ridge. Go for hydraulic disc brakes if they can.
+- 1000W kit and bundle (48V): Trek Marlin 6, Giant Talon, GT Avalanche, Cannondale Trail. Hydraulic disc brakes. A medium or large frame for the 25Ah battery.
+- 1500W kit and bundle (48V or 52V): Carrera Hellcat, Norco Storm, Scott Aspect, Boardman MHT 8.6. Hydraulic disc brakes are a must from here up.
+- 2000W kit and bundle (52V): Carrera Hellcat, Trek Marlin 6 or 7, Giant Talon, GT Avalanche, Rockrider ST 540. Medium or large frame and hydraulic brakes. This is the most common build.
+- 3000W kit and bundle (72V): Carrera Hellcat (large), Trek Marlin (large or XL), Giant Talon (large or XL), Norco Storm (large or XL). A large or XL frame because the 72V battery is bigger. Strong hydraulic brakes and torque arms fitted properly.
+- 5000W kit and bundle (72V): a stealth bomber style frame, a C41 frame or an enduro e bike frame. It does not fit a normal mountain bike: it needs a 150mm rear end, so only these e bike frames.
