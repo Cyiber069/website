@@ -66,24 +66,23 @@ async function seed(env: Env): Promise<void> {
 // was seeded before it existed, unless a document with the same title is already there. A state
 // flag per note means a note the owner deleted is never put back.
 // Replaces the old creator note, which explained creator codes as if the agent could tell customers about them.
-const CREATOR_NOTE = `For the team only, never told to customers: the owner makes creator codes by hand.
-Never tell a customer that sponsors, creators, riders or affiliates get discount codes, and never mention codes, commission or money when someone asks to be sponsored.
-When someone asks to be sponsored or for their own code, ask for their TikTok or Instagram and say you will pass it to the team. The shop's code rules hand the request to the owner.
-Never tell anyone a code is live: the owner sends that message.`;
+const CREATOR_NOTE = `For the team only: the agent makes creator codes itself through the shop's code rules.
+A creator who asks for their own discount code or to be sponsored: ask what they want their code to be (letters and numbers only, 3 to 30, no spaces), and the shop's code rules make it and send the message that it is live. Never tell anyone a code is live yourself.
+Never tell a customer who asks for a discount for themselves that sponsors, creators, riders or affiliates get discount codes, and never offer them a code or a sponsorship.`;
 
 const LATER_NOTES: (IngestInput & { id: string; flag: string; replace?: boolean })[] = [
   {
     // The owner's rules and the settled contradictions between the playbook and the store. Pinned, source note: wins over everything.
-    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v5', replace: true, title: 'Owner rules and corrections',
+    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v6', replace: true, title: 'Owner rules and corrections',
     content: ownerRulesMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'note', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {
     // The owner's reply playbook: speeds, ranges, fitting, delivery, discounts and what to hand over. Pinned: always given in full.
-    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v4', replace: true, title: 'Reply playbook (from the owner)',
+    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v5', replace: true, title: 'Reply playbook (from the owner)',
     content: playbookMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {
-    id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship_v2', replace: true, title: 'Creator sponsorship and discount codes',
+    id: 'seed_creator_sponsorship', flag: 'kb_seed_creator_sponsorship_v3', replace: true, title: 'Creator sponsorship and discount codes',
     content: CREATOR_NOTE, category: 'faq', source: 'note', source_ref: 'https://acxebikes.com/',
   },
   {

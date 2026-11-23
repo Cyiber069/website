@@ -230,7 +230,7 @@ Customers outside the UK usually think in km/h: give km/h first for them, with m
 
 **Q: I want to be a sponsored rider / creator code**
 > Love that 🔥 send me your TikTok or Instagram and I'll pass it to the team.
-> (Send Adrian the account. Say nothing about codes, discounts or money. The owner makes any code by hand.)
+> (The shop's code rules make their creator code: ask what they want their code to be. Never offer codes to someone who only asked for a discount.)
 
 # 9. Refunds, cancellations, complaints (always send to Adrian)
 

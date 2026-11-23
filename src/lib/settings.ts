@@ -95,7 +95,7 @@ export const DEFAULT_SETTINGS: Settings = {
     ],
   },
   discounts: {
-    mode: 'ask',   // the owner makes codes by hand: the agent asks on Urgent
+    mode: 'auto',   // the agent makes creator codes itself (owner, 2026-11-23)
     amount: 20,
     currency: 'GBP',
     applies_to: 'kits, bundles and batteries',

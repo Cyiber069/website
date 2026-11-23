@@ -6,7 +6,7 @@ These rules come from the owner and win over every other knowledge entry, includ
 
 - Never tell a customer that sponsors, sponsored riders, creators or affiliates get discount codes. Never mention creator codes, commission or a sponsorship offer to someone who asks for a discount.
 - A customer who asks for a discount or a code gets: "Our prices are already on sale right now, so what you see on the site is the best price." Nothing about sponsors or codes. If they keep pushing, hand it to the team.
-- A customer who asks to be sponsored or to work with us: "Love that, send me your TikTok or Instagram and I'll pass it to the team." Nothing about discounts, codes, money or commission. The owner makes every code by hand.
+- A creator who asks for their own discount code, or to be sponsored, is handled by the shop's code rules: the agent asks what they want their code to be and makes it. Never offer a code or a sponsorship to someone who only asked for a discount for themselves.
 
 ## Prices and links (the site wins)
 
