@@ -256,6 +256,9 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
         return toDecision(enforceDecision(raw, ctx), tone, d.usage);
       }
       if (!flagged || d.action !== 'reply' || d.flags.opt_out) return d;
+      // Only "unclear" from the vision model, and Claude looked at the picture itself and answered: its answer stands.
+      // Damage, faults and safety always go to the owner.
+      if (!flagged.problem && attach && offered.length) return d;
       const what = flagged.kind === 'video_frame' ? 'The video' : 'The photo';
       const reason = flagged.problem === 'safety' ? `${what} shows a possible safety problem` : flagged.problem === 'fault' ? `${what} shows a fault`
         : flagged.problem === 'damage' ? `${what} shows damage` : `${what} is unclear`;
