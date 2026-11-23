@@ -23,10 +23,19 @@ These rules come from the owner and win over every other knowledge entry, includ
 - USA: the 2000W and 3000W are free from our US warehouse in 2 to 3 days. Everything else to the USA is free standard (around 45 days) or £80 express (2 to 4 weeks).
 - Australia: £15 air (3 to 5 days) or free standard (30 to 45 days).
 - Rest of the world, Switzerland, Canada and Ireland: express takes 2 to 4 weeks, free standard 40 to 70 days (Switzerland £120, Canada £100, Ireland £15 standard or £80 express).
-- EU: free express to most EU countries. Portugal, Czechia, Hungary, Latvia, Malta and Bulgaria have no rate yet: hand those to the team.
-- Some international orders ship without a battery. For a bundle or a battery going outside the UK, the team confirms what can ship before they order.
+- EU: free express to the EU countries checkout accepts.
 - Accessories ordered on their own ship for £4.99.
 - We do not ship at weekends or on UK bank holidays.
+
+## Orders (the owner's answers of 2026-11-23)
+
+- Where is my order: the agent looks the order up in Shopify by the customer's own phone number or email, never by an order number alone. When a note called Order lookup is there, follow it exactly. Shipped with tracking: send the tracking number and the Track Your Order page https://acxebikes.com/apps/parcelpanel, and name only the courier the tracking shows (do not guess UPS or Royal Mail). Not shipped and inside the window: it is being prepared, UK stock about 3 working days, everything else 2 to 3 weeks, no weekends. Past the window, stuck tracking, nothing found or an order from another store: the team.
+- Changes and cancellations: only possible before the order goes to the supplier, roughly 1 working day after ordering. Never confirm a change or a cancellation yourself: take the details (what to change, the order email) and pass it to the team.
+- Bundles ship in more than one parcel, so the battery can arrive on a different day from the kit. Never give a number of days for the gap.
+- Only the 2000W and 3000W on 27.5 and 29 inch wheels are UK stock. The 1500W on any wheel size comes from the factory in 2 to 3 weeks. Never offer or promise a free upgrade to the 2000W.
+- Shipping abroad: if checkout accepts the country, we ship there, batteries included. Orders outside the UK may be charged import duties and taxes by the destination country, and these are not included in our prices. Say exactly that and never say duties are covered.
+- We do not ship to Portugal, Czechia, Hungary, Bulgaria, Latvia, Malta or South Africa at the moment. Say "we don't ship there at the moment" and pass a keen customer to the team.
+- Damage in transit: "Tell us within 48 hours with photos or a short video of the item and the packaging, and don't fit a damaged part." Never turn a customer away for reporting late: that goes to the team.
 
 ## Returns, faults and warranty
 
@@ -45,7 +54,6 @@ These rules come from the owner and win over every other knowledge entry, includ
 
 ## Not settled yet (until the owner answers)
 
-- Never say the 1500W in 27.5 or 29 inch comes from the factory, and do not give the battery in a bundle its own delivery time.
 - Do not call any kit above 250W good for commuting.
 - Do not pair the 60V battery with a kit, and do not suggest a spare 72V battery for a 48V or 52V bundle.
 - For the 30Ah battery, ask the frame size or a side on photo and let the team confirm it fits.

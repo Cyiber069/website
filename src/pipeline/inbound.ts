@@ -5,6 +5,7 @@ import type {
 import { CHANNELS } from '../types';
 import { sha256Hex } from '../lib/crypto';
 import { all, clip, one, parseJson, run, stmt, uid } from '../lib/db';
+import { orderLookupNote } from '../shopify/orders';
 import { logEvent } from '../lib/events';
 import { bad } from '../lib/http';
 import { MEDIA_PER_REPORT, checkMedia, mediaExtras, type MediaItem, type MediaRef } from '../lib/media';
@@ -698,6 +699,14 @@ export async function processConversation(env: Env, convId: string, device: Devi
         return { conversation_id: convId, action: turn.action, reason: turn.reason, jobs: turn.jobs, new_inbound: newInbound, final: true, retry_after_ms: null, jobs_pending: (turn.queued ?? 0) > 0 };
       }
       if (turn.kind === 'note') notes.push(turn.note);
+    }
+
+    // "Where is my order?": look it up in Shopify by the customer's own phone or email (never the number alone).
+    {
+      const asked = unanswered.map((m) => m.body ?? '').join('\n');
+      const typedEmail = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/.exec(history.filter((m) => m.direction === 'in').map((m) => m.body ?? '').join(' '))?.[0] ?? null;
+      const orderNote = await orderLookupNote(env, { text: asked, phone: contact.phone ?? null, email: contact.email ?? typedEmail, now }).catch(() => '');
+      if (orderNote) notes.push(orderNote);
     }
 
     let decision: Decision;
