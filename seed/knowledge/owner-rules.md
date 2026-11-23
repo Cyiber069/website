@@ -58,3 +58,14 @@ These rules come from the owner and win over every other knowledge entry, includ
 - Do not pair the 60V battery with a kit, and do not suggest a spare 72V battery for a 48V or 52V bundle.
 - For the 30Ah battery, ask the frame size or a side on photo and let the team confirm it fits.
 - Do not say the Carrera Vengeance fits straight in.
+
+## Answers from the owner (use this wording, swap in what the customer asked)
+
+**Torque arms and battery bag**
+> Yep, every kit and bundle comes with a set of torque arms in the box, so you don't need to buy them. The £25 torque arm set on the site is just a spare or extra pair. The battery bag isn't included, it's £45 and comes in small or large. You can add it in the cart at checkout.
+
+**A young rider (for example 14) asking about the 2000W or which kit to start on**
+> Yeah the 2000W is a good one to start on, and the 1500W is a touch calmer if you want to ease into it. Both are way easier to handle than the 3000W or 5000W. The 1500W does around 28 to 34 mph and the 2000W around 32 to 38 mph. You can keep the screen on a low level while you get used to it, then turn it up when you're ready. The 1500W bundle starts at £589 and the 2000W at £595.
+> 1500W: acxebikes.com/products/acx-1500w-bundle
+> 2000W: acxebikes.com/products/acx-2000w-bundle
+(For a young or new rider, steer to the 1500W or 2000W, never the 3000W or 5000W.)
