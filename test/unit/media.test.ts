@@ -23,7 +23,7 @@ const NOW = 1_794_700_000_000;
 const inMsg = (body: string, kind: HistoryMessage['kind'] = 'text'): HistoryMessage => ({ direction: 'in', author: 'customer', body, kind, ts: NOW });
 const outMsg = (body: string): HistoryMessage => ({ direction: 'out', author: 'agent', body, kind: 'text', ts: NOW - 60_000 });
 const input = (history: HistoryMessage[], extra: Partial<DecideInput> = {}): DecideInput =>
-  ({ channel: 'whatsapp', contact_name: 'Jake', subject: null, history, context_notes: [], now: NOW, mode: 'live', ...extra });
+  ({ channel: 'tiktok', contact_name: 'Jake', subject: null, history, context_notes: [], now: NOW, mode: 'live', ...extra });
 const photo = (index: number, kind: DecideMedia['kind'] = 'image'): DecideMedia => ({ index, kind, mime: 'image/jpeg', data: JPEG_B64 });
 
 // ---- validation -----------------------------------------------------------------------------------

@@ -183,6 +183,8 @@ export interface RouteOptions {
   claudeOnly?: boolean;
   /** Never Workers AI while a Claude key is saved, not even during a Claude outage (the key test). */
   noStandIn?: boolean;
+  /** WhatsApp (paying customers, owner rule): only Claude ever answers. No free window, no stand in, no forced Workers AI. */
+  noFreeModel?: boolean;
 }
 
 export interface Route {
@@ -225,6 +227,7 @@ export function claudeRoute(b: BrainSettings, opts: RouteOptions = {}): Route {
  */
 export function pickRoute(f: RouteFacts, opts: RouteOptions = {}): Route | null {
   const b = f.brain;
+  if (opts.noFreeModel) return f.claudeKey ? claudeRoute(b, opts) : null;
   if (b.provider === 'workers_ai') return f.workersAi ? workersRoute(b, 'forced_workers') : null;
   if (!f.claudeKey) {
     if (b.provider === 'anthropic') return null;

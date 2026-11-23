@@ -26,7 +26,7 @@ import { wordsOf } from '../brain/prompt';
 const KINDS: MessageKind[] = ['text', 'image', 'voice', 'video', 'sticker', 'document', 'other'];
 const MAX_MESSAGES = 40;
 const MAX_BODY = 4000;
-const HISTORY_FOR_BRAIN = 30;
+const HISTORY_FOR_BRAIN = 200;   // the whole chat (owner, 2026-11-23): a long chat is still read from the start
 
 export interface InboundMessage {
   external_id: string | null;

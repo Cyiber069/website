@@ -108,6 +108,11 @@ describe('the owner AI split', () => {
     // ...but never the key test: a bad key or one with no credit must fail it.
     expect(pickRoute(down, { claudeOnly: true, noStandIn: true })).toMatchObject({ provider: 'anthropic' });
     expect(pickRoute(window, { claudeOnly: true, noStandIn: true })).toMatchObject({ provider: 'anthropic' });
+    // WhatsApp (owner rule): Claude only, in the free window, during an outage, and with Workers AI forced.
+    expect(pickRoute(window, { noFreeModel: true })).toMatchObject({ provider: 'anthropic' });
+    expect(pickRoute(down, { noFreeModel: true })).toMatchObject({ provider: 'anthropic' });
+    expect(pickRoute(facts({ brain: brain({ provider: 'workers_ai' }) }), { noFreeModel: true })).toMatchObject({ provider: 'anthropic' });
+    expect(pickRoute(facts({ claudeKey: false }), { noFreeModel: true })).toBeNull();
     // No key, or the owner forced Workers AI: the test runs on Workers AI as before.
     expect(pickRoute({ ...window, claudeKey: false }, { claudeOnly: true, noStandIn: true })).toMatchObject({ provider: 'workers_ai', why: 'no_key' });
     expect(pickRoute({ ...window, brain: brain({ provider: 'workers_ai' }) }, { claudeOnly: true, noStandIn: true })).toMatchObject({ provider: 'workers_ai', why: 'forced_workers' });
@@ -293,9 +298,9 @@ describe('voice notes for the brain', () => {
 
   it('keeps only the recent part of a long chat, with pictures and voice notes pointing at the right messages', () => {
     const long: HistoryMessage[] = [];
-    for (let i = 0; i < 30; i++) long.push(i % 2 ? outMsg(`answer ${i}`) : inMsg(`question ${i}`));
+    for (let i = 0; i < HISTORY_KEEP + 14; i++) long.push(i % 2 ? outMsg(`answer ${i}`) : inMsg(`question ${i}`));
     long.push(inMsg('[sent a voice note]', 'voice'));
-    const d = recentPart(input(long, { voice: [{ index: 30, transcript: 'hello' }, { index: 2, transcript: 'old' }], media: [{ index: 30, kind: 'image', mime: 'image/jpeg', data: 'x' }] }));
+    const d = recentPart(input(long, { voice: [{ index: long.length - 1, transcript: 'hello' }, { index: 2, transcript: 'old' }], media: [{ index: long.length - 1, kind: 'image', mime: 'image/jpeg', data: 'x' }] }));
     expect(d.history.length).toBe(HISTORY_KEEP);
     expect(d.history.at(-1)!.kind).toBe('voice');
     expect(d.voice).toEqual([{ index: HISTORY_KEEP - 1, transcript: 'hello' }]);

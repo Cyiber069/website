@@ -46,7 +46,7 @@ export async function polishOwnerAnswer(env: Env, input: PolishInput): Promise<P
   });
 
   // Polishing the owner's answers is Claude's job, also in the free Cloudflare window.
-  const choice = await chooseProvider(env, settings, { claudeOnly: true }).catch(() => null);
+  const choice = await chooseProvider(env, settings, { claudeOnly: true, noFreeModel: input.channel === 'whatsapp' }).catch(() => null);
   if (!choice) return asWritten();
   if (choice.provider === 'mock') {
     await recordMockUsage(env, choice, 'polish'); // which model would have polished it (tests)

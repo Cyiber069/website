@@ -20,11 +20,13 @@ const lastUsageId = async () => Number((await sql('SELECT MAX(id) AS id FROM llm
 const decides = async (after: number) => (await sql(`SELECT model, purpose, ok FROM llm_usage WHERE id > ? AND purpose LIKE 'decide%' ORDER BY id`, [after])).data.results as { model: string; purpose: string; ok: number }[];
 /** Every model call since `after` that is not a decide call: purpose and model, oldest first. */
 const others = async (after: number) => (await sql(`SELECT purpose, model FROM llm_usage WHERE id > ? AND purpose NOT LIKE 'decide%' ORDER BY id`, [after])).data.results as { purpose: string; model: string }[];
-const say = (text: string, thread = unique('ai')) => inbound('whatsapp', thread, [{ external_id: unique('m'), direction: 'in', body: text, ts: Date.now() }]);
+const say = (text: string, thread = unique('ai')) => inbound('tiktok', thread, [{ external_id: unique('m'), direction: 'in', body: text, ts: Date.now() }]);
 const WORKERS = '@cf/google/gemma-4-26b-a4b-it';
 
 let firstUsage = 0;
 beforeAll(async () => {
+  // These tests are about the free AI, which WhatsApp never uses: they run on TikTok, answering on its own.
+  await api('/api/settings/channels', { method: 'PUT', body: { tiktok: { mode: 'auto' } } });
   firstUsage = await lastUsageId();
   expect((await api('/api/connections/brain', { method: 'PUT', body: { provider: 'anthropic' } })).status).toBe(200);
   await setAi(null);
@@ -59,7 +61,7 @@ describe('Claude: Haiku with Sonnet for the chats that matter', () => {
     await say('hello there', thread);
     await sql(`UPDATE conversations SET sales_stage = 'interested' WHERE external_thread_id = ?`, [thread]);
     before = await lastUsageId();
-    await inbound('whatsapp', thread, [{ external_id: unique('m'), direction: 'in', body: 'ok cool and does it come in black', ts: Date.now() }]);
+    await inbound('tiktok', thread, [{ external_id: unique('m'), direction: 'in', body: 'ok cool and does it come in black', ts: Date.now() }]);
     expect((await decides(before)).map((d) => d.model)).toEqual(['claude-sonnet-5-5']);
   });
 

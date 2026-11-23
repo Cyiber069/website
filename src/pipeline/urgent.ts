@@ -129,7 +129,7 @@ export async function answerUrgentWithNote(env: Env, urgentId: string, note: str
   let parts: string[] = [];
   if (!wait) {
     const rows = await all<MessageRow>(
-      db, 'SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 30) ORDER BY ts ASC, created_at ASC', conv.id,
+      db, 'SELECT * FROM (SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC, created_at DESC LIMIT 200) ORDER BY ts ASC, created_at ASC', conv.id,
     );
     const history: HistoryMessage[] = rows.map((m) => ({ direction: m.direction, author: m.author, body: m.body, kind: m.kind, ts: m.ts }));
     if (!history.some((m) => m.direction === 'in')) throw new HttpError(409, 'nothing_to_answer', 'There is no customer message in this chat to answer.');

@@ -78,8 +78,8 @@ export function firstBudget(choice: ProviderChoice, deadlineAt: number): CallBud
 }
 
 /** The recent part of the chat is what the brain reads: fewer tokens on every call. */
-export const HISTORY_KEEP = 16;
-const HISTORY_CHARS = 8000;
+export const HISTORY_KEEP = 200;   // the AI reads the whole chat, not just the last few messages
+const HISTORY_CHARS = 60000;   // about 15,000 tokens: well under a cent on Haiku
 /** Workers AI reads only the excerpts that match the question: about this many tokens, this many excerpts. */
 const WORKERS_KB_TOKENS = 3000;
 const WORKERS_TOP_CHUNKS = 8;
@@ -179,7 +179,8 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
   const described = offered.filter((p) => p.description);
   const noWords = pending.length > 0 && !pending.some(hasWords);
   // A live sale or a complaint gets Sonnet in the mix. Pictures nobody described keep Claude on, even in the free window.
-  const route: RouteOptions = { chat: chatSignals({ history: input.history, sales_stage: input.sales_stage }, tone), images: offered.some((p) => !p.description) };
+  // WhatsApp customers are paying customers: only Claude answers them, never the free model (owner rule).
+  const route: RouteOptions = { chat: chatSignals({ history: input.history, sales_stage: input.sales_stage }, tone), images: offered.some((p) => !p.description), noFreeModel: input.channel === 'whatsapp' };
   let choice: ProviderChoice | null = null;
   if (noWords && offered.length && !described.length) choice = await chooseProvider(env, settings, route).catch(() => null);
 
@@ -358,7 +359,18 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
   /** Time for one more whole decision (a second model) inside this request. */
   const timeForAnother = () => !deadlineAt || callTimeout({ deadlineAt, capMs: DECIDE_CAP_MS, minMs: SECOND_MIN_MS }) > 0;
 
-  choice ??= await chooseProvider(env, settings, route);
+  // Claude cannot answer a WhatsApp chat (no key, no credit, an outage): it goes to the owner quietly, never to the free model.
+  const claudeOnlyHandOver = (why: string): Decision => toDecision(enforceDecision({
+    action: 'escalate', parts: [], confidence: 0.9, kb_refs: [], note: `${why}. WhatsApp is only ever answered by Claude, so this went to the owner.`,
+    escalate: { question: lastText || 'A WhatsApp customer is waiting for a reply', reason: `${why}. WhatsApp is never answered by the free AI.`, category: 'other' },
+    flags: { opt_out: false, asked_if_bot: false, needs_human: true },
+  }, { settings, input, tone, sources: '', customerEmojis: analysis.emojis }), tone, null);
+  if (!choice) {
+    try { choice = await chooseProvider(env, settings, route); } catch (err) {
+      if (route.noFreeModel && err instanceof LlmError && err.code === 'no_provider') return claudeOnlyHandOver('Claude is not connected (no API key saved)');
+      throw err;
+    }
+  }
   // In the free window a customer never waits on Workers AI: with too little time left for it and for
   // Claude after it (the code check, photos or a voice note took the rest), Claude answers at once.
   if (inWindow(choice) && deadlineAt && callTimeout(firstBudget(choice, deadlineAt)) === 0) {
@@ -373,7 +385,9 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
     // has free neurons left. Workers AI used up, failing or too slow in the window: Claude at once.
     let next: ProviderChoice | null = null;
     let why = '';
-    if (isAccountError(err) && isClaudeChoice(choice)) {
+    if (isAccountError(err) && isClaudeChoice(choice) && route.noFreeModel) {
+      return claudeOnlyHandOver('Claude could not answer (out of credit or the key was refused)');
+    } else if (isAccountError(err) && isClaudeChoice(choice)) {
       next = await workersFallback(env, settings);
       why = 'Claude could not answer (account), the free Cloudflare AI answered';
     } else if (err instanceof LlmError && inWindow(choice)) {

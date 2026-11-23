@@ -2,7 +2,7 @@
 // loaded into D1 the first time the knowledge base is used. After that the owner's copy in D1 is
 // the truth: editing or deleting a seeded document is never undone by a deploy.
 import type { Env } from '../types';
-import { one, run } from '../lib/db';
+import { all, one, run, stmt } from '../lib/db';
 import { getState, setState } from '../lib/settings';
 import gapsJson from '../../seed/knowledge/gaps.json';
 import indexJson from '../../seed/knowledge/index.json';
@@ -94,18 +94,30 @@ const LATER_NOTES: (IngestInput & { id: string; flag: string; replace?: boolean 
 
 async function addLaterNotes(env: Env): Promise<void> {
   const db = env.DB;
-  for (const note of LATER_NOTES) {
-    const claimed = await run(db, `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING`, `state:${note.flag}`, JSON.stringify({ at: Date.now() }), Date.now());
-    if (!claimed) continue;
-    // A note marked replace overwrites its earlier version (same id) once per new flag: a corrected playbook.
-    if (!note.replace && await one<{ id: string }>(db, 'SELECT id FROM kb_docs WHERE id = ? OR lower(title) = lower(?) LIMIT 1', note.id, note.title)) continue;
-    const { flag: _flag, replace: _replace, ...input } = note;
-    try {
-      await ingestBulk(env, [{ input }]);
-    } catch (err) {
-      await run(db, 'DELETE FROM settings WHERE key = ?', `state:${note.flag}`);
-      throw err;
-    }
+  // A handful of queries for all notes together, whatever their number: this runs on the first request
+  // of every fresh Worker and the free plan allows 50 queries per request.
+  const keys = LATER_NOTES.map((n) => `state:${n.flag}`);
+  const have = new Set((await all<{ key: string }>(db, `SELECT key FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`, ...keys)).map((r) => r.key));
+  const missing = LATER_NOTES.filter((n) => !have.has(`state:${n.flag}`));
+  if (!missing.length) return;
+  // Claim them all in one batch: another isolate doing the same claims none twice.
+  const now = Date.now();
+  const res = await db.batch(missing.map((n) => stmt(db, 'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO NOTHING', `state:${n.flag}`, JSON.stringify({ at: now }), now)));
+  const claimed = missing.filter((_, i) => (res[i]?.meta?.changes ?? 0) > 0);
+  if (!claimed.length) return;
+  // A note marked replace overwrites its earlier version (same id) once per new flag: a corrected playbook.
+  // Any other note is added only when no document with its id or title is there (the owner may have deleted it).
+  const plain = claimed.filter((n) => !n.replace);
+  const taken = plain.length
+    ? await all<{ id: string; t: string }>(db, `SELECT id, lower(title) AS t FROM kb_docs WHERE id IN (${plain.map(() => '?').join(', ')}) OR lower(title) IN (${plain.map(() => 'lower(?)').join(', ')})`, ...plain.map((n) => n.id), ...plain.map((n) => n.title))
+    : [];
+  const todo = claimed.filter((n) => n.replace || !taken.some((d) => d.id === n.id || d.t === n.title.toLowerCase()));
+  if (!todo.length) return;
+  try {
+    await ingestBulk(env, todo.map(({ flag: _flag, replace: _replace, ...input }) => ({ input })));
+  } catch (err) {
+    await db.batch(todo.map((n) => stmt(db, 'DELETE FROM settings WHERE key = ?', `state:${n.flag}`))).catch(() => undefined);
+    throw err;
   }
 }
 

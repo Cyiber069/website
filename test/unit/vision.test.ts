@@ -26,7 +26,7 @@ const NOW = 1_794_700_000_000;
 const inMsg = (body: string, kind: HistoryMessage['kind'] = 'text'): HistoryMessage => ({ direction: 'in', author: 'customer', body, kind, ts: NOW });
 const outMsg = (body: string): HistoryMessage => ({ direction: 'out', author: 'agent', body, kind: 'text', ts: NOW - 60_000 });
 const input = (history: HistoryMessage[], extra: Partial<DecideInput> = {}): DecideInput =>
-  ({ channel: 'whatsapp', contact_name: 'Jake', subject: null, history, context_notes: [], now: NOW, mode: 'live', ...extra });
+  ({ channel: 'tiktok', contact_name: 'Jake', subject: null, history, context_notes: [], now: NOW, mode: 'live', ...extra });
 const DESC = 'A black mountain bike with 26 inch wheels. A label reads ORDER 1042.';
 const described = (index: number, extra: Partial<DecideMedia> = {}): DecideMedia => ({ index, kind: 'image', mime: 'image/jpeg', data: JPEG_B64, description: DESC, via: 'image', unclear: false, problem: 'none', ...extra });
 

@@ -229,7 +229,7 @@ export interface DecideInput {
   /** The customer's phone number (E.164) when known: picks the currency prices are shown in (src/brain/currency.ts). */
   contact_phone?: string | null;
   subject: string | null;
-  /** Oldest first, at most 30 messages. The last one is from the customer. */
+  /** Oldest first, at most 200 messages (the whole chat). The last one is from the customer. */
   history: HistoryMessage[];
   /** Short facts about this conversation, for example a checkout reminder that was sent. */
   context_notes: string[];
