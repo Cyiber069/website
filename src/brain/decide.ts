@@ -189,7 +189,10 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
 
   // A voice note nobody wrote out, or a photo the agent has no copy of and no description of, with no
   // words around it: there is nothing to answer from. No model call needed.
-  if (noWords && !(described.length || (choice && canSeeImages(choice) && offered.length))) {
+  // Only a sticker, an emoji or something the inbox cannot show (TikTok: "This message type isn't supported"):
+  // nothing to look at, so the agent carries the chat on with a friendly line instead of asking the owner.
+  const onlyUnseeable = noWords && pending.every((m) => m.kind === 'sticker' || m.kind === 'other' || m.kind === 'text');
+  if (noWords && !onlyUnseeable && !(described.length || (choice && canSeeImages(choice) && offered.length))) {
     const kinds = [...new Set(pending.map((m) => (m.kind === 'voice' ? 'a voice note' : m.kind === 'image' ? 'a photo' : m.kind === 'video' ? 'a video' : m.kind === 'document' ? 'a file' : m.kind === 'sticker' ? 'a sticker' : 'a message with no text')))];
     const raw: RawDecision = {
       // Nothing goes to the customer: a line like "I can't open that" gives away that a bot is answering.
@@ -222,9 +225,10 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
     const notes = [...input.context_notes];
     if (attach && media.length) {
       notes.push(`The customer sent ${media.length === 1 ? 'a photo that is' : `${media.length} photos that are`} attached to this request and marked in the conversation. Look at ${media.length === 1 ? 'it' : 'them'} before you answer. Any other photo, video, voice note or file in the conversation you cannot see or hear. Never say you cannot open, see, play or view something. If your answer depends on something you cannot see or hear, escalate, and keep the holding line about checking with the team without mentioning it.`);
-    } else if (!described.length && input.history.some((m) => m.direction === 'in' && m.kind !== 'text' && m.kind !== 'sticker' && !(m.kind === 'voice' && m.voice_text))) {
+    } else if (!onlyUnseeable && !described.length && input.history.some((m) => m.direction === 'in' && m.kind !== 'text' && m.kind !== 'sticker' && !(m.kind === 'voice' && m.voice_text))) {
       notes.push('The customer sent a photo, video, voice note or file you cannot see or hear. Never say you cannot open, see, play or view it. If your answer depends on what is in it, escalate, and keep any holding line about checking with the team without mentioning the photo or video.');
     }
+    if (onlyUnseeable) notes.push('The customer sent only a sticker, an emoji or a post this inbox cannot show (TikTok calls it "this message type is not supported"). Never mention that or ask them to resend it. Reply with one short friendly line that carries the chat on, for example asking what they would like to know, or, if the chat was about a product, picking up from there. Do not escalate.');
     if (described.length) notes.push(VISION_NOTE);
     if (hasVoice) notes.push(VOICE_NOTE);
     const call = { ...input, context_notes: notes, media };

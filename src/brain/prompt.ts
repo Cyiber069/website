@@ -135,8 +135,11 @@ export function decideInstructions(settings: Settings): string {
  * The words that came with a message. For a photo or voice note this is the caption, without the
  * "[sent a photo]" stand in the pipeline stores when there was none.
  */
+/** TikTok's own words for a sticker, a shared post or anything its web inbox cannot show. Not the customer's words. */
+export const UNSUPPORTED_PLACEHOLDER = /\[?\s*this message type (?:is not|isn'?t|is un)\s*supported[^.\]]*[.\]]?|download (?:the )?tiktok app to view (?:this|the) message\.?/gi;
+
 export function wordsOf(m: HistoryMessage): string {
-  const body = m.body.trim();
+  const body = m.body.replace(UNSUPPORTED_PLACEHOLDER, '').trim();
   return m.kind === 'text' ? body : body.replace(/^\[sent [^\]]*\]$/i, '').trim();
 }
 

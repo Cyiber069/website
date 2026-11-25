@@ -59,3 +59,12 @@ describe('a converted price is not an invented figure', () => {
     expect(withoutConversions(['856'], 'about €856', '£719.00', null)).toEqual(['856']);
   });
 });
+
+import { wordsOf } from '../../src/brain/prompt';
+describe("TikTok's placeholder is not the customer's words", () => {
+  it('strips it', () => {
+    expect(wordsOf({ direction: 'in', author: 'customer', body: "This message type isn't supported. Download TikTok app to view this message.", kind: 'text', ts: 0 } as any)).toBe('');
+    expect(wordsOf({ direction: 'in', author: 'customer', body: '[this message type is not supported]', kind: 'other', ts: 0 } as any)).toBe('');
+    expect(wordsOf({ direction: 'in', author: 'customer', body: 'how fast is the 2000w', kind: 'text', ts: 0 } as any)).toBe('how fast is the 2000w');
+  });
+});

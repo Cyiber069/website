@@ -306,6 +306,8 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
   let pointer = 0;
   let newInbound = 0;
   let takeover = false;
+  /** The newest message the owner wrote by hand in this report (from the phone or the app), when there is one. */
+  let ownerWroteAt = 0;
   let lastTs = storedSeq.length ? storedSeq[storedSeq.length - 1]!.ts : 0;
   let lastInboundAt: number | null = null;
   // Written in one batch below: a first look at a long chat is up to 40 rows, and the free plan allows 50 queries per request.
@@ -368,6 +370,7 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
       author = ours.has(key) ? 'agent' : 'owner';
       status = 'sent';
       if (author === 'owner' && !created && (m.ts === null || m.ts > now - settings.pacing.human_takeover_minutes * MIN)) takeover = true;
+      if (author === 'owner' && !created) ownerWroteAt = Math.max(ownerWroteAt, m.ts ?? now);
     } else {
       const isHistory = (created && i < tailStart) || (m.ts !== null && m.ts < tooOld);
       if (isHistory) status = 'history';
@@ -399,6 +402,15 @@ export async function storeInbound(env: Env, p: InboundPayload, settings: Settin
        WHERE id = ?`,
       preview, last.direction, lastInboundAt, newInbound > 0 || takeover ? now : conv.updated_at, newInbound, now, key, conv.id,
     );
+  }
+  // The owner answered this customer by hand (in the app, without the dashboard): the Urgent items asked
+  // before that answer are done, so nobody answers the same thing twice. Their drafts go too.
+  if (ownerWroteAt) {
+    const cleared = await run(db, `UPDATE urgent SET status = 'dismissed', answered_at = ?, owner_answer = COALESCE(owner_answer, 'You answered this in the chat yourself') WHERE conversation_id = ? AND status = 'open' AND created_at <= ?`, now, conv.id, ownerWroteAt);
+    if (cleared) {
+      await cancelAgentJobs(db, conv.id, 'you answered in the chat yourself');
+      await logEvent(db, { type: 'urgent_cleared', channel: p.channel, conversation_id: conv.id, message: `You answered ${contact.display_name || 'a customer'} yourself, so ${cleared === 1 ? 'their Urgent item was' : `their ${cleared} Urgent items were`} cleared.` });
+    }
   }
   if (takeover) {
     const until = now + settings.pacing.human_takeover_minutes * MIN;
