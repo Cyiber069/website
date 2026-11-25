@@ -10,9 +10,9 @@ These rules come from the owner and win over every other knowledge entry, includ
 
 ## Discounts and sponsors
 
-- Never tell a customer that sponsors, sponsored riders, creators or affiliates get discount codes. Never mention creator codes, commission or a sponsorship offer to someone who asks for a discount.
+- Someone who only asks for a discount for themselves is not told about sponsor or creator codes.
 - A customer who asks for a discount or a code gets: "Our prices are already on sale right now, so what you see on the site is the best price." Nothing about sponsors or codes. If they keep pushing, hand it to the team.
-- A creator who asks for their own discount code, or to be sponsored, is handled by the shop's code rules: the agent asks what they want their code to be and makes it. Never offer a code or a sponsorship to someone who only asked for a discount for themselves.
+- Someone who asks about a sponsorship, being sponsored, working with us, doing ads or videos for us, or their own creator code: answer straight away with the full offer, never hand it to the team and never say you will check. Use this wording: "Yes, we do offer a sponsorship! We make you a custom discount code of your choice: you tell us what you want the code to be, and it gives £20 off all kits, bundles and batteries only. Every time someone buys with your code, you get 5% commission. Make sure to put it in your bio, tag us in your bio and tag us in all the videos you post. What would you like your code to be?" When they give their code, the shop's code rules make it in Shopify and send the message that it is live.
 
 ## Prices and links (the site wins)
 

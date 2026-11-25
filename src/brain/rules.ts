@@ -231,7 +231,8 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
   // Never say that sponsors or creators get discount codes (owner rule). The sentence is taken out on
   // the last pass, and the model is asked to rewrite on the first.
   // A creator asking for their own code or to be sponsored is the code flow: the agent may talk about their code then.
-  const creatorAsked = /\b(sponsor|creator|affiliate|influencer|ambassador|my (own )?code|code for my|partner(ship)?)\b/i.test(lastText);
+  const creatorAsked = /\b(sponsor\w*|creators?|affiliates?|influencers?|ambassadors?|my (own )?code|code for my|partner\w*|collab\w*|(do|make|film|post) (some )?(ads|videos|content|clips) for you|promote (you|your))\b/i
+    .test(input.history.filter((m) => m.direction === 'in').slice(-4).map((m) => m.body).join(' '));
   if (!creatorAsked && out.action !== 'ignore' && out.parts.some((x) => sponsorCodeClaim(x))) {
     if (!final) out.retry.push('never say that sponsors, riders or creators get discount codes, and never mention a sponsorship offer');
     out.parts = out.parts.map(withoutSponsorCodeClaim).filter((x) => x.trim());

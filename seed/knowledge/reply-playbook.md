@@ -226,11 +226,11 @@ Customers outside the UK usually think in km/h: give km/h first for them, with m
 
 **Q: Can I get a discount / discount code?**
 > Our prices are already on sale right now, so what you see on the site is the best price.
-> (Never say that sponsors, riders or creators get codes. Never create or promise a code. If they push, send to Adrian as DISCOUNT.)
+> (Do not bring up sponsor codes here: this customer asked for a discount for themselves. Never create or promise a code. If they push, send to Adrian as DISCOUNT.)
 
 **Q: I want to be a sponsored rider / creator code**
-> Love that 🔥 send me your TikTok or Instagram and I'll pass it to the team.
-> (The shop's code rules make their creator code: ask what they want their code to be. Never offer codes to someone who only asked for a discount.)
+> Yes, we do offer a sponsorship! We make you a custom discount code of your choice: you tell us what you want the code to be, and it gives £20 off all kits, bundles and batteries only. Every time someone buys with your code, you get 5% commission. Make sure to put it in your bio, tag us in your bio and tag us in all the videos you post. What would you like your code to be? 🔥
+> (Answer this straight away, never pass it to the team. Only someone who asks about a sponsorship or their own code gets this.)
 
 # 9. Refunds, cancellations, complaints (always send to Adrian)
 

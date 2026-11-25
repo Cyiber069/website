@@ -42,7 +42,7 @@ describe('sales playbook in the prompt', () => {
     expect(text).toMatch(/Never more than one extra/);
     expect(text).toMatch(/No made up urgency, no stock levels/);
     expect(text).toMatch(/If the customer is angry, complaining or has a problem with an order, do not sell at all/);
-    expect(text).toMatch(/Creator, sponsorship and discount code requests are handled by the shop's code rules/);
+    expect(text).toMatch(/asks about a sponsorship, working with us or their own creator code gets the sponsorship offer/);
     // The rules that were there before are all still there.
     expect(text).toMatch(/You are not a person and you never say or suggest that you are/);
     expect(text).toMatch(/Escalating is a normal and correct result/);

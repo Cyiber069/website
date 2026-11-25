@@ -366,8 +366,9 @@ describe('agent makes discount codes', () => {
     const doc = (await api('/api/kb')).data.docs.find((d: any) => d.title === 'Creator sponsorship and discount codes');
     expect(doc).toMatchObject({ source: 'note', category: 'faq', enabled: true });
     const full = (await api(`/api/kb/${doc.id}`)).data.doc.content;
-    expect(full).toContain('Never tell a customer who asks for a discount for themselves that sponsors');
-    expect(full).not.toContain('£20 off');
+    expect(full).toContain('we do offer a sponsorship');
+    expect(full).toContain('5% commission');
+    expect(full).toContain('never hand it to the team');
     expect(full).not.toMatch(/[–—]/);
     const rules = (await api('/api/kb')).data.docs.find((d: any) => d.title === 'Owner rules and corrections');
     expect(rules).toMatchObject({ source: 'note', pinned: true, enabled: true });
