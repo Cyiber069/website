@@ -167,14 +167,16 @@ describe('point 4: the shop’s account per channel', () => {
     expect(mainLearns('gmail', 'sam@acx.example', null, s, true)).toBe('sam@acx.example');
   });
 
-  it('an account the server cannot read never claims or takes a lane over, except the main laptop', () => {
+  it('an account the server cannot read answers only while nobody else does (owner, 2026-11-25)', () => {
     const unknown = { ...ready, account: '' };
-    // Not the main laptop: never, whatever the one answering does.
-    expect(elect(input({ self: unknown, row: null, leader: null }))).toEqual({ role: 'unconfirmed', action: null });
-    expect(elect(input({ self: unknown, leader: { ...fine, last_seen_at: NOW - 3600_000 } }))).toEqual({ role: 'unconfirmed', action: null });
-    expect(elect(input({ me: 'dev_a', self: unknown, leader: null }))).toEqual({ role: 'unconfirmed', action: { kind: 'vacate', reason: 'unconfirmed' } });
-    // A readable account while the shop's is not known yet: not confirmed either.
-    expect(elect(input({ shop: '', row: null, leader: null }))).toEqual({ role: 'unconfirmed', action: null });
+    // Nobody answers, or the one answering is gone: it answers rather than leave customers waiting.
+    expect(elect(input({ self: unknown, row: null, leader: null }))).toMatchObject({ role: 'active', action: { kind: 'claim' } });
+    expect(elect(input({ self: unknown, leader: { ...fine, last_seen_at: NOW - 3600_000 } }))).toMatchObject({ role: 'active', action: { kind: 'takeover', reason: 'offline' } });
+    expect(elect(input({ me: 'dev_a', self: unknown, leader: null }))).toEqual({ role: 'active', action: null });
+    // Another laptop answers and is fine: it stays out.
+    expect(elect(input({ self: unknown }))).toEqual({ role: 'unconfirmed', action: null });
+    // A readable account while the shop's is not known yet: the same.
+    expect(elect(input({ shop: '', row: null, leader: null }))).toMatchObject({ role: 'active', action: { kind: 'claim' } });
     // The main laptop may answer with an account it cannot read (an older build).
     expect(elect(input({ main: true, self: unknown, row: null, leader: null }))).toMatchObject({ role: 'active', action: { kind: 'claim' } });
     expect(elect(input({ main: true, me: 'dev_a', self: unknown, leader: null }))).toEqual({ role: 'active', action: null });
@@ -256,7 +258,7 @@ describe('elect: one laptop answers each lane', () => {
     expect(elect(input({ row: row({ device_id: '' }), leader: null }))).toMatchObject({ role: 'active', action: { kind: 'claim' } });
     // The main laptop claims before the shop's account is known (its account becomes the shop's); another laptop does not.
     expect(elect(input({ main: true, row: null, leader: null, shop: '' }))).toEqual({ role: 'active', action: { kind: 'claim', reason: 'claim', account: WA } });
-    expect(elect(input({ row: null, leader: null, shop: '' }))).toEqual({ role: 'unconfirmed', action: null });
+    expect(elect(input({ row: null, leader: null, shop: '' }))).toMatchObject({ role: 'active', action: { kind: 'claim' } });
     // The laptop that answers keeps it with no write.
     expect(elect(input({ me: 'dev_a', leader: null }))).toEqual({ role: 'active', action: null });
   });

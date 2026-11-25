@@ -365,39 +365,23 @@ describe('point 4: the shop’s account per channel', () => {
     expect(ev).toBe('Sam’s laptop is the main laptop now.');
   });
 
-  it('an account the server cannot read never takes a lane from the main laptop; the main laptop may answer with one', async () => {
+  it('an account the server cannot read stays out while the main laptop answers, and answers when nobody else does', async () => {
     await reset();
     // Adrian's laptop runs 0.5.2: it cannot say which WhatsApp number or TikTok account it is on.
     const unknown = all3({ whatsapp: ready(''), tiktok: ready('') });
     const b = await syncAs(B, unknown, { version: '0.5.2' });
     expect(roles(b)).toMatchObject({ 'whatsapp:inbox': 'unconfirmed', 'tiktok:inbox': 'unconfirmed', 'gmail:inbox': 'standby' });
     expect(deviceOf(await people(), 'Adrian').channels.whatsapp.role).toBe('unconfirmed');
-    // Sam's laptop is offline: still no takeover, nor a claim once nobody answers.
+    // Sam's laptop goes offline: nobody else answers WhatsApp or TikTok, so Adrian's laptop takes them over
+    // rather than leave customers waiting (owner, 2026-11-25), and answers what it reads.
     await age(A.id, 5 * MIN);
-    expect(roles(await syncAs(B, unknown, { version: '0.5.2' }))).toMatchObject({ 'whatsapp:inbox': 'unconfirmed', 'tiktok:inbox': 'unconfirmed', 'gmail:inbox': 'active' });
-    expect((await leaders())['whatsapp:inbox'].device_id).toBe(A.id);
-    await sql(`UPDATE lane_leaders SET device_id = '' WHERE lane IN ('whatsapp:inbox', 'tiktok:inbox')`);
-    expect(roles(await syncAs(B, unknown, { version: '0.5.2' }))['whatsapp:inbox']).toBe('unconfirmed');
-    expect((await leaders())['whatsapp:inbox'].device_id).toBe('');
-    // 0.5.2 reads every chat it has open and marks it read, whatever it was told. With no laptop online that
-    // could answer, a chat it read is kept, or the message would be lost. It never answers: no reply goes back.
+    expect(roles(await syncAs(B, unknown, { version: '0.5.2' }))).toMatchObject({ 'whatsapp:inbox': 'active', 'tiktok:inbox': 'active', 'gmail:inbox': 'active' });
+    expect((await leaders())['whatsapp:inbox'].device_id).toBe(B.id);
     const t = wa();
-    const kept = await inboundAs(B, t, [{ external_id: 'u1', direction: 'in', body: 'hello?' }]);
-    expect(kept).toMatchObject({ action: 'reply', jobs: [] });
-    expect(kept.conversation_id).toBeTruthy();
-    // The main laptop on 0.5.2 cannot read its own number either: it answers all the same, and sends that reply.
-    await age(A.id, 0);
-    const a = await syncAs(A, unknown, { version: '0.5.2' });
-    expect(roles(a)['whatsapp:inbox']).toBe('active');
-    expect((a.data.jobs as any[]).map((j) => j.target.thread_external_id)).toEqual([t]);
-    for (const j of a.data.jobs) await resultAs(A, j.id, { status: 'sent' });
-    // Now the main laptop is online on the shop's number: Adrian's report is refused (Sam's reads that chat itself).
-    const t2 = wa();
-    expect(await inboundAs(B, t2, [{ external_id: 'u2', direction: 'in', body: 'anyone?' }])).toMatchObject({ action: 'none', reason: 'unconfirmed', conversation_id: null });
-    expect((await sql('SELECT COUNT(*) AS n FROM conversations WHERE external_thread_id = ?', [t2])).data.results[0].n).toBe(0);
-    const d = await inboundAs(A, t2, [{ external_id: 'u2', direction: 'in', body: 'anyone?' }]);
-    expect(d.conversation_id).toBeTruthy();
-    for (const j of d.jobs ?? []) await resultAs(A, j.id, { status: 'sent' });
+    const answered = await inboundAs(B, t, [{ external_id: 'u1', direction: 'in', body: 'hello?' }]);
+    expect(answered).toMatchObject({ action: 'reply' });
+    expect(answered.jobs).toHaveLength(1);
+    for (const j of answered.jobs) await resultAs(B, j.id, { status: 'sent' });
     await reset();
   });
 });
@@ -638,20 +622,16 @@ describe('the main laptop is one that checks in, and pairing order never moves t
       await api('/api/test/cron', { as: 'public', body: {} });
       expect(JSON.parse((await sql(`SELECT value FROM settings WHERE key = 'state:offline_alerted'`)).data.results[0].value)).toBe(false);
 
-      // The owner makes the old row the main laptop (it is offline). Sam's laptop cannot show its number, so it
-      // stops answering WhatsApp, but a chat it reads is not lost: it is kept, and the reply waits for the main laptop.
+      // The owner makes the old row the main laptop (it is offline). Sam's laptop cannot show its number, but
+      // nobody else answers WhatsApp, so it keeps answering: customers are never left waiting (owner, 2026-11-25).
       await api('/api/people/main', { method: 'PUT', body: { device_id: OLD } });
-      expect(roles(await syncAs(A, unknown, { version: '0.5.2' }))['whatsapp:inbox']).toBe('unconfirmed');
+      expect(roles(await syncAs(A, unknown, { version: '0.5.2' }))['whatsapp:inbox']).toBe('active');
       const t2 = wa();
       const kept = await inboundAs(A, t2, [{ external_id: 'm2', direction: 'in', body: 'hello? do you have the 750w in stock' }]);
-      expect(kept).toMatchObject({ action: 'reply', jobs: [], final: true });
-      expect(kept.conversation_id).toBeTruthy();
-      // Sam's laptop is the main one again: it answers and sends that reply.
+      expect(kept).toMatchObject({ action: 'reply', final: true });
+      expect(kept.jobs).toHaveLength(1);
+      for (const j of kept.jobs) await resultAs(A, j.id, { status: 'sent' });
       await api('/api/people/main', { method: 'PUT', body: { device_id: A.id } });
-      const back = await syncAs(A, unknown, { version: '0.5.2' });
-      expect(roles(back)['whatsapp:inbox']).toBe('active');
-      expect((back.data.jobs as any[]).map((j) => j.target.thread_external_id)).toEqual([t2]);
-      for (const j of back.data.jobs) await resultAs(A, j.id, { status: 'sent' });
     } finally {
       await sql('DELETE FROM devices WHERE id = ?', [OLD]);
       await api('/api/people/main', { method: 'PUT', body: { device_id: A.id } });

@@ -301,9 +301,10 @@ export async function laneInfo(db: D1Database, ch: Channel, deviceId: string, gm
      SELECT (SELECT device_id FROM l) AS leader, (SELECT handover_at FROM l) AS handover_at, (SELECT account FROM l) AS account, (SELECT id FROM m) AS main,
        EXISTS (SELECT 1 FROM devices d INDEXED BY devices_live_seen, m, s WHERE d.revoked_at IS NULL AND d.last_seen_at > ?3 AND d.id != ?4 AND json_valid(d.status)
          AND COALESCE(json_extract(d.status, '$.paused_locally'), 0) != 1
+         AND json_extract(d.status, ?6) = 'ready'
          AND ((d.id = m.id AND (s.shop = '' OR COALESCE(json_extract(d.status, ?5), '') IN ('', s.shop)))
            OR (s.shop != '' AND json_extract(d.status, ?5) = s.shop))) AS answer_online`,
-    laneOf(ch), ch === 'gmail' ? normAccount('gmail', gmailSet) : '', onlineSince, deviceId, `$.channels.${ch}.account`);
+    laneOf(ch), ch === 'gmail' ? normAccount('gmail', gmailSet) : '', onlineSince, deviceId, `$.channels.${ch}.account`, `$.channels.${ch}.state`);
   return {
     leader: row?.leader ?? '', handover_at: Number(row?.handover_at ?? 0) || 0, account: row?.account ?? '', main: row?.main ?? '',
     answer_online: Number(row?.answer_online ?? 0) === 1,
@@ -330,7 +331,7 @@ export interface InboundGate { store: boolean; inline: boolean; reason: '' | 'ot
 export function inboundGate(deviceId: string, account: string, shop: string, info: LaneInfo, followsLanes = true): InboundGate {
   const fit = accountFit(account, shop);
   if (fit === 'other') return { store: false, inline: false, reason: 'other_account' };
-  if (fit === 'unknown' && info.main !== deviceId) {
+  if (fit === 'unknown' && info.main !== deviceId && info.leader !== deviceId) {
     if (!followsLanes && (!shop || !info.answer_online)) return { store: true, inline: false, reason: '' };
     return { store: false, inline: false, reason: 'unconfirmed' };
   }
@@ -425,8 +426,10 @@ export function elect(i: ElectInput): ElectOutput {
   const iLead = Boolean(row && row.device_id === me);
   const fit = accountFit(self.account, shop);
   if (fit === 'other') return { role: 'other_account', action: iLead ? { kind: 'vacate', reason: 'other_account' } : null };
-  // Not the main laptop, and its account (or the shop's) cannot be told: it never answers.
-  if (fit === 'unknown' && !i.main) return { role: 'unconfirmed', action: iLead ? { kind: 'vacate', reason: 'unconfirmed' } : null };
+  // Not the main laptop, and its account (or the shop's) cannot be told (an old extension): it answers only
+  // while nobody else does, since a customer left unanswered costs more (owner, 2026-11-25). It stands by
+  // as soon as a laptop that answers is fine, and hands back to the main laptop like any standby.
+  if (fit === 'unknown' && !i.main && !iLead && row?.device_id && !staleLeader(i.leader, row, shop, now, i.agentOn)) return { role: 'unconfirmed', action: null };
   const ok = self.state === 'ready' && !self.paused;
   const asked = row?.handover_at || 0;
   if (iLead) {
