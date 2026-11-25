@@ -196,7 +196,8 @@ export function register(r: Router): void {
   r.post('/api/connections/shopify/test', 'owner', async (c) => {
     const hints = await secretHints(c.db);
     const api = Boolean(hints.shopify_admin_token || (hints.shopify_client_id && hints.shopify_client_secret));
-    if (api) return json(await testConnection(c.env));
+    // A fresh token, so permissions the owner just added to the app count at once (a cached one keeps the old scopes).
+    if (api) { await clearTokenCache(c.db); return json(await testConnection(c.env)); }
     // Webhook only: there is nothing to call, so "working" means Shopify has reached us at least once.
     if (hints.shopify_webhook_secret) {
       const hook = await getState<WebhookState>(c.db, WEBHOOK_STATE, EMPTY_WEBHOOK_STATE);
