@@ -10,7 +10,12 @@ export interface OwnerAlert {
   body: string;
   /** Dashboard path, for example /#/urgent */
   path: string;
+  /** The alert is about WhatsApp itself not working, so a WhatsApp ping could not be sent: push only. */
+  whatsapp_down?: boolean;
 }
+
+/** Alerts that also go to the owner's own WhatsApp number: questions for them, and anything that stops customers being answered. */
+const PING_KINDS = new Set<OwnerAlert['kind']>(['urgent', 'channel', 'stuck', 'ai', 'claude', 'offline']);
 
 const THROTTLE_MS: Record<OwnerAlert['kind'], number> = {
   urgent: 0,
@@ -61,14 +66,17 @@ export async function alertOwner(env: Env, settings: Settings, alert: OwnerAlert
       await notifyOwner(env, { title: alert.title, body: alert.body, url: alert.path, tag: alert.kind });
     }
     const number = settings.alerts.whatsapp_number.trim();
-    if (number && alert.kind === 'urgent') {
-      // One WhatsApp ping per ten minutes at most, however many questions arrive.
-      if (await claimSlot(db, 'alert_last:whatsapp', now, 10 * MIN)) {
+    if (number && PING_KINDS.has(alert.kind) && !alert.whatsapp_down) {
+      // One WhatsApp ping per ten minutes at most for questions, however many arrive. A problem that stops
+      // customers being answered has its own slot, so it is never held back by a question just before it.
+      const urgent = alert.kind === 'urgent';
+      if (await claimSlot(db, urgent ? 'alert_last:whatsapp' : 'alert_last:whatsapp_problem', now, urgent ? 10 * MIN : 5 * MIN)) {
         await enqueue(db, {
           channel: 'whatsapp', kind: 'new_chat', source: 'alert',
           target: emptyTarget({ phone: number, title: 'Owner alert' }),
           parts: [`${alert.title}\n${alert.body}`],
-          expires_at: now + 30 * MIN,
+          // A problem ping that cannot go out soon is dropped: told late, it would say something that is no longer true.
+          expires_at: now + (urgent ? 30 : 10) * MIN,
           pacing: { delay_ms: 0, typing_cps: 40 },
         });
       }

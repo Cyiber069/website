@@ -1,6 +1,6 @@
 // ACX Agent service worker: push notifications, and the app shell kept for when the signal drops.
 const CACHE = 'acx-shell-v1';
-const SHELL = ['/', '/css/acx.css', '/css/app.css', '/js/app.js', '/img/logo.png', '/icons/icon-192.png', '/fonts/inter-latin-wght-normal.woff2', '/fonts/oswald-latin-wght-normal.woff2'];
+const SHELL = ['/', '/css/acx.css', '/css/app.css', '/css/glow.css', '/js/app.js', '/js/glow.js', '/img/logo.png', '/icons/icon-192.png', '/fonts/inter-latin-wght-normal.woff2', '/fonts/oswald-latin-wght-normal.woff2'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}).then(() => self.skipWaiting()));

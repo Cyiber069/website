@@ -192,6 +192,12 @@ describe('the chats that matter', () => {
     // Only the unanswered messages count: a price question we already answered does not.
     expect(sig([inMsg('how much is it'), outMsg('It is 610 pounds'), inMsg('cool thanks')])).toEqual({ matters: false, why: null });
   });
+  it('gives choosing and fitting questions to Sonnet too', () => {
+    for (const q of ['is the 2000w bundle good', 'which kit should i get', 'will it fit my trek marlin', 'how fast does the 3000w go', 'whats the difference between the kit and the bundle', 'what range will i get', 'what battery size for a medium frame'])
+      expect(sig([inMsg(q)])).toEqual({ matters: true, why: 'product_question' });
+    for (const q of ['hi', 'ok thanks', 'what time do you open', 'do you have a tiktok'])
+      expect(sig([inMsg(q)])).toEqual({ matters: false, why: null });
+  });
   it('reads what a voice note said', () => {
     expect(sig([{ ...inMsg('[sent a voice note]', 'voice'), voice_text: 'how much is the battery' }])).toEqual({ matters: true, why: 'buying_question' });
   });

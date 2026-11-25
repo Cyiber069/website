@@ -14,7 +14,7 @@ import { alertOwner } from './alerts';
 import { canAnswerOnline, channelsView, deviceLabel, quietLaptop } from './leader';
 
 /** A channel that has not read its page for this long, or is signed out or blocked this long, is down. */
-export const CHANNEL_DOWN_MS = 10 * MIN;
+export const CHANNEL_DOWN_MS = 5 * MIN;   // the owner hears within 5 minutes (was 10): unanswered customers cost sales
 /** A customer message nobody is working on after this long means the brain is failing quietly. */
 export const STUCK_MS = 15 * MIN;
 
@@ -91,6 +91,7 @@ async function watchChannels(env: Env, settings: Settings, status: DeviceStatus,
     title: `${names} stopped working`,
     body: `${fresh.map((f) => f.reason).join(' ')} Customers there are not being answered. Nothing good was read for ${mins} min.`,
     path: '/#/health',
+    whatsapp_down: fresh.some((f) => f.ch === 'whatsapp'),
   });
   if (!sent) return; // throttled: try again next minute
   for (const f of fresh) {

@@ -13,6 +13,7 @@ import { syncStore } from './kb';
 import { recoveryTick } from './recovery';
 import { salesTick } from './sales';
 import { refreshRates } from './brain/currency';
+import { harvestGaps } from './kb/harvest';
 
 async function safely(name: string, fn: () => Promise<unknown>): Promise<void> {
   try { await fn(); } catch (err) { console.error(`cron task ${name} failed`, err); }
@@ -80,6 +81,8 @@ export async function runCron(env: Env, opts: { now?: number } = {}): Promise<vo
   // The owner hears once that the agent is slowing down, even in the minutes the health check waits.
   else await safely('usage', () => watchUsageOnly(env));
   if (!busy && background) await safely('cleanup', () => cleanup(env));
+  // Once a day: questions the agent could not answer go on the Teach me list (one indexed read).
+  if (!busy && background) await safely('teach-me', () => harvestGaps(env, now));
   // Today's exchange rates from pounds, once a day (one fetch, one write).
   if (!busy && background) await safely('fx-rates', () => refreshRates(env, now));
 }

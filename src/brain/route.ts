@@ -109,7 +109,7 @@ export const allowanceLeft = (a: AllowanceView, need = NEURON_RESERVE): boolean 
 // ---- the chats that matter ----------------------------------------------------------------------------------
 
 /** Why a chat gets the stronger model in the mix. */
-export type MattersWhy = 'sale' | 'buying_question' | 'complaint';
+export type MattersWhy = 'sale' | 'buying_question' | 'product_question' | 'complaint';
 export interface ChatSignals { matters: boolean; why: MattersWhy | null }
 
 const BUYING = /\b(?:buy|buying|purchase|order(?:ing)? (?:one|it|a|the|now)|how much|price|prices|cost|costs|afford|in stock|checkout|check out|klarna|finance|pay (?:in|monthly)|instal?ments?|send (?:me )?(?:the )?link|where (?:can|do) i (?:buy|order|get)|i'?ll take|take (?:one|it)|want (?:one|it|to buy|to order)|deal)\b|\u00a3\s?\d/i;
@@ -124,6 +124,10 @@ function unanswered(history: HistoryMessage[]): string {
   return history.slice(i).map(plainText).join('\n');
 }
 
+// Choosing and fitting (owner, 2026-11-25): which kit, is it good, will it fit, speed, range, battery. The
+// stronger model answers these too, since a wrong or thin answer here loses the sale.
+const PRODUCT = /\b(?:which (?:kit|bundle|battery|one|size)|what (?:kit|bundle|battery|size)|best (?:kit|bundle|battery|one)|recommend|should i (?:get|go|pick|choose)|is (?:the|it|this) .{0,30}(?:good|worth|enough|ok|okay|reliable|legal)|any good|difference between|compared? (?:to|with)|\bvs\b|versus|will (?:it|this|that|the .{0,20}) fit|does (?:it|this|that) fit|fit (?:my|a|on)|my (?:bike|frame|wheel|forks?)|wheel size|frame size|dropout|thru axle|full suspension|carbon|how fast|top speed|mph|km\/?h|how far|range|how long does (?:the battery|it) last|\d{3,4} ?w(?:att)?s?\b|\d{2} ?(?:v|ah)\b|tell me about|what(?:'s| is| comes) (?:included|in the box)|does it come with)\b/i;
+export const isProductQuestion = (text: string): boolean => PRODUCT.test(text);
 export const isBuyingQuestion = (text: string): boolean => BUYING.test(text);
 export const isComplaint = (text: string): boolean => COMPLAINT.test(text);
 
@@ -137,6 +141,7 @@ export function chatSignals(input: Pick<DecideInput, 'history'> & { sales_stage?
   if (isComplaint(text)) return { matters: true, why: 'complaint' };
   if (input.sales_stage === 'interested' || input.sales_stage === 'ready') return { matters: true, why: 'sale' };
   if (isBuyingQuestion(text)) return { matters: true, why: 'buying_question' };
+  if (isProductQuestion(text)) return { matters: true, why: 'product_question' };
   return { matters: false, why: null };
 }
 

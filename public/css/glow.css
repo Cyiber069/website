@@ -1,0 +1,125 @@
+/* ==========================================================================
+   ACX AGENT · "Night Ride, lights on": a polish layer on top of acx.css.
+   Looks only: light, glow and motion. No layout, no behaviour.
+   Sections: 1 aurora · 2 cards · 3 hero · 4 numbers · 5 nav and buttons ·
+             6 screen entrance · 7 small things · 8 motion guard
+   ========================================================================== */
+
+@property --acx-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+
+/* ---------- 1. AURORA: soft lights drifting behind everything ---------- */
+body::after {
+  content: ""; position: fixed; inset: -20%; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(34% 28% at 16% 14%, color-mix(in srgb, var(--brand-blue) 17%, transparent), transparent 70%),
+    radial-gradient(30% 26% at 88% 18%, color-mix(in srgb, var(--brand-violet) 16%, transparent), transparent 70%),
+    radial-gradient(40% 30% at 58% 96%, color-mix(in srgb, var(--brand-indigo) 10%, transparent), transparent 70%);
+  animation: acx-aurora 26s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes acx-aurora {
+  from { transform: translate3d(-2%, -1.5%, 0) scale(1); }
+  to   { transform: translate3d(3%, 2%, 0) scale(1.08); }
+}
+
+/* ---------- 2. CARDS: lift, a lit edge, and a light that follows the pointer ---------- */
+.card, .stat, .chcard {
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1), border-color 220ms ease, box-shadow 220ms ease;
+}
+.stat::after, .chcard::after, .card::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 0%), color-mix(in srgb, var(--brand-indigo) 17%, transparent), transparent 62%);
+  opacity: 0; transition: opacity 260ms ease;
+}
+@media (hover: hover) {
+  .stat:hover, .chcard:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--brand-indigo) 55%, var(--border));
+    box-shadow: var(--edge-top), 0 10px 30px rgb(0 0 0 / 0.45), 0 0 0 1px color-mix(in srgb, var(--brand-indigo) 22%, transparent), 0 8px 34px color-mix(in srgb, var(--brand-indigo) 16%, transparent);
+  }
+  .card:hover { border-color: color-mix(in srgb, var(--brand-indigo) 32%, var(--border)); }
+  .stat:hover::after, .chcard:hover::after, .card:hover::after { opacity: 1; }
+}
+.stat--urgent:hover { border-color: var(--warning); box-shadow: var(--edge-top), 0 10px 30px rgb(0 0 0 / 0.45), 0 8px 34px color-mix(in srgb, var(--warning) 16%, transparent); }
+.stat--urgent::after { background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 0%), color-mix(in srgb, var(--warning) 14%, transparent), transparent 62%); }
+
+/* ---------- 3. HERO: a slow light running round the edge, and a sheen on the words ---------- */
+.hero:not(.is-paused):not(.is-offline) {
+  border-color: transparent;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--brand-blue) 20%, transparent), transparent 60%) padding-box,
+    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--brand-violet) 20%, transparent), transparent 60%) padding-box,
+    linear-gradient(var(--surface-1), var(--surface-1)) padding-box,
+    conic-gradient(from var(--acx-angle), var(--border) 0deg, var(--border) 200deg, var(--brand-blue) 270deg, var(--brand-violet) 320deg, var(--border) 360deg) border-box;
+  box-shadow: var(--edge-top), 0 18px 60px color-mix(in srgb, var(--brand-indigo) 14%, transparent);
+  animation: acx-orbit 9s linear infinite;
+}
+@keyframes acx-orbit { to { --acx-angle: 360deg; } }
+.hero:not(.is-paused):not(.is-offline) .hero__state {
+  background: linear-gradient(100deg, var(--text-1) 0%, var(--text-1) 38%, #C9BCFF 50%, var(--text-1) 62%, var(--text-1) 100%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+  animation: acx-sheen 7s ease-in-out infinite;
+}
+@keyframes acx-sheen { 0%, 55% { background-position: 120% 0; } 100% { background-position: -60% 0; } }
+
+/* ---------- 4. NUMBERS: lit digits, and a bump when one changes ---------- */
+.stat__value { text-shadow: 0 0 26px color-mix(in srgb, var(--brand-indigo) 42%, transparent); transform-origin: left center; }
+.stat--urgent .stat__value { text-shadow: 0 0 26px color-mix(in srgb, var(--warning) 40%, transparent); }
+.stat__value.is-bump { animation: acx-bump 620ms cubic-bezier(.2, .9, .3, 1.2); }
+@keyframes acx-bump {
+  0% { transform: scale(1); filter: brightness(1); }
+  35% { transform: scale(1.14); filter: brightness(1.5); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+
+/* ---------- 5. NAV AND BUTTONS ---------- */
+.nav__item { transition: background 160ms ease, color 160ms ease, transform 200ms cubic-bezier(.2, .8, .2, 1); }
+@media (hover: hover) and (min-width: 900px) { .nav__item:hover { transform: translateX(3px); } }
+.nav__item[aria-current="page"]::before { box-shadow: 0 0 14px 1px color-mix(in srgb, var(--brand-indigo) 80%, transparent); }
+.nav__item[aria-current="page"] svg { color: var(--accent-2); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--brand-indigo) 70%, transparent)); }
+
+.btn--primary { position: relative; overflow: hidden; transition: transform 160ms ease, box-shadow 200ms ease; }
+.btn--primary::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -60%; width: 45%; pointer-events: none;
+  background: linear-gradient(100deg, transparent, rgb(255 255 255 / 0.28), transparent);
+  transform: skewX(-18deg); opacity: 0;
+}
+@media (hover: hover) {
+  .btn--primary:hover:not(:disabled) { transform: translateY(-1px); }
+  .btn--primary:hover:not(:disabled)::after { opacity: 1; animation: acx-sweep 700ms ease-out; }
+}
+.btn--primary:active:not(:disabled) { transform: translateY(0) scale(0.985); }
+@keyframes acx-sweep { from { left: -60%; } to { left: 120%; } }
+
+.brand__tag { animation: acx-tag 4.5s ease-in-out infinite; }
+@keyframes acx-tag {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 16px 0 color-mix(in srgb, var(--brand-indigo) 45%, transparent); }
+}
+
+/* ---------- 6. SCREEN ENTRANCE: the page rises in when you change screen ---------- */
+#view.is-entering { animation: acx-rise 380ms cubic-bezier(.2, .8, .2, 1) both; }
+#view.is-entering :is(.stat, .chcard, .ucard, .card) { animation: acx-rise 460ms cubic-bezier(.2, .8, .2, 1) both; }
+#view.is-entering :is(.stat, .chcard, .ucard, .card):nth-child(2) { animation-delay: 40ms; }
+#view.is-entering :is(.stat, .chcard, .ucard, .card):nth-child(3) { animation-delay: 80ms; }
+#view.is-entering :is(.stat, .chcard, .ucard, .card):nth-child(4) { animation-delay: 120ms; }
+#view.is-entering :is(.stat, .chcard, .ucard, .card):nth-child(n+5) { animation-delay: 160ms; }
+@keyframes acx-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* ---------- 7. SMALL THINGS ---------- */
+::selection { background: color-mix(in srgb, var(--brand-indigo) 55%, transparent); color: var(--text-1); }
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: linear-gradient(var(--brand-blue), var(--brand-violet)); border-radius: 10px; border: 3px solid var(--bg); }
+::-webkit-scrollbar-track { background: transparent; }
+.pill--live, .pill--work { box-shadow: 0 0 18px -6px var(--success-glow); }
+.progress > * , .progress::-webkit-progress-value { box-shadow: 0 0 12px color-mix(in srgb, var(--brand-indigo) 60%, transparent); }
+.switch input:checked + .switch__track, .switch[aria-checked="true"] .switch__track { box-shadow: 0 0 22px -2px color-mix(in srgb, var(--brand-indigo) 65%, transparent); }
+
+/* ---------- 8. MOTION GUARD ---------- */
+@media (prefers-reduced-motion: reduce) {
+  body::after, .hero, .hero .hero__state, .brand__tag, .stat__value.is-bump, #view.is-entering, #view.is-entering * , .btn--primary::after { animation: none !important; }
+  .card, .stat, .chcard, .nav__item, .btn--primary { transition: none; transform: none !important; }
+}
