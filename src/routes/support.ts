@@ -68,7 +68,8 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
       last_outbound_at, last_direction, updated_at FROM conversations WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT 40`, since),
     all<Record<string, unknown>>(db, `SELECT c.channel AS channel, m.direction AS direction, m.author AS author, m.kind AS kind, COUNT(*) AS n
       FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE m.created_at >= ? GROUP BY c.channel, m.direction, m.author, m.kind`, since),
-    all<Record<string, unknown>>(db, 'SELECT id, channel, category, reason, status, created_at FROM urgent WHERE created_at >= ? ORDER BY created_at DESC LIMIT 30', since),
+    // Every open Urgent item (the owner asked for them to be read), and the last day's others.
+    all<Record<string, unknown>>(db, `SELECT id, channel, category, reason, status, question, customer_message, created_at FROM urgent WHERE status = 'open' OR created_at >= ? ORDER BY created_at DESC LIMIT 60`, since),
     all<Record<string, unknown>>(db, `SELECT provider, model, purpose, COUNT(*) AS calls, SUM(ok) AS ok, CAST(AVG(ms) AS INTEGER) AS avg_ms, MAX(ms) AS max_ms
       FROM llm_usage WHERE ts >= ? GROUP BY provider, model, purpose`, since),
     getState<{ rev?: number } | null>(db, 'selectors_override', null),
@@ -105,7 +106,7 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
   });
   return {
     generated_at: now,
-    note: 'Last 24 hours. Customer message text, previews, phone numbers and email addresses are left out.',
+    note: 'Last 24 hours. Customer message text, previews, phone numbers and email addresses are left out, except the open Urgent questions (contact details masked).',
     settings: {
       channels: settings.channels,
       brain: { provider: settings.brain.provider, model: settings.brain.model, mix: settings.brain.mix, effort: settings.brain.effort },
@@ -127,7 +128,8 @@ export async function buildReport(db: D1Database, now: number): Promise<Record<s
     job_counts: jobCounts,
     conversations: conversations.map((c) => ({ ...c, title: initial(c.title), pause_reason: cut(c.pause_reason, 120) })),
     message_counts: messageCounts,
-    urgent: urgent.map((u) => ({ ...u, reason: scrub(cut(u.reason, 200)) })),
+    // The question and the customer's words of each Urgent item, contact details masked, so the open ones can be answered.
+    urgent: urgent.map((u) => ({ ...u, reason: scrub(cut(u.reason, 300)), question: scrub(cut(u.question, 500)), customer_message: scrub(cut(u.customer_message, 500)) })),
     llm_usage: llm,
     // Agent replies in the last 24 hours: time from the customer's message to sent, in ms.
     reply_times: { ...replies, slowest: replies.slowest ? { ...replies.slowest, customer: initial(replies.slowest.customer) } : null },

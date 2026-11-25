@@ -279,8 +279,16 @@ export interface ConnectionTest {
   shop_name?: string;
   /** Checkouts Shopify lists for the last two days (first page). */
   checkouts?: number;
+  /** Permissions the agent needs that the app does not have (src/shopify/client.ts NEEDED_SCOPES). */
+  missing_scopes?: string[];
   error?: string;
 }
+
+/**
+ * What the agent uses: orders and customers for "where is my order" and sales tracking, products for the
+ * discount code collections, discounts to make creator codes. read_all_orders lets it see orders older than 60 days.
+ */
+export const NEEDED_SCOPES = ['read_orders', 'read_all_orders', 'read_customers', 'read_products', 'write_discounts'];
 
 /** Proves the saved details work end to end: token, store name, and the exact query the daily run uses. */
 export async function testConnection(env: Env): Promise<ConnectionTest> {
@@ -288,8 +296,16 @@ export async function testConnection(env: Env): Promise<ConnectionTest> {
     const auth = await shopifyAuth(env.DB);
     if (auth.mode === 'none') return { ok: false, error: 'No Shopify app details are saved yet.' };
     const shop = await adminGraphQL<{ shop: { name: string } }>(env, 'query AcxShop { shop { name } }');
-    const recent = await fetchAbandonedCheckouts(env, Date.now() - 48 * 60 * MIN, 1);
-    return { ok: true, shop_name: shop.shop.name, checkouts: recent.length };
+    // Which permissions the app really has: a missing one explains a code that was never made or an order not found.
+    let missing: string[] | undefined;
+    try {
+      const inst = await adminGraphQL<{ currentAppInstallation: { accessScopes: { handle: string }[] } }>(env, 'query AcxScopes { currentAppInstallation { accessScopes { handle } } }');
+      const have = new Set(inst.currentAppInstallation.accessScopes.map((s) => s.handle));
+      // write_ implies read_ in Shopify.
+      missing = NEEDED_SCOPES.filter((s) => !have.has(s) && !(s.startsWith('read_') && have.has(s.replace('read_', 'write_'))));
+    } catch { missing = undefined; }
+    const recent = await fetchAbandonedCheckouts(env, Date.now() - 48 * 60 * MIN, 1).catch(() => [] as unknown[]);
+    return { ok: true, shop_name: shop.shop.name, checkouts: recent.length, ...(missing ? { missing_scopes: missing } : {}) };
   } catch (err) {
     if (err instanceof ShopifyError) return { ok: false, error: err.message };
     console.error('shopify test failed', err);

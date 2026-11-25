@@ -178,7 +178,7 @@ export default {
             </div></details>
           <p class="form-error" role="alert" hidden></p>
           <div class="wrap"><button type="submit" class="btn btn--primary">Save Shopify details</button><button type="button" class="btn" data-action="shop-test">Test it</button>${connected ? html`<button type="button" class="btn btn--ghost" data-action="shop-off">Disconnect</button>` : ''}</div>
-          <div id="shop-test" aria-live="polite">${shopTest ? testResult(shopTest, `Working.${shopTest.shop_name ? ` Connected to ${shopTest.shop_name}.` : ''}${shopTest.checkouts != null ? ` ${plural(shopTest.checkouts, 'open checkout')} found.` : ''}${shopTest.last_received_at ? ` Last heard from Shopify ${ago(shopTest.last_received_at)}.` : ''}`) : ''}</div>
+          <div id="shop-test" aria-live="polite">${shopTest ? testResult(shopTest, `Working.${shopTest.shop_name ? ` Connected to ${shopTest.shop_name}.` : ''}${shopTest.checkouts != null ? ` ${plural(shopTest.checkouts, 'open checkout')} found.` : ''}${shopTest.last_received_at ? ` Last heard from Shopify ${ago(shopTest.last_received_at)}.` : ''}${shopTest.missing_scopes?.length ? ` The app is missing these permissions: ${shopTest.missing_scopes.join(', ')}. Add them in the app's settings and install the new version.` : shopTest.missing_scopes ? ' Every permission the agent needs is there.' : ''}`) : ''}</div>
         </form>`);
     }
 
