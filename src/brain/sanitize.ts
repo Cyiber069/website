@@ -146,7 +146,7 @@ const STOCK_INLINE = [
 const SWAPS: [RegExp, string][] = [
   [/\butili[sz]e(s|d)?\b/gi, 'use$1'], [/\butili[sz]ing\b/gi, 'using'], [/\bin order to\b/gi, 'to'], [/\bprior to\b/gi, 'before'],
   [/\bapproximately\b/gi, 'about'], [/\bregarding\b/gi, 'about'], [/\b(?:inquiry|enquiry)\b/gi, 'question'], [/\b(?:inquiries|enquiries)\b/gi, 'questions'],
-  [/\bassistance\b/gi, 'help'], [/\bassist\b/gi, 'help'], [/\bhowever,?\s+/gi, 'but '], [/\btherefore,?\s+/gi, 'so '], [/\bkindly\b/gi, 'please'],
+  [/\bassistance\b/gi, 'help'], [/(?<!\b(?:pedal|walk|the|power|motor|throttle) )\bassist\b(?! (?:cuts|level|levels|sensor|mode))/gi, 'help'], [/\bhowever,?\s+/gi, 'but '], [/\btherefore,?\s+/gi, 'so '], [/\bkindly\b/gi, 'please'],
   [/\bcannot\b/gi, "can't"], [/\bdo not\b/gi, "don't"], [/\bdoes not\b/gi, "doesn't"], [/\bwill not\b/gi, "won't"], [/\bis not\b/gi, "isn't"], [/\bare not\b/gi, "aren't"], [/\bdid not\b/gi, "didn't"],
 ];
 
@@ -156,7 +156,7 @@ const EMOJI_BANNED = new Set(['\u{2705}', '\u{2728}', '\u{1F680}', '\u{1F4A1}', 
 // thumbs up, folded hands, sweat smile, joy, handshake, flexed arm, fire, ok hand, rofl, grin, slight smile, smile, salute, bolt, bicycle
 const EMOJI_SAFE = new Set(['\u{1F44D}', '\u{1F64F}', '\u{1F605}', '\u{1F602}', '\u{1F91D}', '\u{1F4AA}', '\u{1F525}', '\u{1F44C}', '\u{1F923}', '\u{1F601}', '\u{1F642}', '\u{1F60A}', '\u{1FAE1}', '\u{26A1}', '\u{26A1}\u{FE0F}', '\u{1F6B2}']);
 export const CLEAR_ADDR = ['bro', 'bruv', 'bruh', 'mate', 'pal', 'bud', 'buddy', 'fam', 'geezer', 'my man', 'my guy', 'big man'];   // unambiguous address terms: only say them if the customer did
-const KEEP_CAPS = new Set(['UK', 'ACX', 'DPD', 'DHL', 'UPS', 'BMS', 'LCD', 'PAS', 'VAT', 'EU', 'USA', 'OK', 'AI', 'FAQ', 'USB', 'LED', 'PDF', 'DM', 'MOT', 'DVLA', 'EAPC', 'AH', 'KW', 'MPH', 'RRP', 'GPS', 'AM', 'PM', 'UKCA', 'CE', 'NI', 'ROI', 'PO', 'KT', 'BBS', 'TV', 'ID', 'PIN', 'SMS', 'QR', 'MTB', 'BMX', 'TBC']);
+const KEEP_CAPS = new Set(['UK', 'ACX', 'DPD', 'DHL', 'UPS', 'BMS', 'LCD', 'PAS', 'VAT', 'EU', 'USA', 'OK', 'AI', 'FAQ', 'USB', 'LED', 'PDF', 'DM', 'MOT', 'DVLA', 'EAPC', 'AH', 'KW', 'MPH', 'RRP', 'GPS', 'AM', 'PM', 'UKCA', 'CE', 'NI', 'ROI', 'PO', 'KT', 'BBS', 'TV', 'ID', 'PIN', 'SMS', 'QR', 'MTB', 'BMX', 'TBC', 'XL', 'XXL', 'CHF', 'EUR', 'USD', 'GBP', 'AUD', 'CAD', 'NOK', 'SEK', 'DKK', 'PLN', 'WH', 'CNC', 'ODI', 'MHT', 'GT', 'ST']);
 // dialect and in-group words the agent understands but never says, whoever said them first.
 // bare, peak and ends are left out on purpose: "peak power" and "bar ends" are normal shop words.
 const MARKED_SLANG = /(?<![\p{L}])(?:wagwan|wag1|mandem|gyaldem|blud|bredrin|fam|akh|akhi|ting|tings|innit|peng|leng|wallahi|inshallah|dat|dis|dem|wid|ya get me|you get me|my g|big man ting|roadman|yute)(?![\p{L}])/iu;

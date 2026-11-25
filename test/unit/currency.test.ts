@@ -68,3 +68,24 @@ describe("TikTok's placeholder is not the customer's words", () => {
     expect(wordsOf({ direction: 'in', author: 'customer', body: 'how fast is the 2000w', kind: 'text', ts: 0 } as any)).toBe('how fast is the 2000w');
   });
 });
+
+import { localise } from '../../src/brain/currency';
+describe('prices and speeds for a customer abroad, filled in by code', () => {
+  const rates = { EUR: 1.19, USD: 1.27, CHF: 1.1 };
+  it('adds the euro price and km/h for an Irish number', () => {
+    expect(localise('Our best bundle is the 5000W, around 50 to 60+ mph, from £819, and it ships fast.', '+353871234567', rates))
+      .toBe('Our best bundle is the 5000W, around 50 to 60+ mph (80 to 97+ km/h), from £819 (about €975), and it ships fast.');
+    expect(localise('The 2000W does around 32 to 38 mph.', '+4915238452770', rates)).toContain('32 to 38 mph (51 to 61 km/h)');
+  });
+  it('leaves what is already there, links, UK numbers and unknown numbers alone', () => {
+    const done = 'From £819 (about €975), around 80 to 97+ km/h (50 to 60+ mph). https://acxebikes.com/products/acx-5000w-bundle';
+    expect(localise(done, '+353871234567', rates)).toBe(done);
+    expect(localise('It is £819 or €975 at checkout', '+353871234567', rates)).toBe('It is £819 or €975 at checkout');
+    expect(localise('From £819, around 50 mph', '+447700900111', rates)).toBe('From £819, around 50 mph');
+    expect(localise('From £819, around 50 mph', null, rates)).toBe('From £819, around 50 mph');
+  });
+  it('gives dollars but keeps mph for a US number, and Swiss francs with km/h', () => {
+    expect(localise('From £595, around 32 to 38 mph', '+12025550123', rates)).toBe('From £595 (about $756), around 32 to 38 mph');
+    expect(localise('From £819', '+41791234567', rates)).toBe('From £819 (about CHF 901)');
+  });
+});

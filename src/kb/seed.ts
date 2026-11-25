@@ -74,7 +74,7 @@ Only someone who asks about a sponsorship, working with us or their own code get
 const LATER_NOTES: (IngestInput & { id: string; flag: string; replace?: boolean })[] = [
   {
     // The owner's rules and the settled contradictions between the playbook and the store. Pinned, source note: wins over everything.
-    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v9', replace: true, title: 'Owner rules and corrections',
+    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v11', replace: true, title: 'Owner rules and corrections',
     content: ownerRulesMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'note', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {

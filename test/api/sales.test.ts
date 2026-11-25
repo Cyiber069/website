@@ -110,7 +110,7 @@ describe('never sounding unsure', () => {
     expect(r.jobs[0]!.source).toBe('holding');
     const text = r.jobs[0]!.parts.join(' ');
     expect(text).not.toMatch(/not sure|unsure|don.?t know|no idea/i);
-    expect(text).toMatch(/check|find out/i);
+    expect(text).toMatch(/check|passing this to the team/i);
     const item = (await api('/api/urgent')).data.urgent.find((u: any) => u.conversation_id === r.conversation_id);
     expect(item).toBeTruthy();
     expect(item.category).toBe('unknown_fact');

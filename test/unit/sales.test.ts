@@ -53,7 +53,7 @@ describe('sales playbook in the prompt', () => {
 
   it('tells the model to sound confident and to treat parts of a kit they own as product support', () => {
     expect(text).toMatch(/It sounds confident and helpful, never unsure/);
-    expect(text).toMatch(/never "I'm not sure about that one"/);
+    expect(text).toMatch(/Never write "I'm not sure about that one"/);
     expect(text).toMatch(/When the knowledge answers part of it, answer that part/);
     expect(text).toMatch(/escalate with category product_support and put the customer's own description of the part/);
   });
@@ -139,7 +139,7 @@ describe('never sounding unsure', () => {
     const lines = new Set(['a', 'b', 'c', 'd', 'e', 'f'].map((s) => confidentHoldingLine(tone, s)));
     expect(lines.size).toBeGreaterThan(1);
     for (const l of lines) expect(l).not.toMatch(/team is (not sure|unsure)|minutes|hours|today/);
-    expect(confidentHoldingLine({ ...tone, mood: 'angry' }, 'x')).toBe('Let me find out and come back to you');
+    expect(confidentHoldingLine({ ...tone, mood: 'angry' }, 'x')).toMatch(/^I'm passing this to the team now/);
   });
 });
 

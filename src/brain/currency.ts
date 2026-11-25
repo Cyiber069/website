@@ -81,7 +81,7 @@ export function currencyNote(phone: string | null | undefined, fx: FxRates | nul
   };
   if (who && who.currency !== 'GBP') {
     const t = table(who.currency, who.symbol);
-    lines.push(`The customer's phone number is from ${who.country}, so they most likely pay in ${who.currency}. Give prices in pounds with the amount in ${who.currency} next to it, copied from the table below, for example "£819 (about ${t ? `${who.symbol}${round(819 * fx.rates[who.currency]!)}` : 'the same in their currency'})", and say checkout shows the exact price in their currency.`);
+    lines.push(`The customer's phone number is from ${who.country}, so they most likely pay in ${who.currency}. Whenever you state a price, give it in pounds with the amount in ${who.currency} next to it, copied from the table below (for a price that is not in the table, multiply the pound price by the rate and round to a whole number), for example "£819 (about ${t ? `${who.symbol}${round(819 * fx.rates[who.currency]!)}` : 'the same in their currency'})", and say checkout shows the exact price in their currency. When you mention delivery, give the time and cost for ${who.country}, not for the UK.`);
     if (t) lines.push(t);
   } else if (who) {
     lines.push('The customer\'s phone number is from the UK: give prices in pounds unless they ask for another currency.');
@@ -116,4 +116,35 @@ export async function refreshRates(env: Env, now: number): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Countries that think in mph. Everyone else gets km/h next to a speed. */
+const MPH_CURRENCIES = new Set(['GBP', 'USD']);
+
+/**
+ * The model is told to give a price in the customer's currency and a speed in km/h, and mostly does. This
+ * makes sure: a "£819" with no amount in their currency after it becomes "£819 (about €975)", and for a
+ * customer outside the UK and the US "32 to 38 mph" becomes "32 to 38 mph (51 to 61 km/h)". Links are left
+ * alone. Nothing changes for a UK number, an unknown number, or when no rates are stored.
+ */
+export function localise(text: string, phone: string | null | undefined, rates: Record<string, number> | null | undefined): string {
+  const who = countryFromPhone(phone);
+  if (!who || who.currency === 'GBP') return text;
+  const rate = rates?.[who.currency];
+  let out = text;
+  if (rate) {
+    let done = 0;
+    out = out.replace(/£\s?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d\d)?)(\s*\((?:about|around|approx)[^)]*\))?/g, (m, n: string, already: string | undefined, at: number) => {
+      // Not inside a link, not when an amount in another currency already follows, and at most three per message.
+      if (already || done >= 3 || /https?:\/\/\S*$/.test(out.slice(0, at))) return m;
+      if (new RegExp(`^.{0,24}(?:${who.symbol.trim().replace(/[$]/g, '\\$&')}|${who.currency})\\s?\\d`, 'i').test(out.slice(at + m.length))) return m;
+      done++;
+      return `${m} (about ${who.symbol}${round(Number(n.replace(/,/g, '')) * rate)})`;
+    });
+  }
+  if (!MPH_CURRENCIES.has(who.currency) && !/km\/?h/i.test(out)) {
+    const kmh = (v: string) => String(Math.round(Number(v) * 1.609));
+    out = out.replace(/\b(\d{2})( to (\d{2}))?(\+)?\s?mph\b/g, (m, a: string, _r, b: string | undefined, plus: string | undefined) => `${m} (${kmh(a)}${b ? ` to ${kmh(b)}` : ''}${plus ?? ''} km/h)`);
+  }
+  return out;
 }

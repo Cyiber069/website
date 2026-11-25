@@ -1,5 +1,6 @@
 // The owner's rules applied in code to whatever the model (or the mock) decided, plus the small
 // helpers decide() needs to read a conversation. Pure functions: no database, no network.
+import { localise } from './currency';
 import type { DecideInput, HistoryMessage, Settings, ToneProfile } from '../types';
 import {
   admitsAssistant, claimsHuman, languageName, looksLikeBotQuestion, looksLikeOptOut, renderConversation, unsupportedNumbers, wordsOf, type RawDecision,
@@ -10,7 +11,7 @@ import { isSeriousTopic } from './tone';
 // Fallback lines for when the model's own wording cannot be used. Written properly, with a capital
 // at the start. The sanitizer still takes care of the final full stop.
 const HOLDING: Record<string, string> = {
-  en: 'Let me check that for you',
+  en: 'Let me check that with the warehouse so I give you the right answer',   // the owner's own line (reply playbook)
   es: 'Déjame comprobarlo y te digo',
   fr: 'Je vérifie ça et je reviens vers vous',
   de: 'Ich kläre das kurz und melde mich',
@@ -73,12 +74,14 @@ const UNSURE = /\b(?:not (?:so |too |really |100% |entirely |totally |quite )?su
 
 export const soundsUnsure = (text: string): boolean => UNSURE.test(text.replace(/[\u2018\u2019\u02bc]/g, "'"));
 
-const CONFIDENT_HOLDING = ['Let me check that for you', 'Let me find out and come back to you', "Leave it with me, I'll check that now"];
+// The owner's two approved lines (reply playbook, rule 10 and section 11). Nothing else is used.
+const TEAM_LINE = "I'm passing this to the team now so it's sorted properly, and I'll come back to you as soon as I have an update";
+const CONFIDENT_HOLDING = ['Let me check that with the warehouse so I give you the right answer', TEAM_LINE];
 
 /** A confident holding line, varied a little per conversation. Plain and calm for an upset customer. */
 export function confidentHoldingLine(tone: ToneProfile, seed: string): string {
   if (tone.language !== 'en') return holdingLine(tone.language);
-  if (tone.mood === 'angry' || tone.mood === 'frustrated' || tone.register === 'formal') return 'Let me find out and come back to you';
+  if (tone.mood === 'angry' || tone.mood === 'frustrated' || tone.register === 'formal') return TEAM_LINE;
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
   return CONFIDENT_HOLDING[h % CONFIDENT_HOLDING.length]!;
@@ -294,17 +297,17 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
 
   if (out.action === 'escalate') {
     // parts is the holding line, or the part of the answer the knowledge covers followed by the holding line.
+    // Every part the model wrote is kept when it passes what a reply must pass: figures and links from the
+    // knowledge or the chat, sure of itself. (It used to keep only the first part and swap any closing
+    // message over 140 letters for a bare "Let me check that for you", which threw away the owner's own
+    // templates: the refund reply, a confirmed order change.) A part that fails is dropped, and when nothing
+    // is left the customer gets the owner's holding line.
+    const sure = (p: string) => !soundsUnsure(p) && !claimsHuman(p)
+      && withoutConversions(unsupportedNumbers(p, ctx.sources), p, ctx.sources, ctx.fxRates).length === 0 && inventedLinks(p, ctx.sources).length === 0;
     const list = out.parts.filter((p) => p.trim());
-    let line = list.length ? list[list.length - 1]! : '';
-    let known = list.length > 1 ? list[0]! : '';
-    // A holding line may not smuggle in an answer. Anything long or with figures is replaced.
-    if (line && (line.length > 140 || unsupportedNumbers(line, renderConversation(input.history, input.now)).length > 0)) line = holdingLine(tone.language);
-    // Nor may it sound unsure.
-    if (line && soundsUnsure(line)) line = confidentHoldingLine(tone, lastText);
-    // The known part must pass every check a reply passes: figures and links from the knowledge, sure of itself.
-    if (known && (out.confidence < 0.7 || soundsUnsure(known) || claimsHuman(known)
-      || withoutConversions(unsupportedNumbers(known, ctx.sources), known, ctx.sources, ctx.fxRates).length > 0 || inventedLinks(known, ctx.sources).length > 0)) known = '';
-    out.parts = [known, line].filter(Boolean);
+    const kept = list.filter(sure);
+    // No parts at all is deliberate (a lone photo or voice note goes to the owner without a word): it stays silent.
+    out.parts = kept.length || !list.length ? kept : [confidentHoldingLine(tone, lastText)];
     if (!voice.holding_reply) out.parts = [];
   }
   if (out.action === 'ignore') out.parts = [];
@@ -337,6 +340,8 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
     out.flags.needs_human = true;
     escalate('The draft was empty after the style rules were applied', 'other');
   }
+  // A customer abroad always sees the price in their currency and the speed in km/h (src/brain/currency.ts).
+  if (out.parts.length) out.parts = out.parts.map((p) => localise(p, input.contact_phone, ctx.fxRates));
   out.sales = checkSales(out, tone);
   return out;
 }
