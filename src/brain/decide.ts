@@ -79,7 +79,9 @@ export function firstBudget(choice: ProviderChoice, deadlineAt: number): CallBud
 
 /** The recent part of the chat is what the brain reads: fewer tokens on every call. */
 export const HISTORY_KEEP = 200;   // the AI reads the whole chat, not just the last few messages
-const HISTORY_CHARS = 60000;   // about 15,000 tokens: well under a cent on Haiku
+const HISTORY_CHARS = 40000;   // about 11,000 tokens: with the whole catalogue the request stays under Haiku's 100,000 token price step
+/** The whole knowledge base for Claude, cached: about 69,000 tokens today (products, policies, pages, playbook, owner rules). */
+export const CLAUDE_KB_FULL_TOKENS = 75_000;
 /** Workers AI reads only the excerpts that match the question: about this many tokens, this many excerpts. */
 const WORKERS_KB_TOKENS = 3000;
 const WORKERS_TOP_CHUNKS = 8;
@@ -166,7 +168,8 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
   const serious = seriousTopic(input.history);
   const basePlan = mirrorPlan(tone, settings.voice, serious);
   // The owner's playbook wants a full answer even to a short question (speed, price, link, next step).
-  const plan = { ...basePlan, char_budget: Math.max(basePlan.char_budget, Math.min(450, lengthLimits(settings.voice, inputIn.channel).max_chars)) };
+  // Professional (owner): never call a customer bro, mate or the like back, whatever they write.
+  const plan = { ...basePlan, address: '', char_budget: Math.max(basePlan.char_budget, Math.min(450, lengthLimits(settings.voice, inputIn.channel).max_chars)) };
   const pending = pendingInbound(input.history);
   const fx = await storedRates(env.DB).catch(() => null);
   const lastText = [...pending].reverse().find(hasWords)?.body ?? '';
@@ -234,6 +237,8 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
     const query = seen ? `${knowledgeQuery(call)}\n${seen.slice(0, 400)}` : knowledgeQuery(call);
     const knowledge = await buildKnowledgeContext(env, query, {
       budgetTokens: workers ? Math.min(knowledgeBudget(choice), WORKERS_KB_TOKENS) : knowledgeBudget(choice), include,
+      // Claude reads the whole catalogue from the cached prefix (about 69,000 tokens today), not a few excerpts.
+      ...(isClaudeChoice(choice) ? { fullTokens: CLAUDE_KB_FULL_TOKENS } : {}),
       ...(workers ? { matchesOnly: true, topChunks: WORKERS_TOP_CHUNKS } : {}),
     }).catch((err) => {
       console.error('knowledge lookup failed', err);

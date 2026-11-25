@@ -136,6 +136,11 @@ export interface KnowledgeOptions {
   matchesOnly?: boolean;
   /** How many excerpts at most. Default brain.kb_top_chunks. */
   topChunks?: number;
+  /**
+   * The whole knowledge base goes in when it fits this many tokens (brain.kb_full_tokens when that is more).
+   * Claude gets a large one: it sits in the cached system block, so every product page is seen on every reply.
+   */
+  fullTokens?: number;
 }
 
 export async function buildKnowledgeContext(env: Env, queryText: string, opts: KnowledgeOptions = {}): Promise<KnowledgeContext> {
@@ -148,7 +153,7 @@ export async function buildKnowledgeContext(env: Env, queryText: string, opts: K
   if (!enabled.length) return { mode: 'empty', stable: '', retrieved: '', docs: [], tokens: 0 };
 
   const total = enabled.reduce((n, d) => n + d.token_estimate, 0);
-  if (!opts.matchesOnly && total <= Math.min(settings.brain.kb_full_tokens, budget)) {
+  if (!opts.matchesOnly && total <= Math.min(Math.max(settings.brain.kb_full_tokens, opts.fullTokens ?? 0), budget)) {
     return { mode: 'full', stable: enabled.map(renderDoc).join('\n\n'), retrieved: '', docs: enabled.map((d) => ({ id: d.id, title: d.title })), tokens: total };
   }
   const docs = opts.matchesOnly ? [] : enabled.filter((d) => d.pinned === 1);
