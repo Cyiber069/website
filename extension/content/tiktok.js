@@ -10,8 +10,8 @@
 //    really landed. execCommand destroys an empty Draft editor, which is why the pack says paste only.
 //  * A message can only be read by opening its conversation. Direction comes from layout: the row that
 //    holds avatar and bubble is flex-direction row-reverse for our own messages.
-//  * Strangers land in "Message requests". Those are read like any chat, but TikTok shows an Accept box
-//    instead of the message box, and the agent never presses Accept by itself.
+//  * Strangers land in "Message requests". Those are read like any chat. TikTok shows an Accept box
+//    instead of the message box: the agent presses Accept (never Block) before it replies (0.6.5).
 //  * TikTok is the strictest of the three about automation, so a captcha or a "sending messages too
 //    fast" notice stops the whole channel until the owner has looked.
 //
@@ -842,8 +842,30 @@
     return { count: 0, ids: [] };
   }
 
+  /**
+   * A stranger's first message waits behind TikTok's Accept box. The owner wants every TikTok customer
+   * answered (2026-11-25), so the agent presses Accept (never Block) and then replies. Returns true when
+   * the box went away.
+   */
+  async function acceptRequest(box) {
+    const area = q('requests.box', box, QUIET);
+    if (!area) return true;
+    const acceptRx = ACX.lookup('text.accept') ? rx('text.accept') : /^accept$/i;
+    const blockBtn = q('requests.block_button', area, QUIET);
+    const button = [...area.querySelectorAll('button, [role="button"]')].find((b) => b !== blockBtn && acceptRx.test(textOf(b).trim()) && visible(b));
+    if (!button) return false;
+    await sleep(rand(600, 1200));
+    ACX.click(button);
+    return Boolean(await waitFor(() => !q('requests.box', (chatInfo() || { box }).box, QUIET), { timeout: 6000, interval: 250 }));
+  }
+
   /** The message box of the open chat, or a clear failure saying why there is none. */
   async function composerOf(chat) {
+    // A message request: accept it first (0.6.5).
+    if (q('requests.box', (chatInfo() || chat).box, QUIET) && !(await acceptRequest((chatInfo() || chat).box))) {
+      ACX.snapshot('tiktok.send.request_not_accepted', (chatInfo() || chat).box);
+      throw new Fail('blocked', 'Accept the message request in TikTok first', false);
+    }
     const find = () => {
       const box = (chatInfo() || chat).box;
       if (q('requests.box', box, QUIET)) throw new Fail('blocked', 'Accept the message request in TikTok first', false);

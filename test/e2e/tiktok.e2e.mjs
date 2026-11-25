@@ -328,21 +328,20 @@ async function main() {
   assert.equal((await sent()).length, 8);
   pass('click ignored: sent with Enter instead. Unclear outcome: send_not_confirmed, not retryable');
 
-  // ---- message request: read, answered by the brain, send fails cleanly with "blocked" ------------------
+  // ---- message request: read, answered by the brain, the agent presses Accept and replies (0.6.5) --------
   const samId = await mock(() => window.mock.receiveRequest({ handle: 'sam.new', nickname: 'Sam', text: 'do you have the x3 in stock' }));
-  const samJob = await until('request job failed', async () => {
+  await until('request job sent', async () => {
     const [row] = await sql(`SELECT o.status, o.last_error FROM outbox o JOIN conversations c ON c.id = o.conversation_id WHERE c.external_thread_id = ?`, [samId]);
-    return row && row.status === 'failed' ? row : null;
+    return row && row.status === 'sent' ? row : null;
   });
-  assert.match(samJob.last_error, /^blocked: Accept the message request in TikTok first/);
   // (The adapter may be looking inside Message requests at this very moment; it always comes back.)
   await until('list back on the normal conversations', async () => (await mock(() => window.mock.state())).view === 'main', 15_000);
   const samState = await mock(() => window.mock.state());
-  assert.equal(samState.convs.find((c) => c.peer.uniqueId === 'sam.new').request, true, 'the request was not accepted for the owner');
-  assert.equal((await sent()).length, 8);
+  assert.equal(samState.convs.find((c) => c.peer.uniqueId === 'sam.new').request, false, 'the agent accepted the request before replying');
+  assert.equal((await sent()).length, 9);
   const [samMsg] = await sql(`SELECT m.body FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.external_thread_id = ? AND m.direction = 'in'`, [samId]);
   assert.equal(samMsg.body, 'do you have the x3 in stock');
-  pass('message request: read and reported, reply failed with blocked (not retried, not accepted)');
+  pass('message request: read, accepted by the agent and answered');
 
   // ---- legacy front end: no ids in the DOM ---------------------------------------------------------------
   await mock(() => window.mock.setVariant('legacy'));
@@ -353,17 +352,15 @@ async function main() {
   assert.equal(jakeLegacy.data.thread.external_id, jakeId, 'conversation id still comes from the row id attribute');
   assert.ok(jakeLegacy.data.messages.length >= 5 && jakeLegacy.data.messages.every((m) => m.external_id === null), 'no message ids in the legacy layout');
   assert.deepEqual(jakeLegacy.data.messages.slice(-3).map((m) => [m.direction, m.body]), [['out', 'Hey'], ['out', 'Mock second part'], ['out', 'sent with enter']]);
-  const samLegacy = await op('send', { job: fake({ target: { thread_external_id: samId, title: 'Sam', handle: 'sam.new' } }) });
-  assert.deepEqual([samLegacy.ok, samLegacy.error_code, samLegacy.retryable, samLegacy.error], [false, 'blocked', false, 'Accept the message request in TikTok first'], JSON.stringify(samLegacy));
   await mock(() => window.mock.receive('mia_b', 'ok'));
-  await until('legacy reply to Mia', async () => (await sent()).length === 9);
-  assert.equal((await sent())[8].convId, miaId);
-  await until('legacy job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 7);
+  await until('legacy reply to Mia', async () => (await sent()).length === 10);
+  assert.equal((await sent())[9].convId, miaId);
+  await until('legacy job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 8);
   for (let i = 0; i < 5; i++) { await kick(); await sleep(600); }
   const paused = await sql(`SELECT COUNT(*) AS n FROM conversations WHERE channel = 'tiktok' AND paused_until IS NOT NULL`);
   assert.equal(paused[0].n, 0, 'our own messages were never mistaken for the owner typing');
-  assert.equal((await sent()).length, 9);
-  pass('legacy layout: read without ids, send confirmed by text, request still blocked');
+  assert.equal((await sent()).length, 10);
+  pass('legacy layout: read without ids, send confirmed by text');
   await mock(() => window.mock.setVariant('sdk'));
 
   // ---- watchdog: a hung tab (the content script never answers) is reloaded and the channel recovers --------
@@ -389,7 +386,7 @@ async function main() {
   await until('answer after the recovery', async () => (await sent()).length === before + 1);
   assert.equal((await sent()).at(-1).convId, miaId);
   assert.equal((await sent()).at(-1).text, 'Mock reply to: are you still there');
-  await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 8);
+  await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 9);
   pass(`watchdog: hung tab reloaded (${healed.recoveries} fix today, "${healed.last_error}"), channel answers again`);
 
   // ---- watchdog with a reply waiting in the lane: the hung tab is still healed, and the reply goes out after -------------
@@ -417,7 +414,7 @@ async function main() {
     await sleep(2000);
     assert.equal((await sent()).filter((m) => m.text === text).length, 1, 'sent exactly once');
     assert.equal((await sql(`SELECT status FROM outbox WHERE id = 'ob_e2e_hung'`))[0].status, 'sent');
-    await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 9);
+    await until('recovered job recorded', async () => (await sql(`SELECT COUNT(*) AS n FROM outbox WHERE channel = 'tiktok' AND status = 'sent'`))[0].n === 10);
     pass(`watchdog with a reply queued: the hung tab was reloaded (${healed2.recoveries} fixes today) and the reply went out once after`);
   }
 
