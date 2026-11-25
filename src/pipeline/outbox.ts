@@ -131,13 +131,18 @@ export function enqueueStatements(db: D1Database, input: EnqueueInput): { id: st
  * typing (3 a second on TikTok), so it gets 200 a second: it pastes the part and keeps only its short
  * floor pauses (about half a second a part).
  */
-export function jobPacing(row: Pick<OutboxRow, 'source' | 'pacing'>, settings: Settings, legacy = false): { delay_ms: number; typing_cps: number } {
+export function jobPacing(row: Pick<OutboxRow, 'source' | 'pacing' | 'channel'>, settings: Settings, legacy = false): { delay_ms: number; typing_cps: number; typing_ms?: number; gap_ms?: number } {
   const stored = parseJson<{ delay_ms?: number; typing_cps?: number }>(row.pacing, {});
   if (row.source === 'recovery' || row.source === 'alert') return { delay_ms: stored.delay_ms ?? 0, typing_cps: stored.typing_cps ?? settings.pacing.typing_cps };
   const typing_cps = legacy ? LEGACY_FAST_CPS : 0;
   if (!AGENT_SOURCES.has(row.source)) return { delay_ms: 0, typing_cps };
   const max = Math.max(0, settings.pacing.max_reply_delay_s * 1000);
-  return { delay_ms: Math.min(Math.max(0, stored.delay_ms ?? 0), max), typing_cps };
+  const human = row.channel === 'whatsapp' || row.channel === 'tiktok';
+  const secs = (v: unknown) => Math.min(30, Math.max(0, Number(v) || 0)) * 1000;
+  return {
+    delay_ms: Math.min(Math.max(0, stored.delay_ms ?? 0), max), typing_cps,
+    ...(human ? { typing_ms: secs(settings.pacing.typing_seconds), gap_ms: secs(settings.pacing.gap_seconds) } : {}),
+  };
 }
 
 export function toJob(row: OutboxRow, settings: Settings, legacy = false, now = Date.now()): AgentJob {

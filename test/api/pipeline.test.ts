@@ -45,7 +45,7 @@ describe('inbound to reply', () => {
     expect(job.target.thread_external_id).toBe(t);
     expect(job.parts[0]).toContain('Mock reply to: yo how long is delivery');
     // As fast as possible: no extra wait by default, each part pasted whole.
-    expect(job.pacing).toEqual({ delay_ms: 0, typing_cps: 0 });
+    expect(job.pacing).toEqual({ delay_ms: 0, typing_cps: 0, typing_ms: 10_000, gap_ms: 10_000 });
 
     // Reporting the same thread again while the job is out does nothing.
     expect((await inbound('whatsapp', t, [msg('m1', 'yo how long is delivery')])).action).toBe('none');

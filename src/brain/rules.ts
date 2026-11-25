@@ -140,6 +140,8 @@ export interface EnforceContext {
   tone: ToneProfile;
   /** Everything the model was allowed to take facts from. */
   sources: string;
+  /** Today's exchange rates from pounds (src/brain/currency.ts): a converted price of a real £ figure is not invented. */
+  fxRates?: Record<string, number> | null;
   /** Emoji the customer used, from the tone analysis. */
   customerEmojis?: string[];
   /**
@@ -237,6 +239,14 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
     if (!out.parts.length && out.action === 'reply' && final) escalate('The draft said sponsors get discount codes, which the owner does not allow', 'discount_price');
   }
 
+  // Never promise a refund or a return (owner rule): the sentence comes out and the chat goes to the owner.
+  if (out.action !== 'ignore' && out.parts.some((x) => promisesRefund(x))) {
+    if (!final) out.retry.push('never promise a refund, a return or a replacement: say you are passing it to the team');
+    out.parts = out.parts.map(withoutRefundPromise).filter((x) => x.trim());
+    out.note = `${out.note} (removed a line that promised a refund or a return)`.trim();
+    if (final && out.action === 'reply') escalate('The draft promised a refund or a return, which only the owner may do', 'refund_return');
+  }
+
   // Never sound unsure (owner rule). A reply that says "not sure" or "no idea" becomes a question for
   // the owner with a confident holding line, and the answer is learned through the Urgent flow.
   if (out.action === 'reply' && out.parts.some(soundsUnsure)) {
@@ -268,7 +278,7 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
   // Never invent facts: a figure that appears in the reply but nowhere in the knowledge, the notes or
   // the conversation was made up. The draft is kept for the owner to check instead of being sent.
   if (out.action === 'reply') {
-    const invented = unsupportedNumbers(out.parts.join(' '), ctx.sources);
+    const invented = withoutConversions(unsupportedNumbers(out.parts.join(' '), ctx.sources), out.parts.join(' '), ctx.sources, ctx.fxRates);
     if (invented.length) {
       out.flags.needs_human = true;
       out.confidence = Math.min(out.confidence, 0.3);
@@ -292,7 +302,7 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
     if (line && soundsUnsure(line)) line = confidentHoldingLine(tone, lastText);
     // The known part must pass every check a reply passes: figures and links from the knowledge, sure of itself.
     if (known && (out.confidence < 0.7 || soundsUnsure(known) || claimsHuman(known)
-      || unsupportedNumbers(known, ctx.sources).length > 0 || inventedLinks(known, ctx.sources).length > 0)) known = '';
+      || withoutConversions(unsupportedNumbers(known, ctx.sources), known, ctx.sources, ctx.fxRates).length > 0 || inventedLinks(known, ctx.sources).length > 0)) known = '';
     out.parts = [known, line].filter(Boolean);
     if (!voice.holding_reply) out.parts = [];
   }
@@ -349,4 +359,25 @@ const SPONSOR_CODE = new RegExp(String.raw`\b${SPONSOR}\b[^.!?\n]{0,60}\b(?:${CO
 export const sponsorCodeClaim = (text: string): boolean => SPONSOR_CODE.test(text);
 export function withoutSponsorCodeClaim(text: string): string {
   return text.split(/(?<=[.!?])\s+/).filter((x) => !sponsorCodeClaim(x)).join(' ').trim();
+}
+
+
+/**
+ * Numbers that are only a currency conversion of a £ price in the same reply which the sources do hold
+ * ("£719 (about €856)"): not invented. Within 2% of the price times today's rate for any currency.
+ */
+export function withoutConversions(invented: string[], text: string, sources: string, rates?: Record<string, number> | null): string[] {
+  if (!invented.length || !rates) return invented;
+  const pounds = [...text.matchAll(/£\s?(\d[\d,]*(?:\.\d+)?)/g)].map((m) => m[1]!.replace(/,/g, '')).filter((n) => new RegExp(`£\\s?${n.replace('.', '\\.')}\\b`).test(sources.replace(/,(?=\d{3})/g, '')));
+  if (!pounds.length) return invented;
+  const values = pounds.flatMap((p) => Object.values(rates).filter((r) => typeof r === 'number' && r > 0).map((r) => Number(p) * r));
+  return invented.filter((n) => { const v = Number(n); return !(v > 0 && values.some((x) => Math.abs(v - x) <= x * 0.02 + 1)); });
+}
+
+
+// "We'll refund you", "your refund has been approved", "yes, you can return it" and the like.
+const REFUND_PROMISE = /\b(?:we(?:'ll| will| can| have)|i(?:'ll| will| can| have)|you(?:'ll| will))\s+(?:\w+\s+){0,3}?(?:refund|issue (?:a|your) refund|get (?:a|your)(?: full)? refund|receive (?:a|your)(?: full)? refund|accept (?:the|your) return|take (?:it|them|the \w+) back|send (?:you )?a replacement|replace (?:it|them))\b|\byour (?:refund|return) (?:is|has been|will be|was)\b|\b(?:refund|return) (?:is|has been) (?:approved|accepted|confirmed|processed|sorted)\b|\byes,? you can (?:return|get a refund|send it back)\b/i;
+export const promisesRefund = (text: string): boolean => REFUND_PROMISE.test(text.replace(/[’‘]/g, "'"));
+export function withoutRefundPromise(text: string): string {
+  return text.split(/(?<=[.!?])\s+/).filter((x) => !promisesRefund(x)).join(' ').trim();
 }

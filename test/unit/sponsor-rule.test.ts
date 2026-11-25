@@ -18,3 +18,16 @@ describe('never say sponsors get discount codes', () => {
       .toBe('No other codes I\'m afraid. Our prices are already on sale. Want me to check your battery size?');
   });
 });
+
+import { promisesRefund, withoutRefundPromise } from '../../src/brain/rules';
+describe('never promise a refund or a return', () => {
+  it('spots promises', () => {
+    for (const t of ["We'll refund you today", 'Your refund has been approved', 'Yes, you can return it within 14 days', "I'll send you a replacement", "You'll get a full refund", 'We can take it back'])
+      expect(promisesRefund(t)).toBe(true);
+  });
+  it('leaves the holding reply and the policy wording alone', () => {
+    for (const t of ["I'm passing it straight to the team so they can sort it properly", 'Returns are within 14 days if unused and unfitted', 'Can you send me your order number?'])
+      expect(promisesRefund(t)).toBe(false);
+    expect(withoutRefundPromise("I'm really sorry. We'll refund you today. I'm passing it to the team.")).toBe("I'm really sorry. I'm passing it to the team.");
+  });
+});

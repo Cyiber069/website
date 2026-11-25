@@ -53,7 +53,7 @@ async function main() {
   const setup = await fetch(`${server.url}/api/setup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery' }) });
   assert.equal(setup.status, 200, 'owner setup');
   cookie = (setup.headers.get('set-cookie') ?? '').split(';')[0];
-  await api('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 1, min_reply_delay_s: 0, max_reply_delay_s: 0 } });
+  await api('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 1, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_seconds: 0, gap_seconds: 0 } });
   const { pairing_string: pairing } = await api('/api/devices/pair-code', { body: {} });
   log(`backend up at ${server.url}`);
 

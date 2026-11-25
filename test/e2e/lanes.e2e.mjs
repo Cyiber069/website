@@ -71,7 +71,7 @@ async function main() {
   const sql = async (query, params = []) => (await api('/api/test/sql', { body: { sql: query, params } })).results;
   // What the new server sends: no reply delay, typing_cps 0 (paste whole). Settle short for the test.
   const pacing = (p) => api('/api/settings/pacing', { method: 'PUT', body: p });
-  await pacing({ settle_seconds: 2, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_cps: 0, max_auto_replies_per_thread_per_hour: 60 });
+  await pacing({ settle_seconds: 2, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_cps: 0, max_auto_replies_per_thread_per_hour: 60, typing_seconds: 0, gap_seconds: 0 });
   await api('/api/settings/channels', { method: 'PUT', body: { gmail: { mode: 'auto' }, tiktok: { mode: 'auto' } } });
   await api('/api/selectors', { method: 'PUT', body: { override: { gmail: { timing: { afterSendMs: 250, waitVisibleMs: 6000, waitHiddenMs: 6000 } } } } });
   const { pairing_string: pairing } = await api('/api/devices/pair-code', { body: {} });

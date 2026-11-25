@@ -247,7 +247,8 @@ Customers outside the UK usually think in km/h: give km/h first for them, with m
 > (Send to Adrian. Never give out a return address.)
 
 **Q: Can I return it? (change of mind)**
-> Yes, you can return it within 14 days of delivery if it's unused, in its original packaging, with all parts. Return postage is paid by you. Let me know and I'll pass it to the team to sort the return.
+> Our returns policy is 14 days from delivery for items that are unused and unfitted, in the original packaging with all parts, and return postage is paid by you. I'll pass this to the team so they can look at your order and come back to you.
+> (Never say yes to a return yourself: the team decides.)
 > (Send to Adrian. Never give a return address yourself.)
 
 # 10. Other common questions

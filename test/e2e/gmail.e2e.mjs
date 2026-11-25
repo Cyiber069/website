@@ -50,7 +50,7 @@ async function main() {
 
   const setup = await api('/api/setup', { body: { password: 'correct horse battery' } });
   cookie = (setup.res.headers.get('set-cookie') ?? '').split(';')[0];
-  await api('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 1, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_cps: 400 } });
+  await api('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 1, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_cps: 400, typing_seconds: 0, gap_seconds: 0 } });
   // A selector fix from the dashboard also carries timings: no 7 s Undo wait and short waits in the test.
   await api('/api/selectors', { method: 'PUT', body: { override: { gmail: { timing: { afterSendMs: 250, waitVisibleMs: 6000 } } } } });
   const settings = (await api('/api/settings')).data.settings;

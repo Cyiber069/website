@@ -79,7 +79,9 @@ async function main() {
     return (await res.json()).results;
   };
 
-  await owner('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 1, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_cps: 80 } });
+  await owner('/api/settings/pacing', { method: 'PUT', body: { settle_seconds: 1, min_reply_delay_s: 0, max_reply_delay_s: 0, typing_cps: 80, typing_seconds: 0, gap_seconds: 0 } });
+  // This test walks the 'wait for my OK' mode first (the default is now auto): set it explicitly.
+  await owner('/api/settings/channels', { method: 'PUT', body: { tiktok: { mode: 'review' } } });
   const { pairing_string } = await owner('/api/devices/pair-code', { body: {} });
 
   // ---- browser with the unpacked extension -----------------------------------------------------

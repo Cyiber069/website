@@ -73,12 +73,12 @@ Never tell a customer who asks for a discount for themselves that sponsors, crea
 const LATER_NOTES: (IngestInput & { id: string; flag: string; replace?: boolean })[] = [
   {
     // The owner's rules and the settled contradictions between the playbook and the store. Pinned, source note: wins over everything.
-    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v7', replace: true, title: 'Owner rules and corrections',
+    id: 'seed_owner_rules', flag: 'kb_seed_owner_rules_v8', replace: true, title: 'Owner rules and corrections',
     content: ownerRulesMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'note', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {
     // The owner's reply playbook: speeds, ranges, fitting, delivery, discounts and what to hand over. Pinned: always given in full.
-    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v5', replace: true, title: 'Reply playbook (from the owner)',
+    id: 'seed_reply_playbook', flag: 'kb_seed_reply_playbook_v6', replace: true, title: 'Reply playbook (from the owner)',
     content: playbookMd.replace(/^# .*\n+/, '').trim(), category: 'faq', source: 'seed', source_ref: 'https://acxebikes.com/', pinned: true,
   },
   {

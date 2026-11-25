@@ -87,6 +87,10 @@ export interface PacingSettings {
   human_takeover_minutes: number;
   /** Unread messages older than this are stored but never auto answered. */
   ignore_older_than_hours: number;
+  /** Seconds the agent's message shows as "typing..." before it is sent, on WhatsApp and TikTok. */
+  typing_seconds: number;
+  /** Seconds between two messages of one agent reply, on WhatsApp and TikTok. */
+  gap_seconds: number;
 }
 
 export interface RecoverySettings {
@@ -346,7 +350,8 @@ export interface AgentJob {
   source: string;
   target: JobTarget;
   parts: string[];
-  pacing: { delay_ms: number; typing_cps: number };
+  /** typing_ms: how long the text sits in the box (the customer sees "typing...") before it is sent; gap_ms: the wait between two messages (extension 0.6.4). */
+  pacing: { delay_ms: number; typing_cps: number; typing_ms?: number; gap_ms?: number };
   lease_until: number;
   /** Time left on the lease when the job was handed over (ms). Newer extensions use it instead of lease_until, so a laptop clock that is off does not matter. */
   lease_ms: number;

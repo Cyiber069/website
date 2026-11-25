@@ -995,6 +995,8 @@
         }
       }
       if (!pace.instant) await ACX.humanPause(total * rand(0.2, 0.35), pace.scale); // the customer sees "typing..." meanwhile
+      // The human pace: the customer sees "typing..." for about typing_ms, a little shorter for a short message.
+      if (pace.typing_ms) await sleep(Math.round(pace.typing_ms * Math.min(1, Math.max(0.5, text.length / 120)) * rand(0.85, 1)));
     }
     // Read back. Anything else in the box (the owner typed, the chat changed) stops the send.
     const cur = currentChat();
@@ -1123,7 +1125,9 @@
     const rawCps = job.pacing ? job.pacing.typing_cps : undefined;
     const cps = ACX.cpsOf(rawCps);
     const nominal = 850 + parts.reduce((n, p) => n + Math.min(12_000, Math.max(700, (p.length / Math.max(3, cps)) * 1000)) * 0.6 + 1150, 0);
-    const pace = { instant: ACX.instant(rawCps), cps, scale: ACX.pauseScale(budgetMs, nominal) };
+    // A human pace (0.6.4): the text sits in the box showing "typing..." for typing_ms, then a gap_ms wait before the next message.
+    const ms = (v) => Math.min(30_000, Math.max(0, Number(v) || 0));
+    const pace = { instant: ACX.instant(rawCps), cps, scale: ACX.pauseScale(budgetMs, nominal), typing_ms: ms(job.pacing && job.pacing.typing_ms), gap_ms: ms(job.pacing && job.pacing.gap_ms) };
     const want = await wantFor(target);
 
     let cur;
@@ -1174,7 +1178,7 @@
     }
     for (let i = from; i < parts.length; i++) {
       // About 0.4 s between parts (WhatsApp keeps their order); the old human gap with a speed.
-      if (i > from) await sleep(pace.instant ? 400 : Math.max(400, rand(700, 1600) * pace.scale));
+      if (i > from) await sleep(pace.gap_ms ? Math.round(pace.gap_ms * rand(0.85, 1.1)) : pace.instant ? 400 : Math.max(400, rand(700, 1600) * pace.scale));
       await typePart(parts[i], pace, cur.title);
       sent.push(await sendTyped(parts[i], { last: i === parts.length - 1 }));
       ACX.noteSent(parts[i]);

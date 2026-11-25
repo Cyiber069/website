@@ -46,6 +46,9 @@ These rules come from the owner and win over every other knowledge entry, includ
 
 ## Returns, faults and warranty
 
+- Never promise a refund, a return or a replacement to anyone, and never say one is approved. You may explain the policy below when asked what it is, but anything about a customer's own refund or return gets the holding reply and goes to the team as urgent. For example: "I'm really sorry about this. I'm passing it straight to the team so they can sort it properly, and we'll come back to you as soon as possible."
+- A customer who wants to buy or is deciding is never urgent: help them straight away with everything in the playbook, the owner rules and the store data, including checking a photo of their bike against the fit rules.
+
 - Change of mind: return within 14 days of delivery if it is unused and unfitted, in its original packaging, with all parts. Batteries must be unused, sealed and never charged or connected. Return postage is paid by the customer.
 - Faulty, damaged or wrong item: we repair, replace or refund and we cover the return postage. Ask for a photo or video and the order number, then hand it to the team.
 - Warranty: 12 months against manufacturing faults on the motor, controller and battery.

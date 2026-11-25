@@ -244,7 +244,7 @@ export async function decide(env: Env, inputIn: DecideInput, opts: DecideOptions
     const fxNote = currencyNote(input.contact_phone, fx, playbookPrices(knowledge.stable));
     if (fxNote) notes.push(fxNote);
     const sources = [knowledge.stable, knowledge.retrieved, call.context_notes.join('\n'), call.subject ?? '', fullConversation, seen].join('\n');
-    const ctx: EnforceContext = { settings, input: call, tone, sources, customerEmojis: analysis.emojis };
+    const ctx: EnforceContext = { settings, input: call, tone, sources, customerEmojis: analysis.emojis, fxRates: fx?.rates ?? null };
 
     const guard = (d: Decision): Decision => {
       // Owner rule: never tell a customer the agent cannot open or see what they sent. Such a reply goes to the owner.

@@ -45,7 +45,7 @@ describe('the old 0.3.2 extension keeps the pacing and settle it was made for', 
     expect(old.data.config.pacing.settle_seconds).toBe(12);
     const r = await inbound('whatsapp', wa(), [msg('m1', 'how heavy is the 1000w kit')]);
     // Never 0: 0.3.2 reads 0 as 3 a second on TikTok. At 200 it keeps only its floor pauses (about half a second a part).
-    expect(r.jobs[0]!.pacing).toEqual({ delay_ms: 0, typing_cps: 200 });
+    expect(r.jobs[0]!.pacing).toEqual({ delay_ms: 0, typing_cps: 200, typing_ms: 10_000, gap_ms: 10_000 });
     await api(`/api/conversations/${r.conversation_id}/send`, { body: { text: 'owner note for the old laptop' } });
     const manual = (await syncAs('0.3.2')).data.jobs.find((j) => j.source === 'manual')!;
     expect(manual.pacing.typing_cps).toBe(200); // never slower than the 30 it had before the speed change
@@ -54,7 +54,7 @@ describe('the old 0.3.2 extension keeps the pacing and settle it was made for', 
       expect(s.data.config.pacing.settle_seconds, version).toBe(4);
     }
     const n = await inbound('whatsapp', wa(), [msg('m1', 'how wide is the 1000w kit')]);
-    expect(n.jobs[0]!.pacing).toEqual({ delay_ms: 0, typing_cps: 0 });
+    expect(n.jobs[0]!.pacing).toEqual({ delay_ms: 0, typing_cps: 0, typing_ms: 10_000, gap_ms: 10_000 });
     // The laptop's queue order and the time left on the lease travel with every job.
     expect(n.jobs[0]).toMatchObject({ not_before: expect.any(Number), created_at: expect.any(Number) });
     expect((n.jobs[0] as any).lease_ms).toBeGreaterThan(2 * MIN);

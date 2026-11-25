@@ -28,7 +28,7 @@ export const DEFAULT_SETTINGS: Settings = {
   channels: {
     whatsapp: { mode: 'auto' },
     gmail: { mode: 'review' },
-    tiktok: { mode: 'review' },
+    tiktok: { mode: 'auto' },   // TikTok customers are answered on their own (owner, 2026-11-25)
   },
   voice: {
     brand_name: 'ACX',
@@ -65,6 +65,10 @@ export const DEFAULT_SETTINGS: Settings = {
     max_auto_replies_per_thread_per_hour: 30,
     human_takeover_minutes: 15,
     ignore_older_than_hours: 24,
+    // A human pace for the agent's own replies on WhatsApp and TikTok (owner, 2026-11-25): about 10 s of
+    // "typing..." before each message and about 10 s between two messages. 0 turns either off.
+    typing_seconds: 10,
+    gap_seconds: 10,
   },
   recovery: {
     enabled: true,

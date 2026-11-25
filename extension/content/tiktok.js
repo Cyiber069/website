@@ -874,7 +874,7 @@
   };
 
   /** Paste one part, press Send, wait for the new bubble. Returns the message id or null. */
-  async function sendPart(text, cps, scale = 1) {
+  async function sendPart(text, cps, scale = 1, holdMs = 0) {
     const chat = chatInfo();
     const editor = await composerOf(chat);
     const idOf = (m) => m.clientId || m.serverId;
@@ -897,7 +897,7 @@
       if (typedMore) throw new Fail('composer_busy', 'The TikTok message box changed while typing', true);
       throw new Fail('send_not_synced', 'TikTok did not take the text (the message box did not match it)', true);
     }
-    await sleep(rand(400, 1100));
+    await sleep(holdMs || rand(400, 1100)); // the human pace: the text sits in the box before Send
 
     /** The bubble this send produced, once TikTok has settled it. */
     const outcome = () => {
@@ -1017,9 +1017,12 @@
       const scale = instant ? 1 : ACX.pauseScale(budgetMs, nominal);
       let sentNow = 0;
       for (let i = prog.done; i < parts.length; i++) {
-        if (sentNow) await sleep(instant ? rand(1200, 1600) : Math.max(1200, rand(2000, 4000) * scale)); // TikTok wants a gap between two messages
+        // The human pace (0.6.4): gap_ms between two messages, and typing_ms with the text in the box before Send.
+        const gapMs = Math.min(30_000, Math.max(0, Number(job.pacing && job.pacing.gap_ms) || 0));
+        const typingMs = Math.min(30_000, Math.max(0, Number(job.pacing && job.pacing.typing_ms) || 0));
+        if (sentNow) await sleep(gapMs ? Math.round(gapMs * rand(0.85, 1.1)) : instant ? rand(1200, 1600) : Math.max(1200, rand(2000, 4000) * scale)); // TikTok wants a gap between two messages
         assertNotBlocked();
-        const id = await sendPart(parts[i], rawCps, scale);
+        const id = await sendPart(parts[i], rawCps, scale, typingMs ? Math.round(typingMs * Math.min(1, Math.max(0.5, parts[i].length / 120)) * rand(0.85, 1)) : 0);
         ACX.noteSent(parts[i]);
         sentNow++;
         prog.done = i + 1;

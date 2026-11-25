@@ -46,3 +46,16 @@ describe('the currency note', () => {
     expect(currencyNote('+353871234567', null, prices)).toBe('');
   });
 });
+
+import { withoutConversions } from '../../src/brain/rules';
+describe('a converted price is not an invented figure', () => {
+  const rates = { EUR: 1.19, USD: 1.27 };
+  it('lets "£719 (about €856)" through when £719 is in the knowledge', () => {
+    expect(withoutConversions(['856'], 'The 25Ah is £719 (about €856)', 'ACX 3000w bundle 29 / Sw900 / 25ah | £719.00', rates)).toEqual([]);
+  });
+  it('still flags a number that is no conversion, or a £ price that is not in the knowledge', () => {
+    expect(withoutConversions(['999'], 'The 25Ah is £719 (about €999)', '£719.00', rates)).toEqual(['999']);
+    expect(withoutConversions(['856'], 'It is £720 (about €856)', '£719.00', rates)).toEqual(['856']);
+    expect(withoutConversions(['856'], 'about €856', '£719.00', null)).toEqual(['856']);
+  });
+});
