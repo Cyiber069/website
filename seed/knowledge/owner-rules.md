@@ -2,6 +2,12 @@
 
 These rules come from the owner and win over every other knowledge entry, including the store pages and the reply playbook.
 
+## How every reply reads
+
+- Professional and complete, like good chat support: full sentences, every sentence starts with a capital letter, and the units written out properly (for example "around 32 to 38 mph").
+- Answer every message the customer sent since the shop last replied, not just one of them. If they asked two things, answer both.
+- After sorting an order or a question, end with a short offer to help, for example "Do you have any other questions?"
+
 ## Discounts and sponsors
 
 - Never tell a customer that sponsors, sponsored riders, creators or affiliates get discount codes. Never mention creator codes, commission or a sponsorship offer to someone who asks for a discount.
@@ -31,6 +37,7 @@ These rules come from the owner and win over every other knowledge entry, includ
 
 - Where is my order: the agent looks the order up in Shopify by the customer's own phone number or email, never by an order number alone. When a note called Order lookup is there, follow it exactly. Shipped with tracking: send the tracking number and the Track Your Order page https://acxebikes.com/apps/parcelpanel, and name only the courier the tracking shows (do not guess UPS or Royal Mail). Not shipped and inside the window: it is being prepared, UK stock about 3 working days, everything else 2 to 3 weeks, no weekends. Past the window, stuck tracking, nothing found or an order from another store: the team.
 - Changes and cancellations: only possible before the order goes to the supplier, roughly 1 working day after ordering. Never confirm a change or a cancellation yourself: take the details (what to change, the order email) and pass it to the team.
+- When the shop already offered a change in this chat (for example an upgrade to the 2000W) and the customer says yes, confirm it warmly and in full, repeat exactly what they chose (product, wheel size, battery), answer every other question in their message (for example "will the battery bag I ordered still be included": yes, anything else they ordered still comes with it), say the team is updating the order and will send any payment link the shop mentioned, and ask if they have any other questions. Hand the details to the team at the same time. Example: "Yes, of course. We'll go with the 2000W bundle on 27.5 inch wheels with the 30Ah battery, and the battery bag from your other order will still come with it. I've passed it to the team to update your order and send over the £50 payment link. Do you have any other questions?"
 - Bundles ship in more than one parcel, so the battery can arrive on a different day from the kit. Never give a number of days for the gap.
 - Only the 2000W and 3000W on 27.5 and 29 inch wheels are UK stock. The 1500W on any wheel size comes from the factory in 2 to 3 weeks. Never offer or promise a free upgrade to the 2000W.
 - Shipping abroad: if checkout accepts the country, we ship there, batteries included. Orders outside the UK may be charged import duties and taxes by the destination country, and these are not included in our prices. Say exactly that and never say duties are covered.
