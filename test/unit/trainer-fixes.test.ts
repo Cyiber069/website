@@ -55,3 +55,25 @@ describe('the sanitizer leaves product words alone', () => {
     expect(r.parts.join(' ')).toContain('help you');
   });
 });
+
+import { soundsUnsure } from '../../src/brain/rules';
+describe('round 2: faults found on Sonnet', () => {
+  it("does not take the customer's doubt for the shop's", () => {
+    expect(soundsUnsure("Send me a pic of your frame if you're not sure it is a medium")).toBe(false);
+    expect(soundsUnsure('If you are unsure, measure the tyre')).toBe(false);
+    expect(soundsUnsure("Not sure which wheel size you have? It is printed on the tyre")).toBe(false);
+    expect(soundsUnsure("I'm not sure about that one")).toBe(true);
+    expect(soundsUnsure("We don't know the weight")).toBe(true);
+  });
+  it('adds the 30Ah frame note when a reply talks about the 30Ah without it', () => {
+    const d: RawDecision = { action: 'reply', parts: ["Yes, of course. We'll go with the 2000W bundle on 27.5 inch wheels with the 30Ah battery https://acxebikes.com/products/acx-2000w-bundle"], confidence: 0.9, escalate: null, flags: { opt_out: false, asked_if_bot: false, needs_human: false }, kb_refs: [], note: '' };
+    const history = [inMsg('can I get the 2000w with the 30ah battery')];
+    const input: DecideInput = { channel: 'whatsapp', contact_name: null, subject: null, history, context_notes: [], now: NOW, mode: 'live' };
+    const out = enforceDecision(d, { settings: DEFAULT_SETTINGS, input, tone: analyzeTone(history).profile, sources: `2000W bundle 27.5 30Ah https://acxebikes.com/products/acx-2000w-bundle\n${renderConversation(history, NOW)}` });
+    expect(out.parts[0]).toContain('The 30Ah only fits XL or stealth frames');
+    expect(out.parts[0]).toMatch(/acx-2000w-bundle$/);
+    // Already said by the reply: nothing is added.
+    const said = enforceDecision({ ...d, parts: ['The 30Ah only fits XL or stealth frames, so go 25Ah'] }, { settings: DEFAULT_SETTINGS, input, tone: analyzeTone(history).profile, sources: renderConversation(history, NOW) });
+    expect(said.parts.join(' ').match(/XL or stealth/g)).toHaveLength(1);
+  });
+});

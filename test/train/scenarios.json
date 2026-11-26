@@ -1,53 +1,543 @@
 [
- {"id": "best-bundle", "channel": "whatsapp", "phone": "+353871234567", "name": "Conor", "turns": [["customer", "Tell me about your best bundle??"]],
-  "expect": "The 5000W bundle is the best. Speed around 50 to 60+ mph (km/h too for a non UK number), 72V, what is included, from £819 with about the euro price, the 150mm stealth or C41 frame note and the 3000W or 2000W for a normal hardtail, the link, one question. 1 or 2 messages. Never calls another product best or best seller."},
- {"id": "is-2000-good", "channel": "whatsapp", "phone": "+447700900111", "name": "Jake", "turns": [["customer", "is the 2000w bundle any good?"]],
-  "expect": "Yes and why: around 32 to 38 mph, 52V battery, what is in the box, from £595 next to the 1500W (£589) and 3000W (£689), UK stock on 27.5 and 29 inch in about 3 working days, fits most hardtails with hydraulic brakes, link, one question. Not a one liner."},
- {"id": "ready-to-order", "channel": "whatsapp", "phone": "+41791234567", "name": "Lenny", "turns": [["customer", "what is your most powerful bundle"], ["agent", "Our most powerful is the 5000W bundle, around 50 to 60+ mph, from £819 with the 72V battery. It needs a 150mm rear end, so a stealth or C41 style frame. Are you building it for off road?"], ["customer", "yes"], ["agent", "Then the 5000W bundle is the one, from £819 depending on battery size. Check your rear dropout is 150mm first, then grab it here https://acxebikes.com/products/acx-5000w-bundle"], ["customer", "yeah im gonna order it"]],
-  "expect": "Short and warm. Does not repeat the pitch, the price or the link. May add only something new and useful (which options to pick). Never asks for an order number. No Urgent."},
- {"id": "how-to-order", "channel": "tiktok", "name": "f4nzz", "turns": [["customer", "how fast is the 3000w"], ["agent", "The 3000W does around 37 to 50 mph, depending on your weight, battery and hills."], ["customer", "ok how do i order one, i have a 29 inch large frame"]],
-  "expect": "Helps them buy: the 3000W bundle link, pick 29 inch, screen SW900 or UKC1, battery 20Ah or 25Ah for a large frame (30Ah only XL or stealth), from £689, UK stock about 3 working days. Never asks for an order number. No Urgent."},
- {"id": "discount-ask", "channel": "whatsapp", "phone": "+447700900222", "turns": [["customer", "do you have any discount codes?"]],
-  "expect": "Our prices are already on sale so the site price is the best price. Does not mention sponsor or creator codes. Moves the sale on. No Urgent."},
- {"id": "sponsor-ask", "channel": "tiktok", "name": "rider.kg", "turns": [["agent", "No other codes I'm afraid. Our prices are already on sale."], ["customer", "What about the sponsor?"]],
-  "expect": "The full sponsorship offer straight away: custom code of their choice, £20 off kits, bundles and batteries only, 5% commission, put it in bio, tag us in bio and videos, asks what code they want. No 'check with the team'. No Urgent."},
- {"id": "lauren-change", "channel": "whatsapp", "phone": "+447700900333", "name": "lauren 1023", "turns": [["agent", "Hey Lauren, good news, we can change your order. The 1500W isn't in our UK stock right now, so you'd be waiting a while for that one. What we can do instead is upgrade you to the 2000W bundle for an extra £50. That one ships from the UK, so it'll be with you in about 3 days. If you're happy with the 2000W, let me know and I'll send over the £50 payment link and get it shipped."], ["customer", "How fast does the 2000w go ?"], ["customer", "Can I please go for the 2000w bundle for 27.5 inch wheel and a 30ah battery please\nI also ordered a battery bag with my other order so will that still be included ?\nThanks Lauren"]],
-  "expect": "Answers all three: speed around 32 to 38 mph; confirms 2000W bundle, 27.5 inch, 30Ah; the battery bag from her other order still comes. Says the team is updating the order and sending the £50 link, asks if she has other questions. Should flag kindly that the 30Ah only fits XL or stealth frames and ask her frame size. Hands the change to the team (Urgent is right here) without promising a date."},
- {"id": "fit-marlin", "channel": "whatsapp", "phone": "+447700900444", "turns": [["customer", "will the 2000w fit my trek marlin 6? its a medium frame 29er"]],
-  "expect": "Yes: Marlin 6 is on the owner's list for the 2000W, aluminium hardtail. Pick 29 inch. Battery 20Ah or 25Ah on a medium (30Ah only XL or stealth). Hydraulic brakes tip. Price and link, a next step. No Urgent."},
- {"id": "which-bike-3000", "channel": "tiktok", "turns": [["customer", "what bike should i buy to put the 3000w on"]],
-  "expect": "The owner's list: Carrera Hellcat (large), Trek Marlin (large or XL), Giant Talon (large or XL), Norco Storm (large or XL). Large or XL frame because the 72V battery is bigger, strong hydraulic brakes, torque arms fitted properly. A next step."},
- {"id": "young-rider", "channel": "tiktok", "turns": [["customer", "im 14 is the 2000w good for me or too much"]],
-  "expect": "The owner's young rider answer: 2000W is good to start on, 1500W a touch calmer, both easier than 3000W or 5000W, speeds, low screen level, prices £589 and £595, both links. Never pushes 3000W or 5000W."},
- {"id": "torque-bag", "channel": "whatsapp", "phone": "+447700900555", "turns": [["customer", "does it come with torque arms and the battery bag or do i need to buy them"]],
-  "expect": "Torque arms come in the box with every kit and bundle, the £25 set is a spare. Battery bag is not included, £45, small or large, add at checkout."},
- {"id": "germany-throttle", "channel": "whatsapp", "phone": "+4915238452770", "turns": [["customer", "Hello, I live in Germany. Are your kits legal here?"], ["agent", "We can't give legal advice, as the rules depend on your country and where you ride, so please check your local rules. Our 250W Road Legal bundle is pedal assist only and cuts out at 25 km/h."], ["customer", "I want one that goes 25 km/h only with throttle and I can also pedal"]],
-  "expect": "The 250W is pedal assist only with no throttle. The 500W and bigger have a throttle but are faster (500W around 40 km/h). So no throttle kit limited to 25 km/h. Offers the 500W bundle from £439 with about the euro price and link. No 'I'll check'. No Urgent."},
- {"id": "order-shipped", "channel": "whatsapp", "phone": "+447700900666", "name": "Sam", "turns": [["customer", "hi any update on my order? has it been sent yet"]],
-  "notes": ["Order lookup (Shopify, matched by this customer's own phone number; never share it with anyone else): Order #1187, placed 2026-11-20: ACX 2000w bundle (29 / Sw900 / 25ah). It has shipped: tracking number 1Z999AA10123456784 with UPS (https://www.ups.com/track?tracknum=1Z999AA10123456784). Send the tracking number, name only the courier shown here, and give the Track Your Order page https://acxebikes.com/apps/parcelpanel. Follow these instructions exactly and never promise a date."],
-  "expect": "Tells them it has shipped, gives the tracking number, names UPS, gives the Track Your Order page. No Urgent. No promised date."},
- {"id": "order-not-found", "channel": "whatsapp", "phone": "+447700900777", "turns": [["customer", "where is my order its been 2 weeks"]],
-  "notes": ["Order lookup: no order in Shopify matches this customer's phone number or email. If they say they ordered, ask for the email they used at checkout, and if they already gave it, hand it to the team (category order_status): it may be an order from another store. Never look an order up by its number alone."],
-  "expect": "Says sorry for the wait and asks for the email they used at checkout. Does not promise a date."},
- {"id": "refund-demand", "channel": "gmail", "name": "Margaret Hill", "turns": [["customer", "Hello, I ordered three weeks ago and nothing has arrived. I want a full refund or I will go to my bank."]],
-  "expect": "Sorry, passing it straight to the team, they will come back as soon as possible. Never promises or refuses a refund, no timescale. Urgent with a refund or complaint category. Formal email tone."},
- {"id": "deleted-text", "channel": "whatsapp", "phone": "+41791234567", "name": "Lenny", "turns": [["agent", "Then the 5000W bundle is the one, from £819 depending on battery size. Check your rear dropout is 150mm first, then grab it here https://acxebikes.com/products/acx-5000w-bundle"], ["customer", "yeah im gonna order it"], ["customer", "why did you delete the text"]],
-  "expect": "A short sorry (a message sent by mistake) and what they need to order: the link again and which options to pick. Not 'let me check with the team'. No Urgent."},
- {"id": "tiktok-placeholder", "channel": "tiktok", "turns": [["customer", "This message type isn't supported. Download TikTok app to view this message."]],
-  "notes": ["The customer sent only a sticker, an emoji or a post this inbox cannot show (TikTok calls it \"this message type is not supported\"). Never mention that or ask them to resend it. Reply with one short friendly line that carries the chat on, for example asking what they would like to know, or, if the chat was about a product, picking up from there. Do not escalate."],
-  "expect": "One short friendly line asking what they would like to know. Does not mention the unsupported message. No Urgent."},
- {"id": "battery-euros", "channel": "whatsapp", "phone": "+4915238452770", "turns": [["customer", "How much does your best battery cost in euros"]],
-  "expect": "The 72V battery price in pounds with about the euro amount from the table, says checkout shows the exact price, what it is used on (3000W and 5000W), the link, a question. CHF/EUR in capitals."},
- {"id": "five-questions", "channel": "whatsapp", "phone": "+447700900888", "turns": [["customer", "hi few questions. how fast is the 1500w? whats the range with the 25ah? how long is delivery to manchester? is it waterproof? and can i pay monthly"]],
-  "expect": "Answers all five: around 28 to 34 mph; 52V 25Ah about 65 easy, 37 mixed, 24 hard miles; 1500W ships from the factory in about 2 to 3 weeks, free UK delivery; fine in normal rain, no deep water or jet wash; Klarna and Shop Pay instalments. In 1 or 2 messages."},
- {"id": "hi", "channel": "whatsapp", "phone": "+447700900999", "turns": [["customer", "Hi mate"]],
-  "expect": "A short friendly professional greeting and one question about what they are after. No 'mate' or 'bro' back. One message."},
- {"id": "range-72v", "channel": "tiktok", "turns": [["customer", "whats the range on the 72v 30ah"]],
-  "expect": "Around 108 miles easy, 62 mixed, 39 hard on the throttle, depending on weight, speed and hills. Notes the 30Ah only fits XL or stealth frames. A next step."},
- {"id": "ship-portugal", "channel": "whatsapp", "phone": "+351912345678", "turns": [["customer", "do you ship to portugal? i want the 1000w bundle"]],
-  "expect": "We don't ship to Portugal at the moment. Passes a keen customer to the team (Urgent is fine). Does not invent a rate."},
- {"id": "sixty-volt", "channel": "whatsapp", "phone": "+447700900123", "turns": [["customer", "can i use a 60v battery with the 1500w kit"]],
-  "expect": "The 1500W kit takes 48V or 52V. The 60V is only a spare for existing 60V systems, not recommended for a new kit. Suggests the 52V or the 1500W bundle with price and link. No Urgent."},
- {"id": "fault", "channel": "whatsapp", "phone": "+447700900124", "turns": [["customer", "my display is showing error 30 and the motor wont run"]],
-  "expect": "Sorry, asks for a photo or short video and the order number, passes it to the team. Urgent as a fault. No invented troubleshooting."}
+ {
+  "id": "best-bundle",
+  "channel": "whatsapp",
+  "phone": "+353871234567",
+  "name": "Conor",
+  "turns": [
+   [
+    "customer",
+    "Tell me about your best bundle??"
+   ]
+  ],
+  "expect": "The 5000W bundle is the best. Speed around 50 to 60+ mph (km/h too for a non UK number), 72V, what is included, from £819 with about the euro price, the 150mm stealth or C41 frame note and the 3000W or 2000W for a normal hardtail, the link, one question. 1 or 2 messages. Never calls another product best or best seller."
+ },
+ {
+  "id": "is-2000-good",
+  "channel": "whatsapp",
+  "phone": "+447700900111",
+  "name": "Jake",
+  "turns": [
+   [
+    "customer",
+    "is the 2000w bundle any good?"
+   ]
+  ],
+  "expect": "Yes and why: around 32 to 38 mph, 52V battery, what is in the box, from £595 next to the 1500W (£589) and 3000W (£689), UK stock on 27.5 and 29 inch in about 3 working days, fits most hardtails with hydraulic brakes, link, one question. Not a one liner."
+ },
+ {
+  "id": "ready-to-order",
+  "channel": "whatsapp",
+  "phone": "+41791234567",
+  "name": "Lenny",
+  "turns": [
+   [
+    "customer",
+    "what is your most powerful bundle"
+   ],
+   [
+    "agent",
+    "Our most powerful is the 5000W bundle, around 50 to 60+ mph, from £819 with the 72V battery. It needs a 150mm rear end, so a stealth or C41 style frame. Are you building it for off road?"
+   ],
+   [
+    "customer",
+    "yes"
+   ],
+   [
+    "agent",
+    "Then the 5000W bundle is the one, from £819 depending on battery size. Check your rear dropout is 150mm first, then grab it here https://acxebikes.com/products/acx-5000w-bundle"
+   ],
+   [
+    "customer",
+    "yeah im gonna order it"
+   ]
+  ],
+  "expect": "Short and warm. Does not repeat the pitch, the price or the link. May add only something new and useful (which options to pick). Never asks for an order number. No Urgent."
+ },
+ {
+  "id": "how-to-order",
+  "channel": "tiktok",
+  "name": "f4nzz",
+  "turns": [
+   [
+    "customer",
+    "how fast is the 3000w"
+   ],
+   [
+    "agent",
+    "The 3000W does around 37 to 50 mph, depending on your weight, battery and hills."
+   ],
+   [
+    "customer",
+    "ok how do i order one, i have a 29 inch large frame"
+   ]
+  ],
+  "expect": "Helps them buy: the 3000W bundle link, pick 29 inch, screen SW900 or UKC1, battery 20Ah or 25Ah for a large frame (30Ah only XL or stealth), from £689, UK stock about 3 working days. Never asks for an order number. No Urgent."
+ },
+ {
+  "id": "discount-ask",
+  "channel": "whatsapp",
+  "phone": "+447700900222",
+  "turns": [
+   [
+    "customer",
+    "do you have any discount codes?"
+   ]
+  ],
+  "expect": "Our prices are already on sale so the site price is the best price. Does not mention sponsor or creator codes. Moves the sale on. No Urgent."
+ },
+ {
+  "id": "sponsor-ask",
+  "channel": "tiktok",
+  "name": "rider.kg",
+  "turns": [
+   [
+    "agent",
+    "No other codes I'm afraid. Our prices are already on sale."
+   ],
+   [
+    "customer",
+    "What about the sponsor?"
+   ]
+  ],
+  "expect": "The full sponsorship offer straight away: custom code of their choice, £20 off kits, bundles and batteries only, 5% commission, put it in bio, tag us in bio and videos, asks what code they want. No 'check with the team'. No Urgent."
+ },
+ {
+  "id": "lauren-change",
+  "channel": "whatsapp",
+  "phone": "+447700900333",
+  "name": "lauren 1023",
+  "turns": [
+   [
+    "agent",
+    "Hey Lauren, good news, we can change your order. The 1500W isn't in our UK stock right now, so you'd be waiting a while for that one. What we can do instead is upgrade you to the 2000W bundle for an extra £50. That one ships from the UK, so it'll be with you in about 3 days. If you're happy with the 2000W, let me know and I'll send over the £50 payment link and get it shipped."
+   ],
+   [
+    "customer",
+    "How fast does the 2000w go ?"
+   ],
+   [
+    "customer",
+    "Can I please go for the 2000w bundle for 27.5 inch wheel and a 30ah battery please\nI also ordered a battery bag with my other order so will that still be included ?\nThanks Lauren"
+   ]
+  ],
+  "expect": "Answers all three: speed around 32 to 38 mph; confirms 2000W bundle, 27.5 inch, 30Ah; the battery bag from her other order still comes. Says the team is updating the order and sending the £50 link, asks if she has other questions. Should flag kindly that the 30Ah only fits XL or stealth frames and ask her frame size. Hands the change to the team (Urgent is right here) without promising a date."
+ },
+ {
+  "id": "fit-marlin",
+  "channel": "whatsapp",
+  "phone": "+447700900444",
+  "turns": [
+   [
+    "customer",
+    "will the 2000w fit my trek marlin 6? its a medium frame 29er"
+   ]
+  ],
+  "expect": "Yes: Marlin 6 is on the owner's list for the 2000W, aluminium hardtail. Pick 29 inch. Battery 20Ah or 25Ah on a medium (30Ah only XL or stealth). Hydraulic brakes tip. Price and link, a next step. No Urgent."
+ },
+ {
+  "id": "which-bike-3000",
+  "channel": "tiktok",
+  "turns": [
+   [
+    "customer",
+    "what bike should i buy to put the 3000w on"
+   ]
+  ],
+  "expect": "The owner's list: Carrera Hellcat (large), Trek Marlin (large or XL), Giant Talon (large or XL), Norco Storm (large or XL). Large or XL frame because the 72V battery is bigger, strong hydraulic brakes, torque arms fitted properly. A next step."
+ },
+ {
+  "id": "young-rider",
+  "channel": "tiktok",
+  "turns": [
+   [
+    "customer",
+    "im 14 is the 2000w good for me or too much"
+   ]
+  ],
+  "expect": "The owner's young rider answer: 2000W is good to start on, 1500W a touch calmer, both easier than 3000W or 5000W, speeds, low screen level, prices £589 and £595, both links. Never pushes 3000W or 5000W."
+ },
+ {
+  "id": "torque-bag",
+  "channel": "whatsapp",
+  "phone": "+447700900555",
+  "turns": [
+   [
+    "customer",
+    "does it come with torque arms and the battery bag or do i need to buy them"
+   ]
+  ],
+  "expect": "Torque arms come in the box with every kit and bundle, the £25 set is a spare. Battery bag is not included, £45, small or large, add at checkout."
+ },
+ {
+  "id": "germany-throttle",
+  "channel": "whatsapp",
+  "phone": "+4915238452770",
+  "turns": [
+   [
+    "customer",
+    "Hello, I live in Germany. Are your kits legal here?"
+   ],
+   [
+    "agent",
+    "We can't give legal advice, as the rules depend on your country and where you ride, so please check your local rules. Our 250W Road Legal bundle is pedal assist only and cuts out at 25 km/h."
+   ],
+   [
+    "customer",
+    "I want one that goes 25 km/h only with throttle and I can also pedal"
+   ]
+  ],
+  "expect": "The 250W is pedal assist only with no throttle. The 500W and bigger have a throttle but are faster (500W around 40 km/h). So no throttle kit limited to 25 km/h. Offers the 500W bundle from £439 with about the euro price and link. No 'I'll check'. No Urgent."
+ },
+ {
+  "id": "order-shipped",
+  "channel": "whatsapp",
+  "phone": "+447700900666",
+  "name": "Sam",
+  "turns": [
+   [
+    "customer",
+    "hi any update on my order? has it been sent yet"
+   ]
+  ],
+  "notes": [
+   "Order lookup (Shopify, matched by this customer's own phone number; never share it with anyone else): Order #1187, placed 2026-11-20: ACX 2000w bundle (29 / Sw900 / 25ah). It has shipped: tracking number 1Z999AA10123456784 with UPS (https://www.ups.com/track?tracknum=1Z999AA10123456784). Send the tracking number, name only the courier shown here, and give the Track Your Order page https://acxebikes.com/apps/parcelpanel. Follow these instructions exactly and never promise a date."
+  ],
+  "expect": "Tells them it has shipped, gives the tracking number, names UPS, gives the Track Your Order page. No Urgent. No promised date."
+ },
+ {
+  "id": "order-not-found",
+  "channel": "whatsapp",
+  "phone": "+447700900777",
+  "turns": [
+   [
+    "customer",
+    "where is my order its been 2 weeks"
+   ]
+  ],
+  "notes": [
+   "Order lookup: no order in Shopify matches this customer's phone number or email. If they say they ordered, ask for the email they used at checkout, and if they already gave it, hand it to the team (category order_status): it may be an order from another store. Never look an order up by its number alone."
+  ],
+  "expect": "Says sorry for the wait and asks for the email they used at checkout. Does not promise a date."
+ },
+ {
+  "id": "refund-demand",
+  "channel": "gmail",
+  "name": "Margaret Hill",
+  "turns": [
+   [
+    "customer",
+    "Hello, I ordered three weeks ago and nothing has arrived. I want a full refund or I will go to my bank."
+   ]
+  ],
+  "expect": "Sorry, passing it straight to the team, they will come back as soon as possible. Never promises or refuses a refund, no timescale. Urgent with a refund or complaint category. Formal email tone."
+ },
+ {
+  "id": "deleted-text",
+  "channel": "whatsapp",
+  "phone": "+41791234567",
+  "name": "Lenny",
+  "turns": [
+   [
+    "agent",
+    "Then the 5000W bundle is the one, from £819 depending on battery size. Check your rear dropout is 150mm first, then grab it here https://acxebikes.com/products/acx-5000w-bundle"
+   ],
+   [
+    "customer",
+    "yeah im gonna order it"
+   ],
+   [
+    "customer",
+    "why did you delete the text"
+   ]
+  ],
+  "expect": "A short sorry (a message sent by mistake) and what they need to order: the link again and which options to pick. Not 'let me check with the team'. No Urgent."
+ },
+ {
+  "id": "tiktok-placeholder",
+  "channel": "tiktok",
+  "turns": [
+   [
+    "customer",
+    "This message type isn't supported. Download TikTok app to view this message."
+   ]
+  ],
+  "notes": [
+   "The customer sent only a sticker, an emoji or a post this inbox cannot show (TikTok calls it \"this message type is not supported\"). Never mention that or ask them to resend it. Reply with one short friendly line that carries the chat on, for example asking what they would like to know, or, if the chat was about a product, picking up from there. Do not escalate."
+  ],
+  "expect": "One short friendly line asking what they would like to know. Does not mention the unsupported message. No Urgent."
+ },
+ {
+  "id": "battery-euros",
+  "channel": "whatsapp",
+  "phone": "+4915238452770",
+  "turns": [
+   [
+    "customer",
+    "How much does your best battery cost in euros"
+   ]
+  ],
+  "expect": "The 72V battery price in pounds with about the euro amount from the table, says checkout shows the exact price, what it is used on (3000W and 5000W), the link, a question. CHF/EUR in capitals."
+ },
+ {
+  "id": "five-questions",
+  "channel": "whatsapp",
+  "phone": "+447700900888",
+  "turns": [
+   [
+    "customer",
+    "hi few questions. how fast is the 1500w? whats the range with the 25ah? how long is delivery to manchester? is it waterproof? and can i pay monthly"
+   ]
+  ],
+  "expect": "Answers all five: around 28 to 34 mph; 52V 25Ah about 65 easy, 37 mixed, 24 hard miles; 1500W ships from the factory in about 2 to 3 weeks, free UK delivery; fine in normal rain, no deep water or jet wash; Klarna and Shop Pay instalments. In 1 or 2 messages."
+ },
+ {
+  "id": "hi",
+  "channel": "whatsapp",
+  "phone": "+447700900999",
+  "turns": [
+   [
+    "customer",
+    "Hi mate"
+   ]
+  ],
+  "expect": "A short friendly professional greeting and one question about what they are after. No 'mate' or 'bro' back. One message."
+ },
+ {
+  "id": "range-72v",
+  "channel": "tiktok",
+  "turns": [
+   [
+    "customer",
+    "whats the range on the 72v 30ah"
+   ]
+  ],
+  "expect": "Around 108 miles easy, 62 mixed, 39 hard on the throttle, depending on weight, speed and hills. Notes the 30Ah only fits XL or stealth frames. A next step."
+ },
+ {
+  "id": "ship-portugal",
+  "channel": "whatsapp",
+  "phone": "+351912345678",
+  "turns": [
+   [
+    "customer",
+    "do you ship to portugal? i want the 1000w bundle"
+   ]
+  ],
+  "expect": "We don't ship to Portugal at the moment. Passes a keen customer to the team (Urgent is fine). Does not invent a rate."
+ },
+ {
+  "id": "sixty-volt",
+  "channel": "whatsapp",
+  "phone": "+447700900123",
+  "turns": [
+   [
+    "customer",
+    "can i use a 60v battery with the 1500w kit"
+   ]
+  ],
+  "expect": "The 1500W kit takes 48V or 52V. The 60V is only a spare for existing 60V systems, not recommended for a new kit. Suggests the 52V or the 1500W bundle with price and link. No Urgent."
+ },
+ {
+  "id": "fault",
+  "channel": "whatsapp",
+  "phone": "+447700900124",
+  "turns": [
+   [
+    "customer",
+    "my display is showing error 30 and the motor wont run"
+   ]
+  ],
+  "expect": "Sorry, asks for a photo or short video and the order number, passes it to the team. Urgent as a fault. No invented troubleshooting."
+ },
+ {
+  "id": "xmas-sale",
+  "channel": "whatsapp",
+  "phone": "+447517124642",
+  "turns": [
+   [
+    "customer",
+    "How cheap will the 2000 be on Xmas sale"
+   ]
+  ],
+  "expect": "Does not invent a Christmas sale, a date or a future price. Prices are already on sale, the site price is the best price: 2000W bundle from £595 (kit £290), link, a next step. No Urgent."
+ },
+ {
+  "id": "which-bag",
+  "channel": "whatsapp",
+  "phone": "+32469257529",
+  "turns": [
+   [
+    "customer",
+    "If I take the 750 w and 25 ah witch bag do i need to buy"
+   ]
+  ],
+  "expect": "Battery bag is £45 in small or large, added at checkout, not included. Gives the large bag size from the knowledge (44.5cm along the bottom) and the battery pack size, so the large suits the pack, or asks/hands over only the exact bag choice if the knowledge does not settle it. Euro price for a Belgian number. No invented sizes."
+ },
+ {
+  "id": "frame-medium",
+  "channel": "whatsapp",
+  "phone": "+48507537590",
+  "turns": [
+   [
+    "agent",
+    "The 2000W bundle comes with a 20Ah, 25Ah or 30Ah battery. What size is your frame?"
+   ],
+   [
+    "customer",
+    "Mine frame is M i Think M=medium  and 25 or 30ah?"
+   ]
+  ],
+  "expect": "25Ah: it is the biggest that fits a medium or large hardtail. The 30Ah only fits XL or stealth frames. Simple words for a non native speaker. A next step (link or checkout options)."
+ },
+ {
+  "id": "belfast",
+  "channel": "whatsapp",
+  "phone": "+447700900201",
+  "turns": [
+   [
+    "customer",
+    "do you deliver to belfast and how much is it for the 1000w bundle"
+   ]
+  ],
+  "expect": "Northern Ireland is £25 standard or £130 express (not free). 1000W bundle from £449, link. No invented times beyond the knowledge."
+ },
+ {
+  "id": "please-answer",
+  "channel": "tiktok",
+  "name": "Gabi1021",
+  "turns": [
+   [
+    "customer",
+    "does the 1500w kit come with the battery or do i buy it separate"
+   ],
+   [
+    "customer",
+    "Plz awnser😭"
+   ]
+  ],
+  "expect": "A short sorry for the wait, then the answer: the kit has no battery, the 1500W bundle includes the 52V battery and charger from £589 (kit £270), link, one question. No Urgent."
+ },
+ {
+  "id": "angry-late",
+  "channel": "whatsapp",
+  "phone": "+447700900202",
+  "name": "Dan",
+  "turns": [
+   [
+    "customer",
+    "this is a fucking joke its been 5 weeks where is my kit"
+   ]
+  ],
+  "notes": [
+   "Order lookup (Shopify, matched by this customer's own phone number; never share it with anyone else): Order #1102, placed 2026-10-20: ACX 1000w bundle (26 / Sw900 / 20ah). It has not shipped yet and is past the usual window (about 2 to 3 weeks from our factory). Do not give a new date: say sorry, say you are checking with the team, and hand it to the team (category order_status). Follow these instructions exactly and never promise a date."
+  ],
+  "expect": "Calm and sorry, no slang, no swearing back. Says it is with the team now and they will come back. No new date, no refund promise. Urgent (order or complaint)."
+ },
+ {
+  "id": "haggle",
+  "channel": "whatsapp",
+  "phone": "+447700900203",
+  "turns": [
+   [
+    "agent",
+    "The 2000W bundle is from £595 with the 52V battery and charger. Here's the link https://acxebikes.com/products/acx-2000w-bundle"
+   ],
+   [
+    "customer",
+    "can you do it for 500"
+   ]
+  ],
+  "expect": "No discount and no invented offer: prices are already on sale. Offers what fits £500: the 1000W bundle from £449 or the 500W/750W bundles from £439, or the 2000W kit at £290 if they have a battery, with a link. One question. No Urgent on a first ask."
+ },
+ {
+  "id": "road-legal-1500",
+  "channel": "tiktok",
+  "turns": [
+   [
+    "customer",
+    "can i ride the 1500w on the road in the uk"
+   ]
+  ],
+  "expect": "Honest: kits above 250W are for private land and off road use only. The 250W Road Legal bundle is the road option, pedal assist only, £399, link. No invented legal detail. No Urgent."
+ },
+ {
+  "id": "three-short",
+  "channel": "whatsapp",
+  "phone": "+447700900204",
+  "turns": [
+   [
+    "customer",
+    "hi"
+   ],
+   [
+    "customer",
+    "how much"
+   ],
+   [
+    "customer",
+    "for the 3000"
+   ]
+  ],
+  "expect": "One reply to all three: 3000W kit from £380 (no battery) and bundle from £689 (72V battery and charger), around 37 to 50 mph, link, one question. Friendly, no slang."
+ },
+ {
+  "id": "return-before-buying",
+  "channel": "whatsapp",
+  "phone": "+447700900205",
+  "turns": [
+   [
+    "customer",
+    "if i buy the 2000w bundle and dont like it can i send it back"
+   ]
+  ],
+  "expect": "Explains the policy: 14 days from delivery, unused and unfitted, original packaging, batteries sealed and never charged, return postage paid by the customer. Does not promise a refund or say yes to a specific return. No Urgent needed for a question before buying."
+ },
+ {
+  "id": "in-stock",
+  "channel": "tiktok",
+  "turns": [
+   [
+    "customer",
+    "is the 5000w bundle in stock rn"
+   ]
+  ],
+  "expect": "Does not invent stock numbers. Says it ships from the factory in about 2 to 3 weeks (UK), from £819, the 150mm frame note, link. No Urgent."
+ },
+ {
+  "id": "formal-warranty",
+  "channel": "gmail",
+  "name": "Richard Evans",
+  "turns": [
+   [
+    "customer",
+    "Dear Sir or Madam,\n\nI am considering the 3000W bundle. Could you confirm the warranty period and whether a charger is included?\n\nKind regards,\nRichard Evans"
+   ]
+  ],
+  "expect": "Formal email, one message: 12 months warranty against manufacturing faults on motor, controller and battery; the charger is included with the 72V battery; from £689, link. Polite close with ACX Ebikes. No slang or emoji."
+ },
+ {
+  "id": "real-person",
+  "channel": "whatsapp",
+  "phone": "+447700900206",
+  "turns": [
+   [
+    "customer",
+    "can i speak to a real person please"
+   ]
+  ],
+  "expect": "Says the team will pick the chat up, asks what it is about or offers to help meanwhile. Honest, never claims to be human. Urgent as a human request."
+ },
+ {
+  "id": "spanish",
+  "channel": "whatsapp",
+  "phone": "+34612345678",
+  "turns": [
+   [
+    "customer",
+    "Hola, cuánto cuesta el kit de 1000w y envían a España?"
+   ]
+  ],
+  "expect": "Replies in Spanish. 1000W kit £250 with about the euro price, no battery included (bundle from £449). Ships to Spain: free express, 2 to 4 weeks, import duties may apply and are not included. Link."
+ }
 ]

@@ -72,7 +72,9 @@ export function knowledgeQuery(input: DecideInput): string {
 // A customer must never read that the shop does not know. Apostrophes are optional, case is ignored.
 const UNSURE = /\b(?:not (?:so |too |really |100% |entirely |totally |quite )?sure|unsure|(?:i |we )?(?:don'?t|do not|dunno|didn'?t) know|dunno|no idea|(?:can'?t|cannot|can not) say|not certain|uncertain|(?:i'?m|i am|we'?re|we are) not able to|(?:i |we )?(?:can'?t|cannot|can not) help|(?:i'?m|i am|we'?re|we are) unable|beyond my|(?:i |we )?(?:don'?t|do not) have (?:any |that |the |enough |much )?(?:info|information|details)|(?:don'?t|do not) have information)\b/i;
 
-export const soundsUnsure = (text: string): boolean => UNSURE.test(text.replace(/[\u2018\u2019\u02bc]/g, "'"));
+// The customer's own doubt is not the shop's: "send me a pic if you're not sure it is a medium" is help, not a shrug.
+const CUSTOMER_DOUBT = /\b(?:if|when|in case|whether|unless)\s+(?:you(?:'re| are)|you|they(?:'re| are)|it(?:'s| is))\s+(?:still\s+)?(?:not (?:so |too |really |100% |entirely |totally |quite )?sure|unsure|not certain|uncertain|don'?t know|do not know)\b|\b(?:not sure|unsure)\b[^.!?]{0,60}\?/gi;
+export const soundsUnsure = (text: string): boolean => UNSURE.test(text.replace(/[\u2018\u2019\u02bc]/g, "'").replace(CUSTOMER_DOUBT, ' '));
 
 // The owner's two approved lines (reply playbook, rule 10 and section 11). Nothing else is used.
 const TEAM_LINE = "I'm passing this to the team now so it's sorted properly, and I'll come back to you as soon as I have an update";
@@ -339,6 +341,17 @@ export function enforceDecision(d: RawDecision, ctx: EnforceContext): Enforced {
   if (out.action === 'reply' && out.parts.length === 0) {
     out.flags.needs_human = true;
     escalate('The draft was empty after the style rules were applied', 'other');
+  }
+  // The 30Ah battery only fits XL or stealth frames (owner rule): a reply that talks about the 30Ah without
+  // saying so gets the line added, unless the shop already said it in this chat. A wrong battery is a return.
+  if (out.parts.length && (tone.language ?? 'en') === 'en' && /\b30\s?ah\b/i.test(out.parts.join(' ')) && !/\b(?:xl|stealth)\b/i.test(out.parts.join(' '))
+    && !input.history.some((m) => m.direction === 'out' && /\b30\s?ah\b/i.test(m.body) && /\b(?:xl|stealth)\b/i.test(m.body))) {
+    const at = out.parts.findIndex((p) => /\b30\s?ah\b/i.test(p));
+    const p = out.parts[at]!;
+    const note = 'The 30Ah only fits XL or stealth frames, so tell me your frame size and I will check it is the right one';
+    const link = /\s*(?:https?:\/\/\S+)\s*$/.exec(p);
+    const body = (link ? p.slice(0, link.index) : p).replace(/\s+$/, '');
+    out.parts[at] = `${body}${/[.!?]$/.test(body) ? '' : '.'} ${note}${link ? ` ${link[0].trim()}` : ''}`;
   }
   // A customer abroad always sees the price in their currency and the speed in km/h (src/brain/currency.ts).
   if (out.parts.length) out.parts = out.parts.map((p) => localise(p, input.contact_phone, ctx.fxRates));
