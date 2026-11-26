@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "verified_against": "TikTok webapp-desktop build read on 2026-11-14 (chunks 49937 IM React SDK, 64027 legacy, 85075, editor). Not yet checked on the owner's logged in account: run the popup check.",
   "urls": {
     "inbox": "https://www.tiktok.com/messages?lang=en",
@@ -25,7 +25,9 @@
     "header": ["[data-e2e=\"dm-new-conversation-header\"]"]
   },
   "requests": {
-    "entry": ["[data-stranger-entry]", "[class*=\"DivRequestGroup\"]", "[role=\"button\"][aria-label=\"Message requests\"]"],
+    "entry_note": "The owner asked the agent never to open Message requests (it got stuck there, 2026-11-26), so entry matches nothing. The real selectors are in entry_was: copy them back into entry to turn it on again.",
+    "entry": ["[data-acx-requests-off]"],
+    "entry_was": ["[data-stranger-entry]", "[class*=\"DivRequestGroup\"]", "[role=\"button\"][aria-label=\"Message requests\"]"],
     "back": ["[class*=\"ConversationRequestHeader\"] [role=\"button\"]", "[role=\"button\"][aria-label=\"Back\"]"],
     "box": ["[data-e2e=\"dm-new-stranger-accept\"]", "[class*=\"DivStrangerBox\"]"],
     "block_button": ["[data-e2e=\"dm-new-stranger-block\"]"]

@@ -328,20 +328,25 @@ async function main() {
   assert.equal((await sent()).length, 8);
   pass('click ignored: sent with Enter instead. Unclear outcome: send_not_confirmed, not retryable');
 
-  // ---- message request: read, answered by the brain, the agent presses Accept and replies (0.6.5) --------
+  // ---- message request: the agent never opens Message requests (owner, 2026-11-26). Once the owner accepts
+  // one, the chat is in the normal list and the agent answers it. ------------------------------------------
   const samId = await mock(() => window.mock.receiveRequest({ handle: 'sam.new', nickname: 'Sam', text: 'do you have the x3 in stock' }));
-  await until('request job sent', async () => {
-    const [row] = await sql(`SELECT o.status, o.last_error FROM outbox o JOIN conversations c ON c.id = o.conversation_id WHERE c.external_thread_id = ?`, [samId]);
+  for (let i = 0; i < 6; i++) { await kick(); await sleep(1500); }
+  let samState = await mock(() => window.mock.state());
+  assert.equal(samState.view, 'main', 'the agent never went into Message requests');
+  assert.equal(samState.convs.find((c) => c.peer.uniqueId === 'sam.new').request, true, 'the request is left for the owner');
+  assert.equal((await sql(`SELECT COUNT(*) AS n FROM conversations WHERE external_thread_id = ?`, [samId]))[0].n, 0, 'nothing was read from the request');
+  assert.equal((await sent()).length, 8);
+  // The owner accepts it in TikTok: now it is a normal chat and the agent answers.
+  await mock((id) => window.mock.accept(id), samId);
+  await until('request answered once the owner accepted it', async () => {
+    const [row] = await sql(`SELECT o.status FROM outbox o JOIN conversations c ON c.id = o.conversation_id WHERE c.external_thread_id = ?`, [samId]);
     return row && row.status === 'sent' ? row : null;
   });
-  // (The adapter may be looking inside Message requests at this very moment; it always comes back.)
-  await until('list back on the normal conversations', async () => (await mock(() => window.mock.state())).view === 'main', 15_000);
-  const samState = await mock(() => window.mock.state());
-  assert.equal(samState.convs.find((c) => c.peer.uniqueId === 'sam.new').request, false, 'the agent accepted the request before replying');
   assert.equal((await sent()).length, 9);
   const [samMsg] = await sql(`SELECT m.body FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.external_thread_id = ? AND m.direction = 'in'`, [samId]);
   assert.equal(samMsg.body, 'do you have the x3 in stock');
-  pass('message request: read, accepted by the agent and answered');
+  pass('message request: never opened by the agent, answered once the owner accepted it');
 
   // ---- legacy front end: no ids in the DOM ---------------------------------------------------------------
   await mock(() => window.mock.setVariant('legacy'));
