@@ -25,6 +25,8 @@ npm start
 
 Then open http://localhost:4600.
 
+On Windows you can instead double-click `start.bat`: it starts Nightshift and opens it in your browser.
+
 Agents do real work only when [Claude Code](https://claude.com/claude-code) is installed and signed in on the same computer. Without it the app runs in **demo mode**: tasks walk through the pipeline and produce clearly labelled placeholders, with no AI and no cost.
 
 ### Phone
