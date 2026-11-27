@@ -21,7 +21,7 @@ let reviewTab = 'pending', marketSort = '', marketData = null, marketErr = '', g
 const ws = () => ST.workspaces.find(w => w.id === wsId) || ST.workspaces[0];
 const agent = (id) => ws().agents.find(a => a.id === id) || { id, name: id || 'System', color: '#667085' };
 const proj = (id) => ST.projects.find(p => p.id === id) || { name: 'Unknown project' };
-const avatar = (a, cls = '') => `<span class="av ${cls}" style="background:${a.color}">${esc(a.name[0])}</span>`;
+const avatar = (a, cls = '') => `<span class="av ${cls}" style="--c:${a.color};background:${a.color}">${esc(a.name[0])}</span>`;
 
 function toast(msg, err) { const t = $('#toast'); t.textContent = msg; t.className = 'show' + (err ? ' err' : ''); clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', err ? 5000 : 2400); }
 async function api(path, body) {
@@ -62,13 +62,15 @@ function renderShell() {
     ...(w.hasMarket ? [['market', 'Market', '']] : []),
     ['settings', 'Settings', ''],
   ];
-  const link = ([id, label, badge]) => `<a href="#${id}" ${route === id ? 'aria-current="page"' : ''}>${ICON[id]}<span>${label}</span>${badge}</a>`;
+  const link = ([id, label, badge]) => `<a href="#${id}" data-k="${id}" ${route === id ? 'aria-current="page"' : ''}><i class="chip">${ICON[id]}</i><span>${label}</span>${badge}</a>`;
   $('#nav').innerHTML = `<div class="group">Workspace</div>` + items.slice(0, 5).map(link).join('') + `<div class="group">Knowledge</div>` + items.slice(5).map(link).join('');
   const main = ['home', 'review', 'tasks', 'projects', 'vault'];
-  $('#tabbar').innerHTML = items.filter(i => main.includes(i[0])).map(link).join('') + `<a href="#" data-act="more">${ICON.more}<span>More</span></a>`;
+  $('#tabbar').innerHTML = items.filter(i => main.includes(i[0])).map(link).join('') + `<a href="#" data-k="more" data-act="more"><i class="chip">${ICON.more}</i><span>More</span></a>`;
   const live = ST.mode === 'live';
   $('#sideFoot').innerHTML = `<span class="pill ${live ? 'live' : 'demo'}"><span class="dot ${c.working.length ? 'pulse' : ''}"></span>${live ? 'Agents live' : 'Demo mode'}</span>
-    <span>${c.working.length} working · ${money(ST.spentToday)} today</span>`;
+    <span>${c.working.length} working · ${money(ST.spentToday)} today</span>
+    ${ST.settings.nightlyCapUsd ? `<div class="bar energy" title="Today's spending against your daily cap"><i style="width:${Math.min(100, 100 * ST.spentToday / ST.settings.nightlyCapUsd)}%"></i></div>` : ''}
+    <div class="crew">${ws().agents.map(a => `<span class="av ${c.working.some(t => t.agentId === a.id) ? 'on' : ''}" style="--c:${a.color};background:${a.color}" title="${esc(a.name)}">${esc(a.name[0])}</span>`).join('')}</div>`;
 }
 
 function setTop(title, sub, actions = '') {
@@ -98,10 +100,10 @@ function viewHome() {
   const events = ST.events.slice(-80).reverse();
   return `<div class="grid">
     <div class="stats">
-      <div class="stat ${c.needs ? 'hot' : ''}"><b>${c.needs}</b><span>Needs you</span></div>
-      <div class="stat"><b>${c.working.length}</b><span>Agents working</span></div>
-      <div class="stat"><b>${ST.tasks.filter(t => t.status === 'queued').length}</b><span>Tasks queued</span></div>
-      <div class="stat"><b>${money(ST.spentToday)}</b><span>Spent today${s.nightlyCapUsd ? ' of ' + money(s.nightlyCapUsd) + ' cap' : ''}</span></div>
+      <div class="stat ${c.needs ? 'hot' : ''}" data-k="needs"><b>${c.needs}</b><span>Needs you</span></div>
+      <div class="stat" data-k="working"><b>${c.working.length}</b><span>Agents working</span></div>
+      <div class="stat" data-k="queued"><b>${ST.tasks.filter(t => t.status === 'queued').length}</b><span>Tasks queued</span></div>
+      <div class="stat" data-k="spent"><b>${money(ST.spentToday)}</b><span>Spent today${s.nightlyCapUsd ? ' of ' + money(s.nightlyCapUsd) + ' cap' : ''}</span></div>
     </div>
     <div class="grid cols">
       <div class="grid">
@@ -159,7 +161,7 @@ function viewTasks() {
   setTop('Tasks', 'Everything the team has been asked to do, and where each one stands.', `<button class="btn primary" data-act="newTask">New task</button>`);
   const by = (...s) => ST.tasks.filter(t => s.includes(t.status)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const cols = [['Queued', by('queued').reverse()], ['Working', by('running', 'checking')], ['Waiting on you', by('blocked', 'review')], ['Closed', by('done', 'failed', 'stopped').slice(0, 40)]];
-  return `<div class="board">${cols.map(([name, list]) => `<div class="col"><header><h2 class="grow">${name}</h2><span class="count">${list.length}</span></header>
+  return `<div class="board">${cols.map(([name, list], i) => `<div class="col" data-k="${i}"><header><h2 class="grow">${name}</h2><span class="count">${list.length}</span></header>
     ${list.length ? list.map(taskCard).join('') : '<div class="empty">Empty</div>'}</div>`).join('')}</div>`;
 }
 
