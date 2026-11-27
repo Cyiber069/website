@@ -53,7 +53,7 @@ function publicState(wsId) {
     workspaces: S.config.workspaces.map(w => ({ id: w.id, name: w.name, tagline: w.tagline, hasMarket: w.hasMarket,
       agents: w.agents.map(a => ({ id: a.id, name: a.name, color: a.color, isLead: !!a.isLead, role: a.role, reads: a.reads, skills: a.skills || [], writer: !!a.writer })) })),
     keys: secrets.status(), cfReady: R.cfReady(), cfUsedUp: R.cfUsedUp(), models: MODELS,
-    settings, mode: R.mode(), liveAvailable: R.liveAvailable(), spentToday: S.spentToday(),
+    settings, mode: R.mode(), liveAvailable: R.liveAvailable(), claude: R.cliInfo(), spentToday: S.spentToday(),
     projects: db.projects.filter(p => p.workspace === wsId),
     tasks: db.tasks.filter(t => pids.has(t.projectId)),
     reviews: db.reviews.filter(r => pids.has(r.projectId) && r.status !== 'withdrawn'),
@@ -245,6 +245,12 @@ async function api(req, res, url) {
     if (!isLocal(req)) return bad(res, 'Keys can only be changed on the computer running the app.', 403);
     secrets.set(body.name, body.value); S.changed(); return send(res, 200, secrets.status());
   }
+  if (p === '/api/agents/check' && m === 'POST') { const c = R.cliInfo(true); S.changed(); return send(res, 200, c); }
+  if (p === '/api/agents/test' && m === 'POST') {
+    if (!isLocal(req)) return bad(res, 'Only available on the computer running the app.', 403);
+    const r = await R.testAgents(); S.changed(); return send(res, 200, r);
+  }
+  if (p === '/api/demo/clear' && m === 'POST') return send(res, 200, R.clearDemo());
   if (p === '/api/keys/test' && m === 'POST') {
     if (!isLocal(req)) return bad(res, 'Only available on the computer running the app.', 403);
     if (!R.cfReady()) return bad(res, 'Save the account ID and the token first.');
@@ -299,7 +305,15 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   R.boot(PORT);
   console.log(`\n  Roblox Game Factory is running:  http://localhost:${PORT}`);
-  console.log(`  Agents: ${R.mode() === 'live' ? 'live (Claude Code found)' : 'demo mode (Claude Code not found on this computer)'}`);
+  const c = R.cliInfo(true);
+  if (S.db.settings.mode === 'demo') console.log('  Agents: demo mode (switched on in Settings). No AI runs.');
+  else if (c.found) console.log(`  Agents: live. Claude Code ${c.version} found at ${c.path}`);
+  else {
+    console.log('  Agents: DEMO MODE. Claude Code was not found, so tasks only make placeholders.');
+    console.log('  A Claude API key on its own is not enough: Claude Code must be installed too.');
+    console.log(process.platform === 'win32' ? '  To install it: open PowerShell and run:   irm https://claude.ai/install.ps1 | iex' : '  To install it: run:   curl -fsSL https://claude.ai/install.sh | bash');
+    console.log('  Then open Settings in the app and press "Check again". No restart needed.');
+  }
   if (HOST !== '127.0.0.1') console.log('  Phone access is on. Open Settings in the app for the link.');
   console.log('');
 });

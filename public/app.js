@@ -215,14 +215,35 @@ async function loadMarket(refresh) {
   if (route === 'market') render(true);
 }
 
+// The three things that must be true for agents to do real work, each with its fix.
+let agentTest = null, testing = false;
+function setupSteps() {
+  const c = ST.claude || { found: ST.liveAvailable }, k = ST.keys.anthropic, win = /Win/.test(navigator.platform || navigator.userAgent);
+  const cmd = win ? 'irm https://claude.ai/install.ps1 | iex' : 'curl -fsSL https://claude.ai/install.sh | bash';
+  const step = (ok, title, body) => `<div class="step ${ok === true ? 'ok' : ok === false ? 'bad' : ''}"><i>${ok === true ? '&#10003;' : ok === false ? '!' : '&middot;'}</i><div><b>${title}</b><div class="dim">${body}</div></div></div>`;
+  const signIn = agentTest ? (agentTest.ok ? true : agentTest.step === 'signin' ? false : null) : null;
+  const demoCount = ST.tasks.filter(t => t.demo || t.ranInDemo || /^Demo task for /.test(t.title)).length + ST.reviews.filter(r => r.demo || /^Demo placeholder/.test(r.summary || '')).length;
+  return `<div class="setup">
+    <h3>Getting agents working</h3>
+    ${step(!!c.found, '1. Claude Code is installed', c.found ? `Found ${esc(c.version || '')}${c.path ? ` at <span class="mono">${esc(c.path)}</span>` : ''}.`
+      : `Not found. A Claude API key on its own is not enough: agents run through Claude Code. ${win ? 'Open PowerShell' : 'Open a terminal'} and run this, then press <b>Check again</b>:<div class="cmd"><input readonly id="installCmd" value="${esc(cmd)}"><button type="button" class="btn small" data-act="copyCmd">Copy</button></div>`)}
+    ${step(signIn, '2. Claude Code can sign in', k.set ? 'Your saved API key is used (see Keys).' : 'Without a saved API key, agents use the Claude login on this computer: run <span class="mono">claude</span> once in a terminal and sign in.')}
+    ${step(ST.mode === 'live' ? true : (c.found && ST.settings.mode === 'demo' ? false : null), '3. Mode is live', ST.mode === 'live' ? 'Agents do real work.' : ST.settings.mode === 'demo' ? 'Mode is set to "Always demo" below. Change it to "Live when Claude Code is available" and save.' : 'Turns live by itself once step 1 passes.')}
+    ${agentTest ? `<div class="testres ${agentTest.ok ? 'ok' : 'bad'}">${agentTest.ok ? `Test passed: Claude answered "${esc(agentTest.reply)}" using ${esc(agentTest.via)}${agentTest.costUsd ? ` (cost $${agentTest.costUsd.toFixed(4)})` : ''}.` : `Test failed: ${esc(agentTest.message)}`}</div>` : ''}
+    <div class="row wrap"><button type="button" class="btn small" data-act="checkAgents">Check again</button>
+      <button type="button" class="btn small primary" data-act="testAgents" ${c.found && !testing ? '' : 'disabled'}>${testing ? 'Testing&hellip;' : 'Test agents'}</button>
+      ${demoCount ? `<button type="button" class="btn small ghost" data-act="clearDemo">Clear demo work (${demoCount})</button>` : ''}</div>
+  </div>`;
+}
 function viewSettings() {
   const s = ST.settings;
   setTop('Settings', 'How the agents run and how much they may spend.');
   if (!access) api('/api/access').then(a => { access = a; if (route === 'settings') render(true); }).catch(() => { access = { remote: true }; if (route === 'settings') render(true); });
   return `<div class="grid cols">
     <form class="card" data-form="settings"><header><h2>Agents</h2></header><div class="body grid">
+      ${setupSteps()}
       <div class="row wrap"><span class="pill ${ST.mode === 'live' ? 'live' : 'demo'}"><span class="dot"></span>${ST.mode === 'live' ? 'Live' : 'Demo mode'}</span>
-        <span class="dim">${ST.liveAvailable ? 'Claude Code is installed on this computer, so agents can do real work.' : 'Claude Code was not found on this computer, so tasks only produce labelled placeholders. Install it and sign in, then restart Nightshift.'}</span></div>
+        <span class="dim">${ST.liveAvailable ? 'Claude Code is installed on this computer, so agents can do real work.' : 'Claude Code was not found on this computer, so tasks only produce labelled placeholders. Follow the checklist above.'}</span></div>
       <label>Mode<select name="mode"><option value="auto" ${s.mode === 'auto' ? 'selected' : ''}>Live when Claude Code is available</option><option value="demo" ${s.mode === 'demo' ? 'selected' : ''}>Always demo (no AI, no cost)</option></select></label>
       <div class="two"><label>Agents working at once<input name="maxParallel" type="number" min="1" max="8" value="${s.maxParallel}"></label>
       <label>Daily spending cap (USD)<input name="nightlyCapUsd" type="number" min="0" step="1" value="${s.nightlyCapUsd}"></label></div>
@@ -470,6 +491,10 @@ document.addEventListener('click', (e) => {
   else if (a === 'pitch') act(() => api(`/api/pitches/${id}/action`, { action: el.dataset.do }));
   else if (a === 'keyRemove') act(async () => { await api('/api/keys', { name: el.dataset.name, value: '' }); toast('Removed'); await load(); render(true); });
   else if (a === 'cfTest') act(async () => { toast('Testing…'); await api('/api/keys/test', {}); toast('Cloudflare is working'); });
+  else if (a === 'checkAgents') act(async () => { const c = await api('/api/agents/check', {}); await load(); render(true); toast(c.found ? 'Claude Code found' : 'Claude Code still not found', !c.found); });
+  else if (a === 'testAgents') act(async () => { testing = true; agentTest = null; render(true); try { agentTest = await api('/api/agents/test', {}); } finally { testing = false; } await load(); render(true); });
+  else if (a === 'clearDemo') act(async () => { const r = await api('/api/demo/clear', {}); await load(); render(true); toast(`Cleared ${r.removedTasks + r.removedReviews} demo items${r.requeued ? `; ${r.requeued} task${r.requeued === 1 ? '' : 's'} ${r.live ? 'queued to run for real' : 'stopped until agents are live'}` : ''}`); });
+  else if (a === 'copyCmd') { const i = $('#installCmd'); i.select(); if (navigator.clipboard) navigator.clipboard.writeText(i.value).then(() => toast('Copied'), () => toast('Press Ctrl+C to copy')); else toast('Press Ctrl+C to copy'); }
   else if (a === 'closeNote') closeNote();
   else if (a === 'vfocus') galaxy && galaxy.focus(id);
   else if (a === 'wl') { const n = vaultGraph && vaultGraph.nodes.find(n => n.title.toLowerCase() === el.dataset.title.toLowerCase()); n ? showNote(n.id) : toast('That note does not exist yet', true); }

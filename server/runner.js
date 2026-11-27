@@ -17,15 +17,49 @@ const PER_TASK_CAP = 5;
 const running = new Map(); // taskId -> run { child, timers }
 const checkChain = new Map(); // projectId -> promise, so one project's checks never overlap
 let port = 4600;
-let cliFound = null;
+// ---- Finding Claude Code ----
+// Looks on PATH and in the folders its installers use, so a new install is found even when this window's PATH
+// is out of date. A positive result is kept; a negative one is re-checked every 20 seconds, so installing
+// Claude Code while the app runs is picked up without a restart.
+const os = require('os');
+let cli = { found: false, path: '', version: '', checkedAt: 0 };
 
-function liveAvailable() {
-  if (cliFound === null) {
-    try { cliFound = spawnSync('claude', ['--version'], { shell: WIN, timeout: 15000 }).status === 0; }
-    catch { cliFound = false; }
+function candidates() {
+  const home = os.homedir(), env = process.env, list = [];
+  if (env.NIGHTSHIFT_CLAUDE) return [env.NIGHTSHIFT_CLAUDE]; // explicit override (also used by tests)
+  if (WIN) {
+    try { list.push(...spawnSync('where.exe', ['claude'], { encoding: 'utf8', timeout: 8000, windowsHide: true }).stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean)); } catch {}
+    list.push(path.join(home, '.local', 'bin', 'claude.exe'));
+    if (env.APPDATA) list.push(path.join(env.APPDATA, 'npm', 'claude.cmd'));
+    if (env.LOCALAPPDATA) list.push(path.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links', 'claude.exe'));
+  } else {
+    try { const w = spawnSync('which', ['claude'], { encoding: 'utf8', timeout: 8000 }).stdout.trim(); if (w) list.push(w); } catch {}
+    list.push(path.join(home, '.local', 'bin', 'claude'), path.join(home, '.claude', 'local', 'claude'), '/usr/local/bin/claude', '/opt/homebrew/bin/claude');
   }
-  return cliFound;
+  return [...new Set(list)].filter(p => { try { return fs.statSync(p).isFile(); } catch { return false; } });
 }
+const needsShell = (p) => WIN && /\.(cmd|bat)$/i.test(p); // Windows can only start .cmd files through cmd.exe
+const quoteWin = (a) => /[\s&|<>^%()!,;="]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a;
+// Runs Claude Code with the given arguments, safely on every platform.
+function spawnClaude(args, opts) {
+  const p = cli.path || 'claude';
+  if (needsShell(p)) return spawn(quoteWin(p), args.map(quoteWin), Object.assign({ shell: true, windowsHide: true }, opts));
+  return spawn(p, args, Object.assign({ windowsHide: true }, opts));
+}
+function detect(force) {
+  if (cli.found && !force) return cli;
+  if (!force && Date.now() - cli.checkedAt < 20000) return cli;
+  cli = { found: false, path: '', version: '', checkedAt: Date.now() };
+  for (const p of candidates()) {
+    try {
+      const r = spawnSync(needsShell(p) ? quoteWin(p) : p, ['--version'], { shell: needsShell(p), timeout: 20000, encoding: 'utf8', windowsHide: true });
+      if (r.status === 0) { cli = { found: true, path: p, version: String(r.stdout || '').trim().split('\n')[0].slice(0, 60), checkedAt: Date.now() }; break; }
+    } catch {}
+  }
+  return cli;
+}
+const liveAvailable = () => detect().found;
+const cliInfo = (force) => { const c = detect(force); return { found: c.found, path: c.path, version: c.version }; };
 function mode() {
   const m = S.db.settings.mode;
   if (m === 'demo') return 'demo';
@@ -164,8 +198,8 @@ function startLive(t, p, ws, agent, cap) {
   if (WIN) args.splice(args.indexOf('Grep') + 1, 0, 'PowerShell');
   if (V.skillsDir(ws)) args.push('--add-dir', V.skillsDir(ws));
   if (model) args.push('--model', model);
-  const child = spawn('claude', WIN ? args.map(a => /[\s&|<>^%()!,;=]/.test(a) ? `"${a}"` : a) : args, {
-    cwd: S.projectDir(p), shell: WIN, windowsHide: true,
+  const child = spawnClaude(args, {
+    cwd: S.projectDir(p),
     env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}, { NIGHTSHIFT_URL: `http://127.0.0.1:${port}`, NIGHTSHIFT_TOKEN: s.token, NIGHTSHIFT_TASK: t.id }),
   });
   const acc = {}, run = { child };
@@ -258,11 +292,12 @@ function startDemo(t, p, ws, agent) {
   const files = V.readingList(ws.id, agent).slice(0, 3);
   files.forEach((f, i) => at(700 + i * 900, () => ev(t, 'read', 'Read vault note ' + V.noteIdFromPath(ws.id, f), { noteId: V.noteIdFromPath(ws.id, f) })));
   const base = 900 + files.length * 900;
-  at(base, () => ev(t, 'say', 'Demo mode: walking through the steps without running an AI agent.'));
+  t.ranInDemo = true;
+  at(base, () => ev(t, 'say', S.db.settings.mode === 'demo' ? 'Demo mode is switched on in Settings, so no AI agent ran.' : 'Demo mode: Claude Code was not found on this computer, so no AI agent ran. See Settings.', { demo: true }));
   if (agent.isLead) {
     const mates = ws.agents.filter(a => !a.isLead).slice(0, 2);
     mates.forEach((a, i) => at(base + 900 + i * 700, () => {
-      S.db.tasks.push(newTask(p.id, a.id, `Demo task for ${a.name}`, 'Placeholder handed out by the Lead in demo mode.', 'lead'));
+      S.db.tasks.push(Object.assign(newTask(p.id, a.id, `Demo task for ${a.name}`, 'Placeholder handed out by the Lead in demo mode.', 'lead'), { demo: true }));
       ev(t, 'handoff', `Handed work to ${a.name}`);
       S.changed();
     }));
@@ -271,10 +306,10 @@ function startDemo(t, p, ws, agent) {
     at(base + 1200, () => {
       const rel = path.join('deliverables', t.id + '.md');
       fs.mkdirSync(path.join(S.projectDir(p), 'deliverables'), { recursive: true });
-      fs.writeFileSync(path.join(S.projectDir(p), rel), `# ${t.title}\n\nDEMO OUTPUT. No AI agent ran, so this file is a placeholder.\nSwitch to live mode in Settings once Claude Code is installed on this computer.\n`);
+      fs.writeFileSync(path.join(S.projectDir(p), rel), `# ${t.title}\n\nDEMO PLACEHOLDER. No AI agent ran, so no real work was done.\n\nWhy: the app could not find Claude Code on this computer. A Claude API key on its own is not enough; Claude Code must be installed too.\nFix: open Settings in the app and follow the checklist at the top, then press "Clear demo work".\n`);
       ev(t, 'tool', 'Wrote ' + t.id + '.md');
       S.db.reviews.push({ id: S.id('rv'), taskId: t.id, projectId: p.id, agentId: t.agentId, title: t.title,
-        summary: 'Demo placeholder. No real work was done.', files: [rel.split(path.sep).join('/')], status: 'pending', createdAt: S.now() });
+        summary: 'Demo placeholder: Claude Code was not found on this computer, so no AI agent ran. Open Settings to fix it, then clear demo work.', files: [rel.split(path.sep).join('/')], status: 'pending', createdAt: S.now(), demo: true });
     });
     at(base + 2200, () => finish(t, p, { result: 'Demo placeholder. No real work was done.', cost: 0 }, run));
   }
@@ -357,4 +392,56 @@ function boot(p) {
   setInterval(() => tick().catch(e => console.error('runner:', e.message)), 1500);
 }
 
-module.exports = { boot, stop, mode, newTask, ev, setStatus, liveAvailable, running, cfReady, cfUsedUp, cfChat };
+// One tiny real request, so the owner can see whether Claude Code is installed and signed in (or using the saved key).
+function testAgents() {
+  return new Promise(resolve => {
+    const c = detect(true);
+    if (!c.found) return resolve({ ok: false, step: 'install', message: 'Claude Code was not found on this computer.' });
+    const key = secrets.get('anthropic');
+    // The cheapest model is enough to prove Claude Code is installed and signed in.
+    const args = ['-p', '--output-format', 'json', '--max-budget-usd', '0.25', '--model', 'claude-haiku-5-5', '--allowedTools', 'Read'];
+    let out = '', err = '', done = false;
+    const end = (r) => { if (!done) { done = true; clearTimeout(timer); resolve(r); } };
+    let child;
+    try { child = spawnClaude(args, { cwd: os.tmpdir(), env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}) }); }
+    catch (e) { return resolve({ ok: false, step: 'run', message: 'Claude Code could not be started: ' + e.message }); }
+    const timer = setTimeout(() => { kill(child.pid); end({ ok: false, step: 'run', message: 'Claude Code did not answer within 90 seconds.' }); }, 90000);
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { err = (err + d).slice(-3000); });
+    child.stdin.on('error', () => {});
+    child.on('error', e => end({ ok: false, step: 'run', message: 'Claude Code could not be started: ' + e.message }));
+    child.on('close', code => {
+      let j = null; try { j = JSON.parse(out.trim().split('\n').pop()); } catch {}
+      const why = j && !j.result && j.subtype ? ({ error_max_budget_usd: 'It stopped at the test spending limit before answering.', error_max_turns: 'It ran out of turns before answering.' }[j.subtype] || 'It stopped early (' + j.subtype + ').') : '';
+      const text = short(why || (j && j.result) || err || out, 400);
+      if (code === 0 && j && !j.is_error && j.result) return end({ ok: true, via: key ? 'your saved API key' : 'the Claude login on this computer', reply: short(j.result, 80), costUsd: Number(j.total_cost_usd) || 0 });
+      const auth = /log ?in|auth|api key|credential|401|403|invalid.*key|unauthori/i.test(text);
+      end({ ok: false, step: auth ? 'signin' : 'run', message: text || ('Claude Code exited with code ' + code) });
+    });
+    child.stdin.end('Reply with the single word: ready');
+  });
+}
+
+// Removes what demo mode produced, so the owner starts clean once agents are live.
+// Tasks the owner asked for go back to the queue (or wait, if agents are still not live); placeholder tasks are deleted.
+function clearDemo() {
+  const db = S.db, live = mode() === 'live';
+  const isPlaceholderTask = (t) => t.demo || /^Demo task for /.test(t.title || '');
+  const ranInDemo = (t) => t.ranInDemo || /^Demo/.test(t.result || '');
+  const removeIds = new Set(db.tasks.filter(isPlaceholderTask).map(t => t.id));
+  let requeued = 0;
+  for (const t of db.tasks) {
+    if (removeIds.has(t.id) || !ranInDemo(t) || ['running', 'checking'].includes(t.status)) continue;
+    Object.assign(t, { status: live ? 'queued' : 'stopped', attempts: 0, result: undefined, ranInDemo: false, question: undefined, updatedAt: S.now() });
+    requeued++;
+  }
+  const before = db.reviews.length;
+  db.reviews = db.reviews.filter(r => !(r.demo || removeIds.has(r.taskId) || /^Demo placeholder/.test(r.summary || '')));
+  const reviews = before - db.reviews.length;
+  db.tasks = db.tasks.filter(t => !removeIds.has(t.id));
+  db.events = db.events.filter(e => !(e.demo || removeIds.has(e.taskId) || (e.kind === 'say' && /^Demo mode/.test(e.text || ''))));
+  S.changed();
+  return { removedTasks: removeIds.size, removedReviews: reviews, requeued, live };
+}
+
+module.exports = { boot, stop, mode, newTask, ev, setStatus, liveAvailable, cliInfo, testAgents, clearDemo, running, cfReady, cfUsedUp, cfChat };
