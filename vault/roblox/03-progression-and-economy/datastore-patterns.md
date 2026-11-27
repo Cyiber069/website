@@ -27,6 +27,7 @@ local function loadProfile(userId: number)
 		local loaded = nil
 		local ok = pcall(function()
 			store:UpdateAsync(key, function(old)
+				loaded = nil -- the transform can re-run; forget any earlier attempt
 				local data = old or Template.new()
 				local lock = data.Lock
 				if lock and lock.JobId ~= game.JobId and os.time() - lock.Time < LOCK_TIMEOUT then
@@ -56,7 +57,7 @@ game:BindToClose(function()
 	for _, player in Players:GetPlayers() do
 		pending += 1
 		task.spawn(function()
-			Profiles.saveAndRelease(player)
+			pcall(Profiles.saveAndRelease, player) -- an error must not skip the decrement
 			pending -= 1
 		end)
 	end

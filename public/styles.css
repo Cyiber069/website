@@ -194,3 +194,14 @@ tr:hover td { background: #ffffff05; }
 }
 @media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } #toast { transition: none; } }
 @media (max-width: 760px) { #top .grow { flex-basis: 100%; } #top { gap: 8px; } }
+
+.formerr { margin: 0; padding: 8px 11px; border-radius: 9px; background: #f2695c14; border: 1px solid #f2695c44; color: #ffb4ab; }
+.vault-hud .notepick { pointer-events: auto; margin-top: 10px; max-width: 280px; }
+.vault-hud select { background: #0b0d10d9; }
+@media (max-width: 760px) {
+  input, select, textarea { font-size: 16px; }
+  .reader { bottom: calc(58px + env(safe-area-inset-bottom)); }
+  .legend { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100% - 28px); left: 14px; bottom: calc(66px + env(safe-area-inset-bottom)); }
+  .legend button { flex: none; }
+  .vault-hud { left: 14px; top: 12px; max-width: calc(100% - 28px); }
+}

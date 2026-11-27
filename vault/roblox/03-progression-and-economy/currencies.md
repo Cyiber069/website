@@ -27,14 +27,18 @@ List every way each currency enters the game and every way it leaves.
 - Abbreviate on the HUD (1.2K, 3.4M) and show the full value in a detail view. Why: long numbers overflow small screens.
 
 ```lua
-local SUFFIXES = { "", "K", "M", "B", "T" }
+local SUFFIXES = { "", "K", "M", "B", "T", "Qa" } -- Qa covers up to the exact-integer limit
 local function abbreviate(n: number): string
 	local i = 1
 	while n >= 1000 and i < #SUFFIXES do
 		n /= 1000
 		i += 1
 	end
-	return string.format(i == 1 and "%d" or "%.1f", n) .. SUFFIXES[i]
+	if i == 1 then
+		return string.format("%d", n)
+	end
+	n = math.floor(n * 10) / 10 -- floor so 999,950 shows 999.9K, not 1000.0K
+	return string.format("%.1f", n) .. SUFFIXES[i]
 end
 ```
 

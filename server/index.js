@@ -27,6 +27,20 @@ const readBody = (req) => new Promise((resolve, reject) => {
   req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch { reject(new Error('Invalid JSON')); } });
 });
 const isLocal = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+// Only answer when addressed by this computer's own names or addresses. A web page that points its own
+// domain at 127.0.0.1 (DNS rebinding) arrives with a foreign Host header and is refused.
+function ownHost(req) {
+  const h = String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (['localhost', '127.0.0.1', '::1'].includes(h)) return true;
+  return Object.values(os.networkInterfaces()).flat().some(n => n && n.address.toLowerCase() === h);
+}
+// Requests that change anything must be JSON sent by this app itself, never by another site open in the browser.
+function sameSite(req) {
+  if (req.headers['sec-fetch-site'] === 'cross-site') return false;
+  const o = req.headers.origin;
+  if (o) { try { if (new URL(o).host !== req.headers.host) return false; } catch { return false; } }
+  return req.method === 'GET' || /^application\/json/i.test(req.headers['content-type'] || '');
+}
 const cookieToken = (req) => (/(?:^|;\s*)ns_token=([a-f0-9]+)/.exec(req.headers.cookie || '') || [])[1];
 
 function publicState(wsId) {
@@ -68,6 +82,7 @@ function reviewAction(r, action, note) {
   const t = S.task(r.taskId), p = S.project(r.projectId);
   if (!t || !p) throw new Error('This review item is no longer attached to a task');
   if (r.status !== 'pending') throw new Error('Already decided');
+  if (['queued', 'running', 'checking'].includes(t.status)) throw new Error('The agent is still working on this task. Decide once it has finished.');
   const agent = S.agentOf(p.workspace, r.agentId);
   note = String(note || '').trim();
   if ((action === 'changes' || action === 'reject') && !note) throw new Error('Say what was wrong so the agent can learn from it');
@@ -84,6 +99,7 @@ function reviewAction(r, action, note) {
       ? 'Good direction. Polish it to a higher standard: tighten details, fix rough edges, re-check it against the vault notes.' + (note ? ' ' + note : '')
       : note });
     if (action === 'changes') lesson();
+    t.checkFails = 0;
     t.status = 'queued'; t.updatedAt = S.now();
   } else if (action === 'reject') {
     r.status = 'rejected';
@@ -104,6 +120,7 @@ function taskAction(t, action, note) {
   } else if (action === 'retry' || action === 'reply') {
     if (['running', 'checking', 'queued'].includes(t.status)) throw new Error('Already in progress');
     if (note) t.feedback.push({ from: 'owner', ts: S.now(), text: note });
+    t.checkFails = 0;
     t.status = 'queued'; t.question = undefined; t.updatedAt = S.now();
   } else throw new Error('Unknown action');
   S.changed();
@@ -115,9 +132,11 @@ function agentCall(kind, b, taskId) {
   if (!t) throw new Error('Unknown task');
   const p = S.project(t.projectId), ws = S.workspace(p.workspace);
   if (kind === 'note') { R.ev(t, 'note', b.text); return {}; }
+  if (t.status !== 'running') throw new Error('This task is no longer running, so nothing was recorded.');
   if (kind === 'ask') {
     R.ev(t, 'ask', 'Needs you: ' + b.text);
     R.setStatus(t, 'blocked', { question: String(b.text || '').slice(0, 1000) });
+    setTimeout(() => R.stop(t), 1500); // let the agent read the reply to its command, then end the run
     return {};
   }
   if (kind === 'review') {
@@ -209,7 +228,7 @@ async function api(req, res, url) {
     if ('model' in body) s.model = String(body.model || '').replace(/[^\w.\-\[\]]/g, '').slice(0, 60);
     S.changed(); return send(res, 200, {});
   }
-  if (p === '/api/vault') return send(res, 200, V.graph(q.get('ws')));
+  if (p === '/api/vault') return S.workspace(q.get('ws')) ? send(res, 200, V.graph(q.get('ws'))) : bad(res, 'Unknown workspace', 404);
   if (p === '/api/vault/note') { const t = V.note(q.get('ws'), q.get('id') || ''); return t === null ? bad(res, 'No such note', 404) : send(res, 200, { text: t }); }
   if (p === '/api/market') {
     try { return send(res, 200, market.view(await market.get(q.get('refresh') === '1'))); }
@@ -223,7 +242,9 @@ async function api(req, res, url) {
   }
   if ((x = /^\/api\/agent\/(\w+)$/.exec(p)) && m === 'POST') return send(res, 200, agentCall(x[1], body, req.headers['x-task']));
   if (p === '/api/access') {
-    const nets = Object.values(os.networkInterfaces()).flat().filter(n => n && n.family === 'IPv4' && !n.internal).map(n => n.address);
+    const virtual = /^(vEthernet|VirtualBox|VMware|WSL|docker|br-|veth|Hyper-V|Loopback)/i;
+    const nets = Object.entries(os.networkInterfaces()).filter(([name]) => !virtual.test(name)).flatMap(([, list]) => list || [])
+      .filter(n => n.family === 'IPv4' && !n.internal && !n.address.startsWith('169.254.')).map(n => n.address);
     return send(res, 200, { lan: HOST !== '127.0.0.1', urls: nets.map(a => `http://${a}:${PORT}/?token=${S.db.settings.token}`) });
   }
   bad(res, 'Not found', 404);
@@ -234,14 +255,20 @@ const server = http.createServer(async (req, res) => {
   try {
     // Anything not coming from this computer needs the access token (phone on the same Wi-Fi, a tunnel).
     const given = url.searchParams.get('token') || req.headers['x-token'] || cookieToken(req);
-    const authed = given === S.db.settings.token;
+    const tok = S.db.settings.token;
+    const authed = !!tok && typeof given === 'string' && given === tok;
+    if (!ownHost(req)) return send(res, 403, 'Open Nightshift by its own address (localhost or this computer\'s network address).', { 'Content-Type': 'text/plain' });
+    if (!sameSite(req)) return bad(res, 'Request refused: it did not come from the Nightshift app.', 403);
     if (!isLocal(req) && !authed) return send(res, 401, 'Access token required. Open the link shown in Settings on the computer running Nightshift.', { 'Content-Type': 'text/plain' });
     if (url.pathname === '/api/access' && !isLocal(req)) return bad(res, 'Only available on the computer itself', 403);
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     let file = path.join(PUBLIC, url.pathname === '/' ? 'index.html' : path.normalize(url.pathname));
     if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || !fs.statSync(file).isFile()) file = path.join(PUBLIC, 'index.html');
-    const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' };
-    if (url.searchParams.get('token') && authed) headers['Set-Cookie'] = `ns_token=${S.db.settings.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`;
+    if (url.searchParams.get('token') && authed) { // keep the key out of the address bar and history
+      res.writeHead(302, { Location: url.pathname, 'Set-Cookie': `ns_token=${tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    const headers = { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' };
     send(res, 200, fs.readFileSync(file), headers);
   } catch (e) { bad(res, e.message || 'Something went wrong'); }
 });
@@ -253,4 +280,5 @@ server.listen(PORT, HOST, () => {
   if (HOST !== '127.0.0.1') console.log('  Phone access is on. Open Settings in the app for the link.');
   console.log('');
 });
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { for (const t of S.db.tasks) if (R.running.has(t.id)) R.stop(t); S.flush(); process.exit(0); });
+// Closing the window must not leave agents running in the background.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) process.on(sig, () => { for (const t of S.db.tasks) if (R.running.has(t.id)) R.stop(t, true); S.flush(); process.exit(0); });

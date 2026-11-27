@@ -21,20 +21,27 @@ if (fs.existsSync(DB_FILE)) {
   try { db = Object.assign(blank(), JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))); }
   catch (e) { fs.copyFileSync(DB_FILE, DB_FILE + '.corrupt-' + Date.now()); }
 }
+db.settings = Object.assign(blank().settings, db.settings);
+if (!/^[a-f0-9]{20,}$/.test(String(db.settings.token || ''))) db.settings.token = crypto.randomBytes(18).toString('hex');
 
-let timer = null;
+let timer = null, fails = 0;
+function write() {
+  const tmp = DB_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(db));
+  try { fs.renameSync(tmp, DB_FILE); }
+  catch { fs.writeFileSync(DB_FILE, JSON.stringify(db)); } // Windows can refuse the rename while another program has the file open
+}
 function save() {
   if (timer) return;
   timer = setTimeout(() => {
     timer = null;
-    const tmp = DB_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(db));
-    fs.renameSync(tmp, DB_FILE);
+    try { write(); fails = 0; }
+    catch (e) { if (++fails === 1) console.error('Could not save data, retrying:', e.message); setTimeout(save, 500); }
   }, 150);
 }
 function flush() {
   if (timer) { clearTimeout(timer); timer = null; }
-  fs.writeFileSync(DB_FILE, JSON.stringify(db));
+  try { write(); } catch (e) { console.error('Could not save data:', e.message); }
 }
 
 const id = (p) => p + '_' + crypto.randomBytes(5).toString('hex');

@@ -9,7 +9,7 @@
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
     let W = 0, H = 0, dpr = 1, nodes = [], edges = [], dust = [], byId = new Map(), chapters = [];
     let yaw = 0.6, pitch = 0.42, zoom = 1.45, selected = null, hover = null, pulses = [], raf = 0, dead = false, dim = null;
-    const ptrs = new Map(); let moved = 0, pinch = 0, lastTouch = 0;
+    const ptrs = new Map(); let moved = 0, pinch = 0, lastTouch = 0, down = [0, 0];
 
     function setData(g) {
       chapters = [...new Set(g.nodes.map(n => n.chapter))].sort();
@@ -121,7 +121,7 @@
       return best;
     }
     const pos = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-    canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, pos(e)); moved = 0; lastTouch = e.pointerType === 'touch'; if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); } });
+    canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, pos(e)); moved = 0; down = pos(e); lastTouch = e.pointerType === 'touch'; if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); } });
     canvas.addEventListener('pointermove', e => {
       const [x, y] = pos(e);
       if (!ptrs.has(e.pointerId)) { hover = pick(x, y); canvas.style.cursor = hover ? 'pointer' : 'grab'; return; }
@@ -136,7 +136,7 @@
     const up = e => {
       if (!ptrs.has(e.pointerId)) return;
       const [x, y] = pos(e); ptrs.delete(e.pointerId); pinch = 0;
-      if (moved < 6 && e.type === 'pointerup') { const n = pick(x, y); selected = n ? n.id : null; opts.onSelect && opts.onSelect(n ? n.id : null); }
+      if (moved < 99 && Math.hypot(x - down[0], y - down[1]) < (lastTouch ? 12 : 5) && e.type === 'pointerup') { const n = pick(x, y); selected = n ? n.id : null; opts.onSelect && opts.onSelect(n ? n.id : null); }
     };
     canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
     canvas.addEventListener('pointerleave', () => { hover = null; });

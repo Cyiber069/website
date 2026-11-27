@@ -26,7 +26,7 @@ local camera = workspace.CurrentCamera
 local REFERENCE = Vector2.new(1280, 720)
 
 local function updateScale(uiScale: UIScale)
-	local size = camera.ViewportSize
+	local size = workspace.CurrentCamera.ViewportSize
 	local ratio = math.min(size.X / REFERENCE.X, size.Y / REFERENCE.Y)
 	uiScale.Scale = math.clamp(ratio, 0.6, 1.5)
 end
@@ -34,6 +34,7 @@ end
 camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
 	updateScale(script.Parent.UIScale)
 end)
+updateScale(script.Parent.UIScale) -- set the scale once at startup
 ```
 
 Why the minimum of both axes: it guarantees the design fits in the shorter dimension, which on a landscape phone is height. Why clamp: below a floor, text becomes unreadable, so it is better to let a panel take more of the screen than to shrink further.

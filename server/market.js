@@ -31,14 +31,14 @@ async function get(force) {
   const prev = cache && cache.players ? cache : null;
   const players = {};
   const sorts = (raw.sorts || []).filter(s => Array.isArray(s.games) && s.games.length).map(s => ({
-    id: s.sortId, name: s.sortDisplayName,
+    id: String(s.sortId), name: String(s.sortDisplayName || s.sortId),
     games: s.games.map((g, i) => {
-      players[g.universeId] = g.playerCount;
+      players[g.universeId] = Number(g.playerCount) || 0;
       const before = prev ? prev.players[g.universeId] : undefined;
       const votes = (g.totalUpVotes || 0) + (g.totalDownVotes || 0);
-      return { rank: i + 1, universeId: g.universeId, placeId: g.rootPlaceId, name: g.name, players: g.playerCount,
-        change: before === undefined ? null : g.playerCount - before,
-        likePct: votes ? Math.round(100 * g.totalUpVotes / votes) : null, genre: g.genreL1 || '' };
+      return { rank: i + 1, universeId: Number(g.universeId), placeId: Number(g.rootPlaceId), name: String(g.name || ''), players: Number(g.playerCount) || 0,
+        change: before === undefined ? null : (Number(g.playerCount) || 0) - before,
+        likePct: votes ? Math.round(100 * g.totalUpVotes / votes) : null, genre: String(g.genreL1 || '') };
     }),
   }));
   cache = { fetchedAt: Date.now(), comparedTo: prev ? prev.fetchedAt : null, sorts, players };

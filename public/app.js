@@ -34,6 +34,7 @@ const act = (fn) => fn().catch(e => toast(e.message, true));
 async function load() {
   ST = await api('/api/state?ws=' + encodeURIComponent(wsId));
   if (!ST.workspaces.some(w => w.id === wsId)) wsId = ST.workspaces[0].id;
+  if (route === 'market' && !ws().hasMarket) route = 'home';
   render();
 }
 
@@ -197,7 +198,7 @@ function viewMarket() {
   if (!marketData) { loadMarket(); return `<div class="card"><div class="empty">Loading charts…</div></div>`; }
   const sort = marketData.sorts.find(s => s.id === marketSort) || marketData.sorts[0];
   if (!sort) return `<div class="card"><div class="empty">Roblox returned no charts.</div></div>`;
-  return `<div class="tabs" role="tablist">${marketData.sorts.map(s => `<button role="tab" aria-selected="${s.id === sort.id}" data-act="msort" data-id="${s.id}">${esc(s.name)}</button>`).join('')}</div>
+  return `<div class="tabs" role="tablist">${marketData.sorts.map(s => `<button role="tab" aria-selected="${s.id === sort.id}" data-act="msort" data-id="${esc(s.id)}">${esc(s.name)}</button>`).join('')}</div>
     <div class="card" style="margin-top:14px"><div class="tablewrap"><table><thead><tr><th class="r">#</th><th>Game</th><th>Genre</th><th class="r">Playing now</th><th class="r">Change</th><th class="r">Likes</th></tr></thead><tbody>
     ${sort.games.map(g => `<tr><td class="r faint">${g.rank}</td><td><a href="https://www.roblox.com/games/${g.placeId}" target="_blank" rel="noopener" style="color:inherit">${esc(g.name)}</a></td><td class="dim">${esc(g.genre)}</td>
       <td class="r">${g.players.toLocaleString()}</td><td class="r ${g.change > 0 ? 'up' : g.change < 0 ? 'down' : 'faint'}">${g.change === null ? '–' : (g.change > 0 ? '+' : '') + g.change.toLocaleString()}</td><td class="r dim">${g.likePct === null ? '–' : g.likePct + '%'}</td></tr>`).join('')}
@@ -232,9 +233,21 @@ function viewSettings() {
 
 /* ---------- vault ---------- */
 function md(text) {
-  const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>')
-    .replace(/\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g, (m, t, l) => `<button class="wl" data-act="wl" data-title="${t.trim()}">${l || t}</button>`)
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // One pass over the raw text: every captured piece is escaped on its own, so generated tags are never re-scanned.
+  const TOKEN = /`([^`]+)`|\[\[([^\]|]+)(?:\|([^\]]*))?\]\]|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|\*\*([^*]+)\*\*|(?<![\w*])\*([^*\s][^*]*)\*(?![\w*])/g;
+  const inline = (s) => {
+    let out = '', last = 0, m;
+    TOKEN.lastIndex = 0;
+    while ((m = TOKEN.exec(s))) {
+      out += esc(s.slice(last, m.index)); last = m.index + m[0].length;
+      if (m[1] !== undefined) out += `<code>${esc(m[1])}</code>`;
+      else if (m[2] !== undefined) out += `<button class="wl" data-act="wl" data-title="${esc(m[2].trim())}">${esc(m[3] || m[2])}</button>`;
+      else if (m[4] !== undefined) out += `<a href="${esc(m[5])}" target="_blank" rel="noopener noreferrer">${esc(m[4])}</a>`;
+      else if (m[6] !== undefined) out += `<b>${esc(m[6])}</b>`;
+      else out += `<i>${esc(m[7])}</i>`;
+    }
+    return out + esc(s.slice(last));
+  };
   const out = []; const lines = text.replace(/\r/g, '').split('\n'); let i = 0, list = null;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
   while (i < lines.length) {
@@ -265,6 +278,13 @@ async function mountVault() {
   galaxy.setData(vaultGraph);
   $('#vhud').innerHTML = vaultGraph.nodes.length ? `<h1>The vault</h1><p>${vaultGraph.words.toLocaleString()} words in ${vaultGraph.nodes.length} notes. Stars flash when an agent reads them.</p>`
     : `<h1>The vault is empty</h1><p>Add markdown notes under vault/${esc(wsId)}/ and they appear here.</p>`;
+  if (vaultGraph.nodes.length) {
+    const groups = {};
+    for (const n of vaultGraph.nodes) (groups[n.chapterName] = groups[n.chapterName] || []).push(n);
+    $('#vhud').innerHTML += `<label class="notepick">Open a note<select id="vpick"><option value="">Choose a note…</option>${Object.keys(groups).sort().map(g =>
+      `<optgroup label="${esc(g)}">${groups[g].sort((a, b) => b.isIndex - a.isIndex || a.title.localeCompare(b.title)).map(n => `<option value="${esc(n.id)}">${esc(n.title)}</option>`).join('')}</optgroup>`).join('')}</select></label>`;
+    $('#vpick').onchange = (e) => e.target.value && showNote(e.target.value);
+  }
   $('#vlegend').innerHTML = galaxy.chapters().map(c => `<button data-act="vfocus" data-id="${esc(c.id)}"><span class="dot" style="color:${c.color}"></span>${esc(c.name)}</button>`).join('');
   if (openNote) showNote(openNote);
 }
@@ -290,30 +310,50 @@ function render(force) {
     if (!galaxy) mountVault();
     return;
   }
-  if (galaxy) { galaxy.destroy(); galaxy = null; }
+  if (galaxy) { galaxy.destroy(); galaxy = null; v._html = null; }
   v.classList.remove('flush');
   const f = document.activeElement;
+  if (!force && route === 'settings' && $('[data-form=settings]', v)) return; // never rebuild a form the owner may be editing
   if (!force && f && v.contains(f) && /INPUT|TEXTAREA|SELECT/.test(f.tagName)) { dirty = true; return; }
-  const y = v.scrollTop, feed = $('.feed', v), fy = feed ? feed.scrollTop : 0;
-  v.innerHTML = (VIEWS[route] || viewHome)();
-  v.scrollTop = y; const nf = $('.feed', v); if (nf) nf.scrollTop = fy;
+  const html = (VIEWS[route] || viewHome)();
   dirty = false;
+  if (html === v._html && v._route === route) return; // nothing changed: keep focus, scroll and loaded images
+  const y = v.scrollTop, feed = $('.feed', v), fy = feed ? feed.scrollTop : 0;
+  v.innerHTML = html; v._html = html; v._route = route;
+  v.scrollTop = y; const nf = $('.feed', v); if (nf) nf.scrollTop = fy;
 }
 function go() {
   const r = location.hash.slice(1) || 'home';
   route = VIEWS[r] || r === 'vault' ? r : 'home';
-  if (route === 'market' && !ws().hasMarket) route = 'home';
+  if (ST && route === 'market' && !ws().hasMarket) route = 'home';
   if (ST) { render(true); $('#view').scrollTop = 0; }
 }
 
 /* ---------- dialogs ---------- */
 const dlg = $('#dlg');
 function dialog(html, onSubmit) {
-  dlg.innerHTML = html; dlg.showModal();
+  dlg.innerHTML = html;
   const form = $('form', dlg);
-  if (form) form.onsubmit = (e) => { e.preventDefault(); const d = Object.fromEntries(new FormData(form)); act(async () => { if (await onSubmit(d, e.submitter) !== false) dlg.close(); }); };
+  let busy = false;
+  if (form) form.onsubmit = async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    busy = true;
+    const d = Object.fromEntries(new FormData(form)), buttons = [...form.querySelectorAll('button')];
+    buttons.forEach(b => b.disabled = true);
+    let err = $('.formerr', form); if (err) err.remove();
+    try { if (await onSubmit(d, e.submitter) !== false) dlg.close(); }
+    catch (ex) { // errors are shown inside the dialog, where the owner is looking
+      err = document.createElement('p'); err.className = 'formerr'; err.setAttribute('role', 'alert'); err.textContent = ex.message;
+      ($('.actions', form) || form.lastElementChild).before(err);
+    } finally { busy = false; buttons.forEach(b => b.disabled = false); }
+  };
+  if (!dlg.open) dlg.showModal();
+  const h = $('h2', dlg); if (h) { h.tabIndex = -1; h.id = 'dlgTitle'; dlg.setAttribute('aria-labelledby', 'dlgTitle'); h.focus(); }
 }
-dlg.addEventListener('click', e => { if (e.target === dlg || e.target.dataset.close !== undefined) dlg.close(); });
+let downOnBackdrop = false;
+dlg.addEventListener('pointerdown', e => { downOnBackdrop = e.target === dlg; });
+dlg.addEventListener('click', e => { if ((e.target === dlg && downOnBackdrop) || e.target.dataset.close !== undefined) dlg.close(); });
 
 function newProject() {
   const rb = wsId === 'roblox';
@@ -352,7 +392,13 @@ function reply(id) {
     <div class="actions"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Send and restart</button></div></form>`,
     async (d) => { await api(`/api/tasks/${id}/action`, { action: 'reply', note: d.note }); toast('Sent'); });
 }
+let opening = false;
 async function openReview(id) {
+  if (opening) return;
+  opening = true;
+  try { await openReviewNow(id); } finally { opening = false; }
+}
+async function openReviewNow(id) {
   const r = ST.reviews.find(x => x.id === id); if (!r) return;
   const a = agent(r.agentId), pending = r.status === 'pending';
   const previews = await Promise.all((r.files || []).map(async f => {
@@ -403,7 +449,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('submit', (e) => {
   const f = e.target.closest('[data-form=settings]'); if (!f) return;
   e.preventDefault();
-  act(async () => { await api('/api/settings', Object.fromEntries(new FormData(f))); toast('Saved'); dirty = false; await load(); });
+  act(async () => { await api('/api/settings', Object.fromEntries(new FormData(f))); toast('Saved'); await load(); render(true); });
 });
 document.addEventListener('focusout', () => setTimeout(() => { if (dirty) render(); }, 0));
 window.addEventListener('hashchange', go);

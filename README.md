@@ -35,6 +35,8 @@ npm run phone
 
 Open **Settings** in the app on the computer and it shows a private link to open on a phone on the same Wi-Fi. Anything not coming from the computer itself needs the access key in that link.
 
+On Windows, click **Allow** when the firewall asks about Node.js. If the phone still cannot connect, allow `node.exe` under Windows Defender Firewall > Allowed apps.
+
 ## How agents work
 
 Each task launches Claude Code in the project's own folder (`data/projects/<id>/`) with:

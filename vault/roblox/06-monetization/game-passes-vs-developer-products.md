@@ -17,7 +17,7 @@ Why the split matters: the platform tracks pass ownership for you, so passes are
 
 - **Check ownership on the server when the player joins** with `MarketplaceService:UserOwnsGamePassAsync(userId, passId)` inside `pcall`, and cache the result in the session. Why: the call is a web request that can fail and should not be repeated constantly.
 - **Apply the perk in server logic.** A double-coins pass changes the multiplier in the server's reward function. Why: a perk applied on the client can be faked.
-- **Handle purchase during play.** Listen to `PromptGamePassPurchaseFinished` on the server and, when it reports a purchase, verify ownership and apply the perk immediately. Why: making the player rejoin to receive what they bought feels broken.
+- **Handle purchase during play.** Listen to `PromptGamePassPurchaseFinished` on the server and, when `wasPurchased` is true for a known pass id, set the session's cached ownership to true and apply the perk directly. Do not call `UserOwnsGamePassAsync` again there. Why: that call is cached per server and can still return false right after an in-experience purchase, and making the player rejoin to receive what they bought feels broken.
 - **Passes survive rebirth and resets.** See [[Rebirth And Prestige Systems]].
 
 ```lua
@@ -39,7 +39,7 @@ end
 
 - Open prompts only from a deliberate tap on a clearly priced button; see [[Menus And Shop Screens]].
 - Never fire a prompt automatically on join or on death. Why: unrequested prompts feel predatory and teach players to dismiss everything.
-- Fetch names and prices from the platform with `GetProductInfo` rather than hard-coding prices in the interface. Why: a price edited on the website would otherwise mismatch the button.
+- Fetch names and prices from the platform with `MarketplaceService:GetProductInfo(id, Enum.InfoType.GamePass)` for passes or `Enum.InfoType.Product` for developer products, inside `pcall`, and cache the result, rather than hard-coding prices in the interface. Why: a price edited on the website would otherwise mismatch the button; the `InfoType` argument is required because the default is `Asset`, which looks up the wrong kind of id.
 
 ## Testing
 

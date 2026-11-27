@@ -18,6 +18,7 @@ function walk(dir, out = []) {
 const pretty = (s) => s.replace(/^\d+-/, m => m.replace('-', ' ')).replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 function graph(wsId) {
+  if (!workspace(wsId)) return { nodes: [], edges: [], words: 0 };
   const base = path.join(VAULT_DIR, wsId);
   const nodes = [];
   for (const file of walk(base)) {
@@ -43,6 +44,7 @@ function graph(wsId) {
 }
 
 function safeNote(wsId, id) {
+  if (!workspace(wsId)) return null;
   const base = path.join(VAULT_DIR, wsId);
   const p = path.resolve(base, id);
   if (!p.startsWith(base + path.sep) || !p.endsWith('.md') || !fs.existsSync(p)) return null;
@@ -82,9 +84,10 @@ function writeLesson(wsId, agent, taskTitle, verdict, noteText) {
 }
 
 function noteIdFromPath(wsId, filePath) {
-  const base = path.join(VAULT_DIR, wsId);
-  const p = path.resolve(String(filePath || ''));
-  return p.startsWith(base + path.sep) ? path.relative(base, p).split(path.sep).join('/') : null;
+  if (!filePath) return null;
+  // path.relative compares case-insensitively on Windows, where agents may report c:/ or C:\ paths.
+  const rel = path.relative(path.join(VAULT_DIR, wsId), path.resolve(String(filePath)));
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel.split(path.sep).join('/') : null;
 }
 
 module.exports = { VAULT_DIR, graph, note, readingList, writeLesson, noteIdFromPath };
