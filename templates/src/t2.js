@@ -250,7 +250,7 @@
       { t: '0-10s', text: 'An arrow points you at the first crystal.' },
       { t: '10-25s', text: 'Every swing drops one in the bag. It fills fast.' },
       { t: '25-45s', text: 'Bag full. A trail lights up to the sell pad.' },
-      { t: '45-60s', text: 'Coins rain down. First tool upgrade bought.' },
+      { t: '45-60s', text: 'Coins rain down and pay for a better tool.' },
     ],
     loop: ['Collect until the bag is full', 'Sell the bag for coins', 'Better tool, bigger bag', 'Open the next, richer area'],
     mechanic: 'What you collect and how you get it: dig, fish, vacuum, harvest or catch.',
