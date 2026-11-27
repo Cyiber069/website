@@ -137,10 +137,13 @@ function viewTeam() {
       <p>${esc(a.role)}</p>
       <div class="row wrap">${(a.reads || []).map(r => `<span class="pill">${esc(r.replace(/^\d+-/, '').replace(/-/g, ' '))}</span>`).join('')}</div>
       <div class="now">${now.length ? now.map(t => `<div><b>${esc(t.title)}</b> <span class="dim">· ${esc(proj(t.projectId).name)}</span></div>`).join('') : '<span class="dim">Waiting for work</span>'}</div>
+      <div class="brain"><label>Model<select data-act-change="agentModel" data-agent="${a.id}">${ST.models.map(mo => `<option value="${mo}" ${(ST.settings.agentModels[wsId + ':' + a.id] || '') === mo ? 'selected' : ''}>${mo ? MODEL_NAMES[mo] || mo : 'Default (' + (MODEL_NAMES[ST.settings.model] || ST.settings.model || 'Claude Code default') + ')'}</option>`).join('')}</select></label>
+        ${a.writer ? `<label class="check" title="This agent's work is a written document, so the free Cloudflare model can try it first. When the free credits run out it switches to Claude."><input type="checkbox" data-act-change="agentFree" data-agent="${a.id}" ${ST.settings.agentFreeFirst[wsId + ':' + a.id] ? 'checked' : ''} ${ST.cfReady ? '' : 'disabled'}> Free Cloudflare credits first${ST.cfReady ? '' : ' (add the key in Settings)'}</label>` : ''}</div>
       <div><button class="btn small" data-act="newTask" data-agent="${a.id}">Give ${esc(a.name)} a task</button></div></div>`;
   }).join('')}</div>`;
 }
 
+const MODEL_NAMES = { 'claude-haiku-5-5': 'Haiku 5.5 (cheapest)', 'claude-sonnet-5-5': 'Sonnet 5.5 (strong coder)', 'claude-opus-5-5': 'Opus 5.5 (stronger)', 'claude-fable-5-2': 'Fable 5.2 (most capable, most expensive)' };
 const STATUS = { queued: 'Queued', running: 'Working', checking: 'Running checks', review: 'In review', blocked: 'Needs you', done: 'Done', failed: 'Closed', stopped: 'Stopped' };
 function taskCard(t) {
   const a = agent(t.agentId);
@@ -223,14 +226,29 @@ function viewSettings() {
       <label>Mode<select name="mode"><option value="auto" ${s.mode === 'auto' ? 'selected' : ''}>Live when Claude Code is available</option><option value="demo" ${s.mode === 'demo' ? 'selected' : ''}>Always demo (no AI, no cost)</option></select></label>
       <div class="two"><label>Agents working at once<input name="maxParallel" type="number" min="1" max="8" value="${s.maxParallel}"></label>
       <label>Daily spending cap (USD)<input name="nightlyCapUsd" type="number" min="0" step="1" value="${s.nightlyCapUsd}"></label></div>
-      <label>Model (leave empty for your Claude Code default)<input name="model" value="${esc(s.model)}" placeholder="for example: sonnet"></label>
+      <label>Default model for every agent (each agent can be given its own on the Team page)<select name="model">${ST.models.map(mo => `<option value="${mo}" ${s.model === mo ? 'selected' : ''}>${mo ? MODEL_NAMES[mo] : 'Whatever Claude Code is set to'}</option>`).join('')}${ST.models.includes(s.model) ? '' : `<option selected value="${esc(s.model)}">${esc(s.model)}</option>`}</select></label>
       <p class="dim" style="margin:0">Spending is what Claude Code reports per task. On a Claude subscription it is an equivalent estimate, not a charge. When a project or the daily cap runs out, agents stop until you raise it.</p>
       <div class="actions"><button class="btn primary">Save</button></div></div></form>
+    <div class="grid">
+    <div class="card"><header><h2>Keys</h2></header><div class="body grid">
+      ${access && access.remote ? '<span class="dim">Keys can only be added or changed on the computer running the app, not from a phone.</span>' : `
+      <span class="dim">Keys are saved on this computer only. They are never shown again, never sent to this page, and never uploaded.</span>
+      <form class="grid" data-form="key" data-name="anthropic"><label>Claude API key ${ST.keys.anthropic.set ? `<span class="pill live">Saved ${esc(ST.keys.anthropic.hint)}</span>` : '<span class="pill">Not set: agents use the Claude login on this computer</span>'}
+        <input name="value" type="password" autocomplete="off" placeholder="sk-ant-..."></label>
+        <div class="actions"><button type="button" class="btn small ghost" data-act="keyRemove" data-name="anthropic" ${ST.keys.anthropic.set ? '' : 'disabled'}>Remove</button><button class="btn small primary">Save key</button></div></form>
+      <hr class="sep">
+      <form class="grid" data-form="cf"><b>Free Cloudflare credits</b>
+        <span class="dim">Cloudflare gives a free allowance every day that resets at midnight UTC. Agents that write documents can use it first; when it runs out they switch to Claude automatically. It is a smaller model with no tools, so it cannot write game code. ${ST.cfReady ? (ST.cfUsedUp ? '<span class="pill demo">Used up for today</span>' : '<span class="pill live">Ready</span>') : '<span class="pill">Not set up</span>'}</span>
+        <label>Cloudflare account ID<input name="cfAccountId" value="${esc(s.cfAccountId)}" autocomplete="off" placeholder="32 letters and numbers"></label>
+        <label>Cloudflare API token (with Workers AI permission) ${ST.keys.cloudflare.set ? `<span class="pill live">Saved ${esc(ST.keys.cloudflare.hint)}</span>` : ''}<input name="value" type="password" autocomplete="off" placeholder="${ST.keys.cloudflare.set ? 'Leave empty to keep the saved token' : ''}"></label>
+        <label>Model<input name="cfModel" value="${esc(s.cfModel)}"></label>
+        <div class="actions"><button type="button" class="btn small ghost" data-act="keyRemove" data-name="cloudflare" ${ST.keys.cloudflare.set ? '' : 'disabled'}>Remove token</button><button type="button" class="btn small" data-act="cfTest" ${ST.cfReady ? '' : 'disabled'}>Test</button><button class="btn small primary">Save</button></div></form>`}
+    </div></div>
     <div class="card"><header><h2>Use it from your phone</h2></header><div class="body grid">
       ${!access ? '<span class="dim">Checking…</span>' : access.remote ? '<span class="dim">You are already connected remotely.</span>'
       : access.lan ? `<span class="dim">Phone access is on. With your phone on the same Wi-Fi, open one of these links (they contain your private access key, so do not share them):</span>${access.urls.map(u => `<input readonly value="${esc(u)}" onclick="this.select()">`).join('') || '<span class="dim">No network address found.</span>'}`
       : `<span class="dim">Phone access is off: the app only answers on this computer. To turn it on, close it and start it with <span class="mono">npm run phone</span>. This page will then show the link to open on your phone.</span>`}
-    </div></div></div>`;
+    </div></div></div></div>`;
 }
 
 /* ---------- vault ---------- */
@@ -450,6 +468,8 @@ document.addEventListener('click', (e) => {
   else if (a === 'pause') act(() => api('/api/projects/' + id, { paused: !proj(id).paused }));
   else if (a === 'taskAct') act(() => api(`/api/tasks/${id}/action`, { action: el.dataset.do }));
   else if (a === 'pitch') act(() => api(`/api/pitches/${id}/action`, { action: el.dataset.do }));
+  else if (a === 'keyRemove') act(async () => { await api('/api/keys', { name: el.dataset.name, value: '' }); toast('Removed'); await load(); render(true); });
+  else if (a === 'cfTest') act(async () => { toast('Testing…'); await api('/api/keys/test', {}); toast('Cloudflare is working'); });
   else if (a === 'closeNote') closeNote();
   else if (a === 'vfocus') galaxy && galaxy.focus(id);
   else if (a === 'wl') { const n = vaultGraph && vaultGraph.nodes.find(n => n.title.toLowerCase() === el.dataset.title.toLowerCase()); n ? showNote(n.id) : toast('That note does not exist yet', true); }
@@ -458,6 +478,23 @@ document.addEventListener('submit', (e) => {
   const f = e.target.closest('[data-form=settings]'); if (!f) return;
   e.preventDefault();
   act(async () => { await api('/api/settings', Object.fromEntries(new FormData(f))); toast('Saved'); await load(); render(true); });
+});
+document.addEventListener('submit', (e) => {
+  const k = e.target.closest('[data-form=key]'), c = e.target.closest('[data-form=cf]');
+  if (!k && !c) return;
+  e.preventDefault();
+  const d = Object.fromEntries(new FormData(e.target));
+  act(async () => {
+    if (k) { if (!d.value) throw new Error('Paste the key first'); await api('/api/keys', { name: k.dataset.name, value: d.value }); }
+    else { await api('/api/settings', { cfAccountId: d.cfAccountId, cfModel: d.cfModel }); if (d.value) await api('/api/keys', { name: 'cloudflare', value: d.value }); }
+    toast('Saved'); await load(); render(true);
+  });
+});
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-act-change]'); if (!el) return;
+  const body = { ws: wsId, agentId: el.dataset.agent };
+  if (el.dataset.actChange === 'agentModel') body.model = el.value; else body.freeFirst = el.checked;
+  act(async () => { await api('/api/agents/brain', body); toast('Saved'); el.blur(); });
 });
 document.addEventListener('focusout', () => setTimeout(() => { if (dirty) render(); }, 0));
 window.addEventListener('hashchange', go);

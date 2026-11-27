@@ -334,3 +334,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #a78bfa
   #top h1 { font-size: 22px; }
 }
 @media (prefers-reduced-motion: reduce) { .crew .av.on { animation: none; } .btn, .agent, .rv, #nav a { transition: none; } }
+
+.brain { display: grid; gap: 7px; border-top: 1px solid #ffffff14; padding-top: 10px; }
+.brain select { padding: 6px 9px; font-size: 13px; }
+label.check { display: flex; align-items: center; gap: 8px; color: #c5c9de; font-size: 12.5px; }
+label.check input { width: auto; accent-color: #a78bfa; }
+hr.sep { border: 0; border-top: 1px solid #ffffff1a; margin: 4px 0; width: 100%; }

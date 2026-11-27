@@ -11,7 +11,7 @@ const PROJECTS_DIR = path.join(DATA_DIR, 'projects');
 const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'workspaces.json'), 'utf8'));
 
 const blank = () => ({
-  settings: { mode: 'auto', maxParallel: 3, model: '', nightlyCapUsd: 25, token: crypto.randomBytes(18).toString('hex') },
+  settings: { mode: 'auto', maxParallel: 3, model: '', nightlyCapUsd: 25, agentModels: {}, agentFreeFirst: {}, cfAccountId: '', cfModel: '@cf/zai-org/glm-4.7-flash', cfBaseUrl: '', token: crypto.randomBytes(18).toString('hex') },
   projects: [], tasks: [], reviews: [], events: [], pitches: [], spendLog: [],
 });
 

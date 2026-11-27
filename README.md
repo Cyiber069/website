@@ -14,6 +14,8 @@ A control room for a team of AI agents. You write a brief, the Lead breaks it in
 - **Brain**: everything the team knows, drawn as a glowing 3D map you can rotate, zoom and read: one cluster per topic, one spark per rule. A signal fires from the core when an agent reads a note.
 - **Skill library** (`GameFactorySkills/`): the rules every Roblox game starts from. Each agent is handed the skill files for its job.
 - **Market** (Roblox): live player counts from Roblox's public charts, with change since the last refresh.
+- **A model per agent**: pick a cheap model for simple agents and a stronger one for the agents that write code (Team page).
+- **Keys** (Settings): an optional Claude API key, and optional free Cloudflare Workers AI credits. Agents that write documents can use the free credits first and switch to Claude automatically when the daily allowance runs out. Keys are stored only in `data/` on the computer and can only be changed from that computer.
 - **Phone access**: the whole app works at phone width.
 
 ## Run it

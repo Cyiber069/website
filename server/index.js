@@ -7,6 +7,8 @@ const S = require('./store');
 const V = require('./vault');
 const R = require('./runner');
 const market = require('./market');
+const secrets = require('./secrets');
+const MODELS = ['', 'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2'];
 
 const PORT = Number(process.env.PORT) || 4600;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -49,7 +51,8 @@ function publicState(wsId) {
   const { token, ...settings } = db.settings;
   return {
     workspaces: S.config.workspaces.map(w => ({ id: w.id, name: w.name, tagline: w.tagline, hasMarket: w.hasMarket,
-      agents: w.agents.map(a => ({ id: a.id, name: a.name, color: a.color, isLead: !!a.isLead, role: a.role, reads: a.reads, skills: a.skills || [] })) })),
+      agents: w.agents.map(a => ({ id: a.id, name: a.name, color: a.color, isLead: !!a.isLead, role: a.role, reads: a.reads, skills: a.skills || [], writer: !!a.writer })) })),
+    keys: secrets.status(), cfReady: R.cfReady(), cfUsedUp: R.cfUsedUp(), models: MODELS,
     settings, mode: R.mode(), liveAvailable: R.liveAvailable(), spentToday: S.spentToday(),
     projects: db.projects.filter(p => p.workspace === wsId),
     tasks: db.tasks.filter(t => pids.has(t.projectId)),
@@ -226,7 +229,27 @@ async function api(req, res, url) {
     if ('maxParallel' in body) s.maxParallel = Math.min(8, Math.max(1, Math.round(Number(body.maxParallel) || 1)));
     if ('nightlyCapUsd' in body) s.nightlyCapUsd = Math.max(0, Number(body.nightlyCapUsd) || 0);
     if ('model' in body) s.model = String(body.model || '').replace(/[^\w.\-\[\]]/g, '').slice(0, 60);
+    if ('cfAccountId' in body) { const v = String(body.cfAccountId || '').trim(); if (v && !/^[a-f0-9]{32}$/i.test(v)) return bad(res, 'A Cloudflare account ID is 32 letters and numbers. Copy it from your Cloudflare dashboard.'); s.cfAccountId = v; }
+    if ('cfModel' in body) { const v = String(body.cfModel || '').trim(); if (!/^@?[\w./-]{3,100}$/.test(v)) return bad(res, 'That model name does not look right. Example: @cf/zai-org/glm-4.7-flash'); s.cfModel = v; }
+    if ('cfBaseUrl' in body) { const v = String(body.cfBaseUrl || '').trim().replace(/\/+$/, ''); if (v && !/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/.test(v)) return bad(res, 'The address must start with https://'); s.cfBaseUrl = v; }
     S.changed(); return send(res, 200, {});
+  }
+  if (p === '/api/agents/brain' && m === 'POST') { // which model an agent uses, and whether it tries free credits first
+    const a = S.agentOf(body.ws, body.agentId); if (!a) return bad(res, 'No such agent', 404);
+    const key = body.ws + ':' + a.id, s = S.db.settings;
+    if ('model' in body) { if (!MODELS.includes(body.model)) return bad(res, 'Unknown model'); if (body.model) s.agentModels[key] = body.model; else delete s.agentModels[key]; }
+    if ('freeFirst' in body) { if (body.freeFirst && a.writer) s.agentFreeFirst[key] = true; else delete s.agentFreeFirst[key]; }
+    S.changed(); return send(res, 200, {});
+  }
+  if (p === '/api/keys' && m === 'POST') {
+    if (!isLocal(req)) return bad(res, 'Keys can only be changed on the computer running the app.', 403);
+    secrets.set(body.name, body.value); S.changed(); return send(res, 200, secrets.status());
+  }
+  if (p === '/api/keys/test' && m === 'POST') {
+    if (!isLocal(req)) return bad(res, 'Only available on the computer running the app.', 403);
+    if (!R.cfReady()) return bad(res, 'Save the account ID and the token first.');
+    try { await R.cfChat([{ role: 'user', content: 'Reply with the single word: ready' }], 16, AbortSignal.timeout(30000)); return send(res, 200, { ok: true }); }
+    catch (e) { return bad(res, e.quota ? 'The key works, but today\'s free credits are already used up.' : 'Cloudflare said: ' + e.message, 502); }
   }
   if (p === '/api/vault') return S.workspace(q.get('ws')) ? send(res, 200, V.graph(q.get('ws'))) : bad(res, 'Unknown workspace', 404);
   if (p === '/api/vault/note') { const t = V.note(q.get('ws'), q.get('id') || ''); return t === null ? bad(res, 'No such note', 404) : send(res, 200, { text: t }); }

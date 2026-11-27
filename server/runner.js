@@ -8,6 +8,7 @@ const kill = (pid, sync) => { try { WIN ? (sync ? spawnSync : spawn)('taskkill',
 const S = require('./store');
 const V = require('./vault');
 const market = require('./market');
+const secrets = require('./secrets');
 
 const CLI = path.join(S.ROOT, 'cli.js');
 const MAX_ATTEMPTS = 3;
@@ -154,13 +155,15 @@ async function finish(t, p, acc, run) {
 
 function startLive(t, p, ws, agent, cap) {
   const s = S.db.settings;
+  const model = s.agentModels[ws.id + ':' + agent.id] || s.model;
+  const key = secrets.get('anthropic');
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--max-budget-usd', cap.toFixed(2), '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', '--add-dir', V.VAULT_DIR];
   if (V.skillsDir(ws)) args.push('--add-dir', V.skillsDir(ws));
-  if (s.model) args.push('--model', s.model);
+  if (model) args.push('--model', model);
   const child = spawn('claude', WIN ? args.map(a => /[\s&|<>^%()!,;=]/.test(a) ? `"${a}"` : a) : args, {
     cwd: S.projectDir(p), shell: WIN, windowsHide: true,
-    env: Object.assign({}, process.env, { NIGHTSHIFT_URL: `http://127.0.0.1:${port}`, NIGHTSHIFT_TOKEN: s.token, NIGHTSHIFT_TASK: t.id }),
+    env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}, { NIGHTSHIFT_URL: `http://127.0.0.1:${port}`, NIGHTSHIFT_TOKEN: s.token, NIGHTSHIFT_TASK: t.id }),
   });
   const acc = {}, run = { child };
   running.set(t.id, run);
@@ -179,6 +182,68 @@ function startLive(t, p, ws, agent, cap) {
     finish(t, p, acc, run);
   });
   child.stdin.end(buildPrompt(t, p, ws, agent));
+}
+
+// ---- Free Cloudflare credits (Workers AI) ----
+// A text-only model: it cannot run tools or edit files, so it is only used for agents whose work is a written
+// document. It is tried first; when the free daily allowance runs out (or it fails) the task moves to Claude.
+const utcDay = () => new Date().toISOString().slice(0, 10);
+let cfUsedUpDay = '';
+const cfReady = () => !!(S.db.settings.cfAccountId && secrets.get('cloudflare'));
+const cfUsedUp = () => cfUsedUpDay === utcDay(); // the allowance resets at midnight UTC
+const cfUrl = () => (S.db.settings.cfBaseUrl || `https://api.cloudflare.com/client/v4/accounts/${S.db.settings.cfAccountId}/ai/v1`) + '/chat/completions';
+
+async function cfChat(messages, maxTokens, signal) {
+  const r = await fetch(cfUrl(), { method: 'POST', signal,
+    headers: { Authorization: 'Bearer ' + secrets.get('cloudflare'), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: S.db.settings.cfModel, messages, max_tokens: maxTokens }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = (j.errors && j.errors[0]) || j.error || {};
+    const msg = String(e.message || j.message || 'HTTP ' + r.status);
+    throw Object.assign(new Error(msg), { quota: e.code === 3036 || /daily free allocation/i.test(msg) });
+  }
+  const text = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if (!text || !String(text).trim()) throw new Error('It returned an empty reply');
+  return String(text);
+}
+
+async function startText(t, p, ws, agent, cap, live) {
+  const run = { abort: new AbortController() };
+  running.set(t.id, run);
+  const mine = () => running.get(t.id) === run && t.status === 'running';
+  try {
+    let room = 48000, docs = '';
+    for (const f of V.readingList(ws.id, agent)) {
+      const text = fs.readFileSync(f, 'utf8');
+      if (text.length > room) continue;
+      room -= text.length; docs += `\n\n===== ${path.basename(f)} =====\n${text}`;
+      const noteId = V.noteIdFromPath(ws.id, f);
+      if (noteId) ev(t, 'read', 'Read vault note ' + noteId, { noteId });
+    }
+    const fb = (t.feedback || []).map(f => `- (${f.from}) ${f.text}`).join('\n');
+    const text = await cfChat([
+      { role: 'system', content: `You are ${agent.name}, an agent on the "${ws.name}" team. ${agent.role}\nYou cannot run tools, edit files or hand work to anyone. Reply with the finished document only, in markdown, starting with a # title. Follow the reference notes over your own habits. Do not claim anything you could not verify; say what is an assumption.` },
+      { role: 'user', content: `PROJECT: ${p.name}\n${p.brief || ''}\n\nYOUR TASK: ${t.title}\n${t.detail || ''}${fb ? '\n\nFEEDBACK ON EARLIER ATTEMPTS (fix all of this):\n' + fb : ''}\n\nREFERENCE NOTES:${docs || ' (none)'}` },
+    ], 4000, AbortSignal.any([run.abort.signal, AbortSignal.timeout(180000)]));
+    if (!mine()) return;
+    const rel = 'deliverables/' + t.id + '.md';
+    fs.mkdirSync(path.join(S.projectDir(p), 'deliverables'), { recursive: true });
+    fs.writeFileSync(path.join(S.projectDir(p), rel), text);
+    ev(t, 'tool', 'Wrote ' + t.id + '.md using free Cloudflare credits');
+    S.db.reviews.push({ id: S.id('rv'), taskId: t.id, projectId: p.id, agentId: t.agentId, title: t.title,
+      summary: 'Written with free Cloudflare credits (a smaller model than Claude, so check it carefully).\n\n' + short(text, 600), files: [rel], status: 'pending', createdAt: S.now() });
+    finish(t, p, { result: short(text, 600), cost: 0 }, run);
+  } catch (e) {
+    if (!mine()) return; // stopped or cancelled
+    running.delete(t.id);
+    if (e.quota) {
+      cfUsedUpDay = utcDay();
+      once('cf-' + cfUsedUpDay, () => S.event({ kind: 'budget', text: 'Free Cloudflare credits are used up for today. Using Claude until they reset at midnight UTC.' }));
+    } else ev(t, 'note', `Cloudflare could not do this task (${short(e.message, 140)}). Switching to Claude.`);
+    if (live && cap >= 0.05) return startLive(t, p, ws, agent, cap);
+    setStatus(t, 'blocked', { question: 'Cloudflare could not do this task and Claude is not available to take over (not installed, or the budget is used up). Retry later or cancel.' });
+  }
 }
 
 // Demo mode: no AI runs. It walks the same pipeline with clearly labelled placeholder output
@@ -267,7 +332,9 @@ async function tickOnce() {
     t.reservedUsd = cap;
     setStatus(t, 'running', { startedAt: S.now(), question: undefined });
     ev(t, 'start', (t.attempts > 1 ? `Attempt ${t.attempts}: ` : 'Started: ') + t.title);
-    if (live) startLive(t, p, ws, agent, cap); else startDemo(t, p, ws, agent);
+    const freeFirst = s.mode !== 'demo' && agent.writer && s.agentFreeFirst[ws.id + ':' + agent.id] && cfReady() && !cfUsedUp();
+    if (freeFirst) startText(t, p, ws, agent, cap, live);
+    else if (live) startLive(t, p, ws, agent, cap); else startDemo(t, p, ws, agent);
   }
 }
 
@@ -277,6 +344,7 @@ function stop(t, sync) {
   running.delete(t.id);
   t.reservedUsd = 0;
   if (r.timers) r.timers.forEach(clearTimeout);
+  if (r.abort) r.abort.abort();
   if (r.child && r.child.pid) kill(r.child.pid, sync);
 }
 
@@ -286,4 +354,4 @@ function boot(p) {
   setInterval(() => tick().catch(e => console.error('runner:', e.message)), 1500);
 }
 
-module.exports = { boot, stop, mode, newTask, ev, setStatus, liveAvailable, running };
+module.exports = { boot, stop, mode, newTask, ev, setStatus, liveAvailable, running, cfReady, cfUsedUp, cfChat };

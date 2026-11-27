@@ -35,7 +35,8 @@
             "02",
             "07",
             "REUSABLE_TEMPLATE_PLAN"
-          ]
+          ],
+          "writer": true
         },
         {
           "id": "builder",
@@ -96,7 +97,8 @@
             "02",
             "05",
             "06"
-          ]
+          ],
+          "writer": true
         },
         {
           "id": "playtest",
@@ -127,7 +129,8 @@
             "01",
             "11",
             "12"
-          ]
+          ],
+          "writer": true
         },
         {
           "id": "librarian",
@@ -153,7 +156,8 @@
             "MASTER_PLAYBOOK",
             "05",
             "11"
-          ]
+          ],
+          "writer": true
         }
       ],
       "skillsDir": "GameFactorySkills"
@@ -192,7 +196,8 @@
             "01-offer-and-brand",
             "02-ads"
           ],
-          "role": "You write ad copy, hooks and product page text. Never state a range, speed, safety or legal claim that is not in the brand facts."
+          "role": "You write ad copy, hooks and product page text. Never state a range, speed, safety or legal claim that is not in the brand facts.",
+          "writer": true
         },
         {
           "id": "creative",
@@ -202,7 +207,8 @@
             "04-content",
             "02-ads"
           ],
-          "role": "You write creative briefs and short-video scripts that a person or a video tool can produce without guessing."
+          "role": "You write creative briefs and short-video scripts that a person or a video tool can produce without guessing.",
+          "writer": true
         },
         {
           "id": "store",
@@ -220,7 +226,8 @@
           "reads": [
             "05-customer-messaging"
           ],
-          "role": "You draft replies and follow-up flows for customer messages. Drafts only; a person sends them."
+          "role": "You draft replies and follow-up flows for customer messages. Drafts only; a person sends them.",
+          "writer": true
         },
         {
           "id": "analyst",
@@ -230,7 +237,8 @@
             "02-ads",
             "00-start-here"
           ],
-          "role": "You turn numbers the owner provides into a short weekly read: what worked, what did not, what to test next. Never invent a number."
+          "role": "You turn numbers the owner provides into a short weekly read: what worked, what did not, what to test next. Never invent a number.",
+          "writer": true
         },
         {
           "id": "librarian",
