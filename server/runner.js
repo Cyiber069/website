@@ -156,6 +156,7 @@ function startLive(t, p, ws, agent, cap) {
   const s = S.db.settings;
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--max-budget-usd', cap.toFixed(2), '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', '--add-dir', V.VAULT_DIR];
+  if (V.skillsDir(ws)) args.push('--add-dir', V.skillsDir(ws));
   if (s.model) args.push('--model', s.model);
   const child = spawn('claude', WIN ? args.map(a => /[\s&|<>^%()!,;=]/.test(a) ? `"${a}"` : a) : args, {
     cwd: S.projectDir(p), shell: WIN, windowsHide: true,

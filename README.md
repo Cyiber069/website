@@ -1,4 +1,4 @@
-# Nightshift
+# Roblox Game Factory
 
 A control room for a team of AI agents. You write a brief, the Lead breaks it into tasks, specialists do the work, and finished work lands in a review queue for your verdict. It runs two teams from one app:
 
@@ -11,7 +11,8 @@ A control room for a team of AI agents. You write a brief, the Lead breaks it in
 - **Review queue**: approve, ask for changes, polish, or reject. A note is required to send work back, and every note is saved as a lesson that agent reads before its next task.
 - **Quality checks**: each project can list commands that must pass after every task. Work that fails goes back to the agent, not to you. After three failed attempts it is escalated to you.
 - **Budgets**: a spending limit per project, per task, and per day. Agents stop when a limit is reached.
-- **Vault**: the team's knowledge base, drawn as a galaxy you can rotate and read. Stars flash when an agent reads that note.
+- **Brain**: everything the team knows, drawn as a glowing 3D map you can rotate, zoom and read: one cluster per topic, one spark per rule. A signal fires from the core when an agent reads a note.
+- **Skill library** (`GameFactorySkills/`): the rules every Roblox game starts from. Each agent is handed the skill files for its job.
 - **Market** (Roblox): live player counts from Roblox's public charts, with change since the last refresh.
 - **Phone access**: the whole app works at phone width.
 
@@ -25,7 +26,7 @@ npm start
 
 Then open http://localhost:4600.
 
-On Windows you can instead double-click `start.bat`: it starts Nightshift and opens it in your browser.
+On Windows you can instead double-click `start.bat`: it starts Game Factory and opens it in your browser.
 
 Agents do real work only when [Claude Code](https://claude.com/claude-code) is installed and signed in on the same computer. Without it the app runs in **demo mode**: tasks walk through the pipeline and produce clearly labelled placeholders, with no AI and no cost.
 

@@ -49,7 +49,7 @@ function publicState(wsId) {
   const { token, ...settings } = db.settings;
   return {
     workspaces: S.config.workspaces.map(w => ({ id: w.id, name: w.name, tagline: w.tagline, hasMarket: w.hasMarket,
-      agents: w.agents.map(a => ({ id: a.id, name: a.name, color: a.color, isLead: !!a.isLead, role: a.role, reads: a.reads })) })),
+      agents: w.agents.map(a => ({ id: a.id, name: a.name, color: a.color, isLead: !!a.isLead, role: a.role, reads: a.reads, skills: a.skills || [] })) })),
     settings, mode: R.mode(), liveAvailable: R.liveAvailable(), spentToday: S.spentToday(),
     projects: db.projects.filter(p => p.workspace === wsId),
     tasks: db.tasks.filter(t => pids.has(t.projectId)),
@@ -257,9 +257,9 @@ const server = http.createServer(async (req, res) => {
     const given = url.searchParams.get('token') || req.headers['x-token'] || cookieToken(req);
     const tok = S.db.settings.token;
     const authed = !!tok && typeof given === 'string' && given === tok;
-    if (!ownHost(req)) return send(res, 403, 'Open Nightshift by its own address (localhost or this computer\'s network address).', { 'Content-Type': 'text/plain' });
-    if (!sameSite(req)) return bad(res, 'Request refused: it did not come from the Nightshift app.', 403);
-    if (!isLocal(req) && !authed) return send(res, 401, 'Access token required. Open the link shown in Settings on the computer running Nightshift.', { 'Content-Type': 'text/plain' });
+    if (!ownHost(req)) return send(res, 403, 'Open the app by its own address (localhost or this computer\'s network address).', { 'Content-Type': 'text/plain' });
+    if (!sameSite(req)) return bad(res, 'Request refused: it did not come from the Game Factory app.', 403);
+    if (!isLocal(req) && !authed) return send(res, 401, 'Access token required. Open the link shown in Settings on the computer running the app.', { 'Content-Type': 'text/plain' });
     if (url.pathname === '/api/access' && !isLocal(req)) return bad(res, 'Only available on the computer itself', 403);
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     let file = path.join(PUBLIC, url.pathname === '/' ? 'index.html' : path.normalize(url.pathname));
@@ -275,7 +275,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   R.boot(PORT);
-  console.log(`\n  Nightshift is running:  http://localhost:${PORT}`);
+  console.log(`\n  Roblox Game Factory is running:  http://localhost:${PORT}`);
   console.log(`  Agents: ${R.mode() === 'live' ? 'live (Claude Code found)' : 'demo mode (Claude Code not found on this computer)'}`);
   if (HOST !== '127.0.0.1') console.log('  Phone access is on. Open Settings in the app for the link.');
   console.log('');

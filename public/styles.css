@@ -205,3 +205,10 @@ tr:hover td { background: #ffffff05; }
   .legend button { flex: none; }
   .vault-hud { left: 14px; top: 12px; max-width: calc(100% - 28px); }
 }
+
+.legend { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100% - 36px); scrollbar-width: thin; }
+.legend button { flex: none; }
+.md li.hl { background: #f5b83d1f; outline: 1px solid #f5b83d66; border-radius: 6px; padding: 2px 6px; margin-left: -6px; }
+.reader { background: #0c0d18f0; }
+
+.brand b { font-size: 15px; white-space: nowrap; }

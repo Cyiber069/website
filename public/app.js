@@ -58,7 +58,7 @@ function renderShell() {
     ['tasks', 'Tasks', ''],
     ['review', 'Review', c.pending.length ? `<span class="count hot">${c.pending.length}</span>` : ''],
     ['projects', 'Projects', c.pitches.length ? `<span class="count">${c.pitches.length}</span>` : ''],
-    ['vault', 'Vault', ''],
+    ['vault', 'Brain', ''],
     ...(w.hasMarket ? [['market', 'Market', '']] : []),
     ['settings', 'Settings', ''],
   ];
@@ -227,7 +227,7 @@ function viewSettings() {
     <div class="card"><header><h2>Use it from your phone</h2></header><div class="body grid">
       ${!access ? '<span class="dim">Checking…</span>' : access.remote ? '<span class="dim">You are already connected remotely.</span>'
       : access.lan ? `<span class="dim">Phone access is on. With your phone on the same Wi-Fi, open one of these links (they contain your private access key, so do not share them):</span>${access.urls.map(u => `<input readonly value="${esc(u)}" onclick="this.select()">`).join('') || '<span class="dim">No network address found.</span>'}`
-      : `<span class="dim">Phone access is off: Nightshift only answers on this computer. To turn it on, close Nightshift and start it with <span class="mono">npm run phone</span>. This page will then show the link to open on your phone.</span>`}
+      : `<span class="dim">Phone access is off: the app only answers on this computer. To turn it on, close it and start it with <span class="mono">npm run phone</span>. This page will then show the link to open on your phone.</span>`}
     </div></div></div>`;
 }
 
@@ -272,28 +272,34 @@ function md(text) {
 async function mountVault() {
   const v = $('#view');
   v.innerHTML = `<canvas id="galaxy" aria-label="Map of the vault. Drag to rotate, scroll to zoom, select a star to read the note."></canvas><div class="vault-hud" id="vhud"></div><div class="legend" id="vlegend"></div><div id="vreader"></div>`;
-  galaxy = Galaxy($('#galaxy'), { onSelect: (id) => id ? showNote(id) : closeNote() });
+  galaxy = Galaxy($('#galaxy'), { onSelect: (id, rule) => id ? showNote(id, rule) : closeNote() });
   try { vaultGraph = await api('/api/vault?ws=' + wsId); } catch { vaultGraph = { nodes: [], edges: [], words: 0 }; }
   if (route !== 'vault' || !galaxy) return;
   galaxy.setData(vaultGraph);
-  $('#vhud').innerHTML = vaultGraph.nodes.length ? `<h1>The vault</h1><p>${vaultGraph.words.toLocaleString()} words in ${vaultGraph.nodes.length} notes. Stars flash when an agent reads them.</p>`
+  const notes = vaultGraph.nodes.filter(n => n.kind !== 'idea');
+  $('#vhud').innerHTML = vaultGraph.nodes.length ? `<h1>The brain</h1><p>${vaultGraph.ideas ? vaultGraph.ideas.toLocaleString() + ' ideas across ' : ''}${notes.length} notes, ${vaultGraph.words.toLocaleString()} words. A signal fires from the core when an agent reads a note.</p>`
     : `<h1>The vault is empty</h1><p>Add markdown notes under vault/${esc(wsId)}/ and they appear here.</p>`;
   if (vaultGraph.nodes.length) {
     const groups = {};
-    for (const n of vaultGraph.nodes) (groups[n.chapterName] = groups[n.chapterName] || []).push(n);
+    for (const n of notes) { const g = n.skill ? 'Skill library' : n.chapterName; (groups[g] = groups[g] || []).push(n); }
     $('#vhud').innerHTML += `<label class="notepick">Open a note<select id="vpick"><option value="">Choose a note…</option>${Object.keys(groups).sort().map(g =>
       `<optgroup label="${esc(g)}">${groups[g].sort((a, b) => b.isIndex - a.isIndex || a.title.localeCompare(b.title)).map(n => `<option value="${esc(n.id)}">${esc(n.title)}</option>`).join('')}</optgroup>`).join('')}</select></label>`;
     $('#vpick').onchange = (e) => e.target.value && showNote(e.target.value);
   }
-  $('#vlegend').innerHTML = galaxy.chapters().map(c => `<button data-act="vfocus" data-id="${esc(c.id)}"><span class="dot" style="color:${c.color}"></span>${esc(c.name)}</button>`).join('');
+  $('#vlegend').innerHTML = galaxy.chapters().map(c => `<button data-act="vfocus" data-id="${esc(c.id)}"><span class="dot" style="color:${c.color}"></span>${esc(c.name)}${c.ideas ? ` <span class="faint num">${c.ideas}</span>` : ''}</button>`).join('');
   if (openNote) showNote(openNote);
 }
-async function showNote(id) {
-  openNote = id; galaxy && galaxy.select(id);
+async function showNote(id, rule) {
+  openNote = id; galaxy && galaxy.select(rule ? id + '#' + rule : id);
   try {
     const { text } = await api(`/api/vault/note?ws=${wsId}&id=${encodeURIComponent(id)}`);
     if (route !== 'vault') return;
     $('#vreader').innerHTML = `<div class="reader"><button class="btn small close" data-act="closeNote">Close</button><div class="faint mono">${esc(id)}</div><div class="md">${md(text)}</div></div>`;
+    if (rule) { // jump to the rule that was clicked on the map
+      const h = [...document.querySelectorAll('.reader .md h2')].find(x => /^rules/i.test(x.textContent)), ol = h ? h.nextElementSibling : $('.reader .md ol');
+      const li = ol && ol.tagName === 'OL' && ol.children[rule - 1];
+      if (li) { li.classList.add('hl'); li.scrollIntoView({ block: 'center' }); }
+    }
   } catch (e) { toast(e.message, true); }
 }
 function closeNote() { openNote = null; const r = $('#vreader'); if (r) r.innerHTML = ''; galaxy && galaxy.select(null); }
@@ -305,7 +311,7 @@ function render(force) {
   renderShell();
   const v = $('#view');
   if (route === 'vault') {
-    setTop('Vault', 'What the team knows. Agents read the relevant chapter before each task; your review notes are added as lessons.');
+    setTop('Brain', 'Everything the team knows. Agents read their part before each task; your review notes are added as lessons.');
     v.classList.add('flush');
     if (!galaxy) mountVault();
     return;
