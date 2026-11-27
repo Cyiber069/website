@@ -68,11 +68,11 @@
       + `<path d="M-18 -98a18 14 0 0 1 36 0z" fill="${GOLD}" stroke="${INK}" stroke-width="3" stroke-linejoin="round"/>`;
     return `<g transform="translate(${x} ${y}) scale(${s})">${g}</g>`;
   };
-  // A row of chevrons painted on the ground, pointing from (x1, y1) to (x2, y2).
+  // A row of chevrons painted flat on the ground, pointing from (x1, y1) to (x2, y2).
   const chevrons = (x1, y1, x2, y2, n, color = '#fff') => {
-    const a = Math.atan2((y2 - y1) / 0.72, x2 - x1) * 180 / Math.PI, d = 'M-9 -12L6 0L-9 12';
-    let s = `<path d="M${x1} ${y1}L${x2} ${y2}" stroke="#fff36b" stroke-width="20" stroke-linecap="round" opacity=".28"/>`;
-    for (let i = 0; i < n; i++) { const t = i / (n - 1), x = x1 + (x2 - x1) * t, y = y1 + (y2 - y1) * t; s += `<g transform="translate(${x} ${y}) scale(1 .72) rotate(${a})"><path d="${d}" fill="none" stroke="${INK}" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></g>`; }
+    const q = 0.56, a = Math.atan2((y2 - y1) / q, x2 - x1) * 180 / Math.PI, d = 'M-10 -15L7 0L-10 15';
+    let s = `<path d="M${x1} ${y1}L${x2} ${y2}" stroke="#fff36b" stroke-width="22" stroke-linecap="round" opacity=".3"/>`;
+    for (let i = 0; i < n; i++) { const t = i / (n - 1), x = x1 + (x2 - x1) * t, y = y1 + (y2 - y1) * t; s += `<g transform="translate(${x} ${y}) scale(1 ${q}) rotate(${a})"><path d="${d}" fill="none" stroke="${INK}" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${color}" stroke-width="6.500" stroke-linecap="round" stroke-linejoin="round"/></g>`; }
     return s;
   };
 
