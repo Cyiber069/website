@@ -7,6 +7,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-start "" http://localhost:4600
+rem Open the browser two seconds from now, once the app has started.
+start "" /min cmd /c "ping -n 3 127.0.0.1 >nul & start http://localhost:4600"
 node server\index.js
 pause

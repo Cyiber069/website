@@ -10,7 +10,8 @@ const V = require('./vault');
 const market = require('./market');
 const secrets = require('./secrets');
 
-const CLI = path.join(S.ROOT, 'cli.js');
+// Forward slashes work in Bash, PowerShell and cmd on Windows, and avoid backslash-escaping surprises in Git Bash.
+const CLI = path.join(S.ROOT, 'cli.js').split(path.sep).join('/');
 const MAX_ATTEMPTS = 3;
 const PER_TASK_CAP = 5;
 const running = new Map(); // taskId -> run { child, timers }
@@ -46,7 +47,7 @@ function buildPrompt(t, p, ws, agent) {
     files.length ? `READ BEFORE YOU START (required, use the Read tool on each):\n${files.map(f => '- ' + f).join('\n')}` : '',
     `YOUR TASK: ${t.title}\n${t.detail || ''}`,
     fb ? `FEEDBACK ON EARLIER ATTEMPTS (fix all of this first):\n${fb}` : '',
-    `COMMANDS (run them with the Bash tool, exactly as written):
+    `COMMANDS (run them with your shell tool, Bash or PowerShell, exactly as written):
 - Progress line for the owner:      node ${q(CLI)} note "what you are doing"
 - Submit work for owner review:     node ${q(CLI)} review --title "..." --summary "what it is and how you checked it" --file relative/path [--file another]
 - Hand work to a teammate:          node ${q(CLI)} task --agent <id> --title "..." --detail "everything they need"
@@ -159,6 +160,8 @@ function startLive(t, p, ws, agent, cap) {
   const key = secrets.get('anthropic');
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits',
     '--max-budget-usd', cap.toFixed(2), '--allowedTools', 'Bash', 'Read', 'Edit', 'Write', 'Glob', 'Grep', '--add-dir', V.VAULT_DIR];
+  // On Windows without Git for Windows, Claude Code runs shell commands through its PowerShell tool instead of Bash.
+  if (WIN) args.splice(args.indexOf('Grep') + 1, 0, 'PowerShell');
   if (V.skillsDir(ws)) args.push('--add-dir', V.skillsDir(ws));
   if (model) args.push('--model', model);
   const child = spawn('claude', WIN ? args.map(a => /[\s&|<>^%()!,;=]/.test(a) ? `"${a}"` : a) : args, {

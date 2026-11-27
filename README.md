@@ -28,7 +28,9 @@ npm start
 
 Then open http://localhost:4600.
 
-On Windows you can instead double-click `start.bat`: it starts Game Factory and opens it in your browser.
+On Windows you can instead double-click `start.bat`: it starts the app and opens it in your browser. `phone.bat` does the same with phone access turned on.
+
+On Windows, agents work best with [Git for Windows](https://git-scm.com/download/win) installed, so Claude Code can use Bash. Without it, Claude Code uses PowerShell, which the app also allows.
 
 Agents do real work only when [Claude Code](https://claude.com/claude-code) is installed and signed in on the same computer. Without it the app runs in **demo mode**: tasks walk through the pipeline and produce clearly labelled placeholders, with no AI and no cost.
 
