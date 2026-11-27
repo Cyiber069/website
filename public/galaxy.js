@@ -8,7 +8,7 @@
     const ctx = canvas.getContext('2d');
     const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
     let W = 0, H = 0, dpr = 1, nodes = [], edges = [], dust = [], byId = new Map(), chapters = [];
-    let yaw = 0.6, pitch = 0.42, zoom = 1, selected = null, hover = null, pulses = [], raf = 0, dead = false, dim = null;
+    let yaw = 0.6, pitch = 0.42, zoom = 1.45, selected = null, hover = null, pulses = [], raf = 0, dead = false, dim = null;
     const ptrs = new Map(); let moved = 0, pinch = 0, lastTouch = 0;
 
     function setData(g) {
