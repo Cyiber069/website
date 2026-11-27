@@ -1,0 +1,11 @@
+{
+  "name": "nightshift",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Control room for a team of AI agents: tasks, review queue, budgets, and a shared vault.",
+  "scripts": {
+    "start": "node server/index.js",
+    "phone": "node scripts/phone.js"
+  },
+  "engines": { "node": ">=20" }
+}
