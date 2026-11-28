@@ -405,7 +405,7 @@ function testAgents() {
     let child;
     try { child = spawnClaude(args, { cwd: os.tmpdir(), env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}) }); }
     catch (e) { return resolve({ ok: false, step: 'run', message: 'Claude Code could not be started: ' + e.message }); }
-    const timer = setTimeout(() => { kill(child.pid); end({ ok: false, step: 'run', message: 'Claude Code did not answer within 90 seconds.' }); }, 90000);
+    const timer = setTimeout(() => { kill(child.pid); const said = short(err || out, 300); end({ ok: false, step: 'run', message: 'Claude Code did not answer within 2 minutes.' + (said ? ' Last thing it printed: ' + said : ' It printed nothing.') }); }, 120000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { err = (err + d).slice(-3000); });
     child.stdin.on('error', () => {});
