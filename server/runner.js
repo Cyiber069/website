@@ -41,10 +41,18 @@ function candidates() {
 const needsShell = (p) => WIN && /\.(cmd|bat)$/i.test(p); // Windows can only start .cmd files through cmd.exe
 const quoteWin = (a) => /[\s&|<>^%()!,;="]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a;
 // Runs Claude Code with the given arguments, safely on every platform.
-function spawnClaude(args, opts) {
+// The prompt goes in as an argument with no input stream attached: on Windows, Claude Code can wait forever on a
+// piped input stream. (args[0] must be '-p'; the prompt is placed right after it, before any multi-value option.)
+// A .cmd launcher goes through cmd.exe, which cannot carry a long multi-line argument, so it gets the prompt on stdin.
+function spawnClaude(args, opts, prompt) {
   const p = cli.path || 'claude';
-  if (needsShell(p)) return spawn(quoteWin(p), args.map(quoteWin), Object.assign({ shell: true, windowsHide: true }, opts));
-  return spawn(p, args, Object.assign({ windowsHide: true }, opts));
+  if (needsShell(p)) {
+    const child = spawn(quoteWin(p), args.map(quoteWin), Object.assign({ shell: true, windowsHide: true }, opts));
+    child.stdin.on('error', () => {});
+    child.stdin.end(prompt);
+    return child;
+  }
+  return spawn(p, [args[0], prompt, ...args.slice(1)], Object.assign({ windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }, opts));
 }
 function detect(force) {
   if (cli.found && !force) return cli;
@@ -201,11 +209,10 @@ function startLive(t, p, ws, agent, cap) {
   const child = spawnClaude(args, {
     cwd: S.projectDir(p),
     env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}, { NIGHTSHIFT_URL: `http://127.0.0.1:${port}`, NIGHTSHIFT_TOKEN: s.token, NIGHTSHIFT_TASK: t.id }),
-  });
+  }, buildPrompt(t, p, ws, agent));
   const acc = {}, run = { child };
   running.set(t.id, run);
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-  child.stdin.on('error', () => {});
   let buf = '', err = '';
   child.stdout.on('data', d => {
     buf += d;
@@ -218,7 +225,6 @@ function startLive(t, p, ws, agent, cap) {
     if (code !== 0 && acc.result === undefined) { acc.failed = true; acc.error = short(err, 400) || 'The agent exited with code ' + code; }
     finish(t, p, acc, run);
   });
-  child.stdin.end(buildPrompt(t, p, ws, agent));
 }
 
 // ---- Free Cloudflare credits (Workers AI) ----
@@ -403,12 +409,11 @@ function testAgents() {
     let out = '', err = '', done = false;
     const end = (r) => { if (!done) { done = true; clearTimeout(timer); resolve(r); } };
     let child;
-    try { child = spawnClaude(args, { cwd: os.tmpdir(), env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}) }); }
+    try { child = spawnClaude(args, { cwd: os.tmpdir(), env: Object.assign({}, process.env, key ? { ANTHROPIC_API_KEY: key } : {}) }, 'Reply with the single word: ready'); }
     catch (e) { return resolve({ ok: false, step: 'run', message: 'Claude Code could not be started: ' + e.message }); }
     const timer = setTimeout(() => { kill(child.pid); const said = short(err || out, 300); end({ ok: false, step: 'run', message: 'Claude Code did not answer within 2 minutes.' + (said ? ' Last thing it printed: ' + said : ' It printed nothing.') }); }, 120000);
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { err = (err + d).slice(-3000); });
-    child.stdin.on('error', () => {});
     child.on('error', e => end({ ok: false, step: 'run', message: 'Claude Code could not be started: ' + e.message }));
     child.on('close', code => {
       let j = null; try { j = JSON.parse(out.trim().split('\n').pop()); } catch {}
@@ -418,7 +423,6 @@ function testAgents() {
       const auth = /log ?in|auth|api key|credential|401|403|invalid.*key|unauthori/i.test(text);
       end({ ok: false, step: auth ? 'signin' : 'run', message: text || ('Claude Code exited with code ' + code) });
     });
-    child.stdin.end('Reply with the single word: ready');
   });
 }
 
